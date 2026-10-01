@@ -1,0 +1,57 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "mysql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+model User {
+  id        Int       @id @default(autoincrement())
+  username  String    @unique @db.VarChar(50)
+  password  String    @db.VarChar(255)
+  nickname  String?   @db.VarChar(50)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  articles  Article[]
+  comments  Comment[]
+
+  @@map("users")
+}
+
+model Article {
+  id        Int       @id @default(autoincrement())
+  title     String    @db.VarChar(100)
+  content   String    @db.MediumText
+  authorId  Int       @map("author_id")
+  author    User      @relation(fields: [authorId], references: [id])
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  comments  Comment[]
+
+  @@index([deletedAt, createdAt])
+  @@index([deletedAt, updatedAt])
+  @@map("articles")
+}
+
+model Comment {
+  id        Int       @id @default(autoincrement())
+  articleId Int       @map("article_id")
+  article   Article   @relation(fields: [articleId], references: [id])
+  authorId  Int       @map("author_id")
+  author    User      @relation(fields: [authorId], references: [id])
+  content   String    @db.VarChar(500)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@index([articleId, createdAt])
+  @@map("comments")
+}

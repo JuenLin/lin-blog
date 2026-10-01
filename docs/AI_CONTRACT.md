@@ -1,0 +1,514 @@
+# AI 协作约束模板：Vue + Node.js + MySQL
+
+## 0. 使用方式
+
+每次让 AI 写代码前，先发送本约束模板，再发送当前任务。
+
+如果 AI 想修改以下内容，必须先说明原因并等待确认：
+
+- 技术栈
+- 接口路径
+- 请求/响应字段
+- 数据库表结构
+- 依赖包
+- 目录结构
+- 统一返回格式
+- 鉴权方式
+
+---
+
+## 1. 项目信息
+
+- 项目名：{{项目名}}
+- 项目类型：{{课程设计 / 练手 / Demo / 非生产项目}}
+- 当前模块：{{用户 / 文章 / 订单 / 评论 ...}}
+- 仓库根目录：{{project}}
+- 目标：能本地运行，前后端能联调，不要求生产级高可用。
+
+---
+
+## 2. 技术栈锁定
+
+### 前端
+
+- Vue 3
+- Vite
+- JavaScript，不使用 TypeScript，除非明确要求
+- Vue Router 4
+- Pinia
+- Axios
+- UI 库：Element Plus，如未安装必须先询问，不要擅自引入
+- 包管理器：npm
+
+### 后端
+
+- Node.js 24.20.0
+- Express
+- JavaScript，ESM 模块
+- Prisma ORM
+- MySQL
+- JWT：jsonwebtoken
+- 密码加密：bcryptjs
+- 参数校验：zod
+- 跨域：cors
+- 环境变量：dotenv
+- 包管理器：npm
+
+### 数据库
+
+- MySQL 8.0.46
+- 字符集：utf8mb4
+- 排序规则：utf8mb4_unicode_ci
+
+### 禁止事项
+
+- 禁止擅自更换框架、ORM、数据库。
+- 禁止擅自升级依赖大版本。
+- 禁止擅自引入新依赖。
+- 禁止修改接口契约。
+- 禁止修改数据库 schema。
+- 禁止把密码明文存入数据库。
+- 禁止生成真实密钥、真实密码、真实 token。
+- 禁止把 API Key、数据库密码等敏感信息写进代码。
+
+---
+
+## 3. 目录结构
+
+project/                              # 项目根目录，所有代码和文档都放这里
+
+├─ frontend/                          # 前端项目，Vue 3 + Vite
+
+│  ├─ src/                            # 前端源码
+
+│  │  ├─ api/                         # 所有后端接口请求集中放这里
+
+│  │  │  ├─ request.js                # axios 实例：baseURL、token拦截、统一错误处理
+
+│  │  │  ├─ auth.js       	# 认证接口：登录、注册、登出、当前用户
+
+│  │  │  └─ user.js       	# 用户管理接口：列表、详情、增删改
+
+│  │  ├─ router/                      # Vue Router 路由配置
+
+│  │  ├─ stores/                      # Pinia 状态仓库，如用户登录状态
+
+│  │  ├─ views/                       # 页面级组件，如登录页、用户列表页
+
+│  │  ├─ components/                  # 可复用小组件，如表格、弹窗、表单
+
+│  │  ├─ utils/                       # 前端工具函数，如时间格式化、校验
+
+│  │  ├─ App.vue                      # Vue 根组件，通常放 router-view
+
+│  │  └─ main.js                      # 前端入口：创建 Vue、挂载 Pinia/Router
+
+│  ├─ .env.development                # 前端开发环境变量，如 VITE_API_BASE_URL
+
+│  └─ package.json                    # 前端依赖和 npm 脚本
+
+├─ backend/                           # 后端项目，Node.js + Express
+
+│  ├─ src/                            # 后端源码
+
+│  │  ├─ routes/                      # 路由定义：URL 对应哪个 controller
+
+│  │  ├─ controllers/                 # 控制器：接收请求、取参数、调 service、返回响应
+
+│  │  ├─ services/                    # 业务逻辑：真正处理业务，调用 Prisma
+
+│  │  ├─ middlewares/                 # 中间件：鉴权、错误处理、日志等
+
+│  │  ├─ utils/                       # 后端工具：统一响应、JWT、密码等
+
+│  │  ├─ prisma/
+
+│  │  │  └─ schema.prisma             # Prisma 数据库模型：表、字段、关系
+
+│  │  ├─ app.js                       # 创建 Express app，注册中间件和路由
+
+│  │  └─ server.js                    # 启动后端服务，监听端口
+
+│  ├─ .env                            # 后端环境变量：数据库密码、JWT_SECRET、端口
+
+│  └─ package.json                    # 后端依赖和 npm 脚本
+
+├─ docs/                              # 项目文档，也是给 AI 看的共享契约
+
+│  ├─ AI_CONTRACT.md                  # AI 协作约束：技术栈、规范、禁止事项
+
+│  ├─ API.md                          # 接口文档：路径、参数、返回格式
+
+│  └─ DB.md                           # 数据库文档：表结构、字段说明
+
+└─ README.md                          # 项目总说明：怎么安装、启动、使用
+
+---
+
+## 4. 端口与环境变量
+
+### 前端
+
+- 开发端口：5173
+- 环境变量文件：`frontend/.env.development`
+
+```env
+VITE_API_BASE_URL=http://localhost:3000/api
+```
+
+### 后端
+
+- 开发端口：3000
+- 环境变量文件：`backend/.env`
+
+```env
+PORT=3000
+DATABASE_URL="mysql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:3306/{{DB_NAME}}"
+SHADOW_DATABASE_URL="mysql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:3306/{{DB_NAME}}_shadow"
+JWT_SECRET="{{JWT_SECRET}}"
+JWT_EXPIRES_IN=7d
+CORS_ORIGIN=http://localhost:5173
+```
+
+### MySQL
+
+- 端口：3306
+- 主库名：{{DB_NAME}}
+- Shadow 库名：{{DB_NAME}}\_shadow
+- 项目账号：{{DB_USER}}（项目专用账号，不使用 root）
+- 权限范围：仅 {{DB_NAME}}.* 和 {{DB_NAME}}\_shadow.*
+
+---
+
+## 5. 接口总约定
+
+- 接口前缀：`/api`
+- 风格：RESTful
+- 数据格式：JSON
+- 请求编码：UTF-8
+- 鉴权方式：`Authorization: Bearer <token>`
+- 前端所有请求必须通过 `src/api/request.js` 的 axios 实例。
+- 组件内禁止直接写完整 URL。
+- 后端所有接口必须返回统一格式。
+- 后端必须校验入参，不能信任前端传参。
+
+### 常见路径规范
+
+```text
+POST   /api/auth/register      注册
+POST   /api/auth/login         登录
+GET    /api/auth/me            当前用户
+GET    /api/users              用户列表
+GET    /api/users/:id          用户详情
+POST   /api/users              新增用户
+PUT    /api/users/:id          更新用户
+DELETE /api/users/:id          删除用户
+```
+
+---
+
+## 6. 统一响应格式
+
+### 成功
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {}
+}
+```
+
+### 失败
+
+```json
+{
+  "code": 40000,
+  "message": "参数错误",
+  "data": null
+}
+```
+
+### HTTP 状态码
+
+- 200：成功
+- 201：创建成功
+- 400：请求参数错误
+- 401：未登录或 token 无效
+- 403：无权限
+- 404：资源不存在
+- 409：资源冲突
+- 500：服务器错误
+
+### 业务码
+
+```text
+0       成功
+40000   参数错误
+40100   未登录或 token 无效
+40300   无权限
+40400   资源不存在
+40900   资源冲突
+50000   服务器错误
+```
+
+---
+
+## 7. 分页、排序、搜索
+
+### 请求参数
+
+```text
+page=1
+pageSize=10
+keyword=
+sortBy=createdAt
+order=desc
+```
+
+### 响应 data
+
+```json
+{
+  "list": [],
+  "page": 1,
+  "pageSize": 10,
+  "total": 100,
+  "totalPages": 10
+}
+```
+
+### 约束
+
+- `page` 默认 1。
+- `pageSize` 默认 10，最大 100。
+- `order` 只能是 `asc` 或 `desc`。
+- `sortBy` 必须使用后端白名单，不能直接拼 SQL。
+
+---
+
+## 8. 鉴权与密码
+
+- 登录成功后返回：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "token": "{{JWT_TOKEN}}",
+    "user": {
+      "id": 1,
+      "username": "demo",
+      "nickname": "Demo"
+    }
+  }
+}
+```
+
+- JWT payload 至少包含：
+
+```json
+{
+  "userId": 1,
+  "username": "demo"
+}
+```
+
+- JWT 过期时间：7d。
+- 密码必须用 bcryptjs 加密，禁止明文。
+- 前端登录后把 token 存入 Pinia 和 localStorage。
+- 前端 axios 请求拦截器自动加：
+
+```text
+Authorization: Bearer <token>
+```
+
+- 后端鉴权中间件解析 token，失败返回 40100。
+
+---
+
+## 9. 数据库约定
+
+### 命名
+
+- 表名：复数 snake_case，例如 `users`、`articles`。
+- 字段名：snake_case，例如 `created_at`、`updated_at`。
+- Prisma 模型：PascalCase，例如 `User`。
+- Prisma 字段：camelCase，映射到数据库 snake_case。
+- API JSON 字段：camelCase，例如 `createdAt`、`updatedAt`。
+
+### 通用字段
+
+每张业务表建议包含：
+
+```prisma
+id        Int      @id @default(autoincrement())
+createdAt DateTime @default(now()) @map("created_at")
+updatedAt DateTime @updatedAt @map("updated_at")
+deletedAt DateTime? @map("deleted_at")
+```
+
+### 用户表示例
+
+```prisma
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique @db.VarChar(50)
+  password  String   @db.VarChar(255)
+  nickname  String?  @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@map("users")
+}
+```
+
+### 时间
+
+- 数据库存 UTC。
+- API 返回 ISO 8601 字符串，例如 `2026-09-27T10:00:00.000Z`。
+- 前端负责转成本地时间显示。
+
+### 删除
+
+- 默认软删除：设置 `deletedAt`。
+- 查询默认过滤 `deletedAt = null`。
+- 如需硬删除，必须明确说明。
+
+---
+
+## 10. 前端约束
+
+- Vue 组件使用 `<script setup>`。
+- 页面放 `src/views`。
+- 公共组件放 `src/components`。
+- API 请求放 `src/api`。
+- 状态放 `src/stores`。
+- 路由放 `src/router`。
+- 工具函数放 `src/utils`。
+- 所有请求使用 `src/api/request.js`。
+- axios 响应拦截器统一处理：
+  - `code === 0`：返回 `data`
+  - `code !== 0`：抛出错误并提示 `message`
+  - 401：清除 token，跳转登录页
+- 表单必须有基本校验。
+- 不要直接操作 DOM，除非没有 Vue 方案。
+- 样式使用 `<style scoped>`。
+- 不要引入新依赖，除非用户明确同意。
+
+---
+
+## 11. 后端约束
+
+- 入口：`src/server.js`
+- Express app：`src/app.js`
+- 路由：`src/routes`
+- 控制器：`src/controllers`
+- 业务逻辑：`src/services`
+- 中间件：`src/middlewares`
+- Prisma：`prisma/schema.prisma`
+- 所有接口必须 try/catch 或统一错误中间件。
+- 所有成功/失败必须走统一响应工具。
+- 所有入参必须用 zod 校验。
+- 所有数据库操作必须用 Prisma，禁止手拼 SQL。
+- 所有需要登录的接口必须经过鉴权中间件。
+- 分页查询必须限制 `pageSize <= 100`。
+- 错误日志至少打印 `message` 和 `stack`。
+
+---
+
+## 12. 代码规范
+
+- 缩进：2 空格。
+- 字符串：单引号。
+- 语句结尾：分号。
+- 文件名：
+  - 前端组件：PascalCase，例如 `UserList.vue`
+  - 前端 JS：camelCase，例如 `request.js`
+  - 后端路由：`user.routes.js`
+  - 后端控制器：`user.controller.js`
+  - 后端服务：`user.service.js`
+- 函数命名：camelCase。
+- 常量命名：UPPER_SNAKE_CASE。
+- 不要输出省略号，例如 `// ...`。
+- 要求输出完整文件内容。
+- 不要重写无关文件。
+- 不要修改接口契约。
+- 如果必须改契约，先说明原因并等待确认。
+
+---
+
+## 13. AI 行为约束
+
+当 AI 生成代码时，必须遵守：
+
+1. 只生成当前任务要求的文件。
+2. 输出完整文件内容，不要只给片段。
+3. 不要擅自新增依赖。
+4. 不要擅自升级依赖。
+5. 不要擅自改数据库表结构。
+6. 不要擅自改 API 路径和字段。
+7. 不要生成真实密钥、密码、token。
+8. 不要忽略错误处理。
+9. 不要忽略参数校验。
+10. 不要使用 `SELECT *` 手拼 SQL。
+11. 不要在前端组件里直接写接口完整 URL。
+12. 如果信息不足，先列出需要确认的问题，不要胡乱假设。
+13. 如果任务很大，先给文件清单，再按文件生成。
+14. 如果修改了公共文件，必须说明影响范围。
+15. 如果发现前后端契约冲突，以 `docs/API.md` 为准。
+
+---
+
+## 14. 当前任务模板
+
+每次开新 AI 会话，贴完本约束后，再贴下面这段：
+
+```text
+当前任务：{{一句话说明要做什么}}
+
+所属模块：{{模块名}}
+
+需要生成/修改的文件：
+- {{文件路径 1}}
+- {{文件路径 2}}
+
+具体要求：
+- {{要求 1}}
+- {{要求 2}}
+- {{要求 3}}
+
+不要做：
+- 不要改接口契约
+- 不要改数据库 schema
+- 不要引入新依赖
+- 不要重写无关文件
+
+输出要求：
+- 输出完整文件内容
+- 每个文件用代码块包裹
+- 文件路径写在代码块上方
+- 不要省略代码
+```
+
+---
+
+## 15. 验收清单
+
+一个模块完成后，必须满足：
+
+- [ ] 前端能启动：`npm run dev`
+- [ ] 后端能启动：`npm run dev`
+- [ ] MySQL 能连接
+- [ ] Prisma 能迁移：`npx prisma migrate dev`
+- [ ] 接口路径符合 `docs/API.md`
+- [ ] 请求/响应字段符合本约束
+- [ ] 登录能拿到 token
+- [ ] 鉴权接口能识别 token
+- [ ] 前端能成功请求后端
+- [ ] 错误返回统一格式
+- [ ] 密码不是明文
+- [ ] 分页参数有边界限制
+- [ ] README 写清楚启动步骤
