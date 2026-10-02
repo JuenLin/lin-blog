@@ -84,6 +84,18 @@ export class Session {
     return file;
   }
 
+  // 全页截图：captureBeyondViewport 不带 clip，Chrome 自动截取整页（含视口外的底部区块，如上/下一篇导航）。
+  // 已验证在本环境稳定产出全页图（739x965 级别），比「视口截图」或「按元素 clip」更能完整呈现导航区。
+  async screenshotFull(file) {
+    const r = await this.send('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+    });
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(file, Buffer.from(r.data, 'base64'));
+    return file;
+  }
+
   close() {
     try {
       this.ws.close();

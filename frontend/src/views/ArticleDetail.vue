@@ -60,16 +60,38 @@
         <CommentEditor :article-id="articleId" @created="handleCommentCreated" />
 
         <CommentList ref="commentListRef" :article-id="articleId" class="article-detail-comments" />
+
+        <!-- ③ 上一篇/下一篇：拉 100 篇有序窗口（createdAt desc），定位当前篇取相邻两条。
+             窗口内「上=更旧（下一条）、下=更新（上一条）」；边界时对应链接禁用；
+             当前篇超出 100 篇窗口则两条都禁用。导航用 router-link 做客户端跳转。 -->
+        <nav v-if="neighborWindow.length" class="article-nav" aria-label="文章导航">
+          <router-link
+            :to="prevArticle ? { name: 'article-detail', params: { id: prevArticle.id } } : route.fullPath"
+            class="article-nav-link article-nav-prev"
+            :class="{ 'is-disabled': !prevArticle }"
+          >
+            <span class="article-nav-dir">← 上一篇 · 更旧</span>
+            <span class="article-nav-title">{{ prevLabel }}</span>
+          </router-link>
+          <router-link
+            :to="nextArticle ? { name: 'article-detail', params: { id: nextArticle.id } } : route.fullPath"
+            class="article-nav-link article-nav-next"
+            :class="{ 'is-disabled': !nextArticle }"
+          >
+            <span class="article-nav-dir">下一篇 · 更新 →</span>
+            <span class="article-nav-title">{{ nextLabel }}</span>
+          </router-link>
+        </nav>
       </template>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { deleteArticle, getArticle } from '../api/article.js';
+import { deleteArticle, getArticle, listArticles } from '../api/article.js';
 import { formatTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
@@ -86,6 +108,44 @@ const loading = ref(true);
 const notFound = ref(false);
 const article = ref(null);
 const commentListRef = ref(null);
+
+// ③ 上一篇/下一篇：拉最近 100 篇有序窗口（createdAt desc），前端定位当前篇取相邻两条。
+// 窗口内「上=更旧（index+1）、下=更新（index-1）」；边界或超出窗口则对应链接禁用。
+const neighborWindow = ref([]);
+const currentIndex = computed(() =>
+  neighborWindow.value.findIndex((a) => Number(a.id) === articleId.value)
+);
+const inWindow = computed(() => currentIndex.value >= 0);
+
+const prevArticle = computed(() => {
+  const i = currentIndex.value;
+  if (i < 0 || i >= neighborWindow.value.length - 1) return null;
+  return neighborWindow.value[i + 1];
+});
+const nextArticle = computed(() => {
+  const i = currentIndex.value;
+  if (i <= 0) return null;
+  return neighborWindow.value[i - 1];
+});
+
+const prevLabel = computed(() => {
+  if (prevArticle.value) return prevArticle.value.title;
+  return inWindow.value ? '已是最旧（窗口内）' : '超出 100 篇窗口，不可用';
+});
+const nextLabel = computed(() => {
+  if (nextArticle.value) return nextArticle.value.title;
+  return inWindow.value ? '已是最新（窗口内）' : '超出 100 篇窗口，不可用';
+});
+
+async function loadNeighbors() {
+  try {
+    const res = await listArticles({ pageSize: 100, sortBy: 'createdAt', order: 'desc' });
+    neighborWindow.value = (res && res.list) || [];
+  } catch {
+    // 邻居列表拉取失败时不影响正文阅读，只是不显示上一篇/下一篇。
+    neighborWindow.value = [];
+  }
+}
 
 // F7：页面标题随文章变化。详情页加载完把标题设成「文章标题 - 站点名」，
 // 离开时复原（避免返回列表后浏览器标签还停在旧文章标题上）。
@@ -118,6 +178,7 @@ const isAuthor = computed(() => {
 async function load() {
   loading.value = true;
   notFound.value = false;
+  neighborWindow.value = []; // 重置，避免从上一篇/下一篇跳转时残留旧文章的邻居
 
   try {
     article.value = await getArticle(route.params.id);
@@ -130,6 +191,9 @@ async function load() {
   } finally {
     loading.value = false;
   }
+
+  // 邻居列表独立拉取（100 篇窗口），失败不影响正文。
+  loadNeighbors();
 }
 
 function goHome() {
@@ -171,6 +235,12 @@ function handleCommentCreated() {
 }
 
 onMounted(load);
+
+// ③：从上一篇/下一篇用 router-link 客户端跳转时，同组件被复用，必须重新加载。
+watch(
+  () => route.params.id,
+  () => load()
+);
 
 // F7：离开详情页时把标题复原，避免浏览器标签残留旧文章标题。
 onBeforeUnmount(() => {
@@ -221,5 +291,63 @@ onBeforeUnmount(() => {
 .article-detail-missing-foot {
   margin-top: 16px;
   text-align: center;
+}
+
+/* ③ 上一篇/下一篇导航 */
+.article-nav {
+  display: flex;
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.article-nav-link {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--bg-subtle);
+  border-radius: 12px;
+  background: var(--bg-card);
+  text-decoration: none;
+  color: var(--text-regular);
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  min-width: 0;
+}
+
+.article-nav-link:hover:not(.is-disabled) {
+  border-color: var(--el-color-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(var(--brand-rgb), 0.18);
+}
+
+.article-nav-link.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.article-nav-next {
+  text-align: right;
+  align-items: flex-end;
+}
+
+.article-nav-dir {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.article-nav-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.article-nav-link.is-disabled .article-nav-title {
+  color: var(--text-faint);
+  font-weight: 400;
 }
 </style>
