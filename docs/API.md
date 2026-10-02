@@ -185,6 +185,7 @@ Authorization: Bearer <token>
 - 删除为软删除（设置 `deletedAt`），列表与详情自动过滤已删除数据（契约 §9 删除小节）。
 - 分页沿用契约 §7：入参 `page` / `pageSize` / `sortBy` / `order`，返回 `{ list, page, pageSize, total, totalPages }`。
 - `sortBy` 白名单：文章 `createdAt` / `updatedAt` / `id`，默认 `createdAt desc`；评论 `createdAt` / `id`，默认 `createdAt desc`。
+- 文章列表支持 `keyword` 模糊搜索，命中范围为**标题 + 正文**（不含作者昵称），详见 `GET /api/articles`。
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname`）返回，不依赖用户接口。
@@ -262,6 +263,15 @@ Authorization: Bearer <token>
 | pageSize | number | 否 | 默认 10，最大 100 |
 | sortBy | string | 否 | 白名单 `createdAt` / `updatedAt` / `id`，默认 `createdAt` |
 | order | string | 否 | `asc` 或 `desc`，默认 `desc` |
+| keyword | string | 否 | 标题 + 正文模糊搜索；trim 后最长 50 字符，**空串视为不传**（等价于不搜索） |
+
+`keyword` 语义（三条，逐条都有验收断言）：
+
+- **匹配范围**：对 `title` 与 `content` 做 `LIKE '%keyword%'` 模糊匹配，任一命中即返回该文章（`OR`）。**不匹配作者昵称 / 用户名** —— 作者维度筛选不在本期范围。
+- **空串视为不传**：`keyword=`（空串）或只含空白字符时，等价于不传该参数，返回全量列表而非报错。前端清空搜索框时会发空串，不做这个容错会 400。
+- **超长报错**：trim 后超过 50 字符返回 `400 / 40000`，message 为 `keyword 最多 50 个字符`。
+- 与 `page` / `pageSize` / `sortBy` / `order` **正交**：搜索结果同样参与分页与排序，`total` 是命中总数而非全库总数。
+- 已软删除的文章不参与搜索（与列表、详情口径一致）。
 
 成功：HTTP 200
 
@@ -295,7 +305,7 @@ Authorization: Bearer <token>
 
 `summary` 为原始 `content` 截取，可能包含 Markdown 标记，前端负责渲染时清理。
 
-失败：400 / 40000（分页参数非法）。
+失败：400 / 40000（分页参数非法，或 `keyword` 超长 / 格式非法）。
 
 ---
 
@@ -464,9 +474,11 @@ Authorization: Bearer <token>
 
 ### MVP 范围外（明确不做）
 
-点赞、收藏、标签、搜索、评论删除、「只看我的文章」筛选。
+点赞、收藏、标签、评论删除、「只看我的文章」筛选。
 
-> 说明：「只看我的文章」不涉及表结构变更，将来做「我的博客」页时，在 `GET /api/articles` 加一个可选 `authorId` 查询参数即可。
+> 说明 1：「只看我的文章」不涉及表结构变更，将来做「我的博客」页时，在 `GET /api/articles` 加一个可选 `authorId` 查询参数即可。
+>
+> 说明 2：**搜索已实现**（`GET /api/articles` 的 `keyword` 参数，命中标题 + 正文），已从上表移出。搜索**不含作者昵称**，也不做标签 / 分类聚合搜索。
 
 ---
 

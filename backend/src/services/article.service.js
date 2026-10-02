@@ -1,6 +1,7 @@
 import prisma from '../utils/prisma.js';
 import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
+import { parseKeyword } from '../validators/article.validator.js';
 import { CODE, httpError } from '../utils/response.js';
 
 // docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id，默认 createdAt desc。
@@ -96,7 +97,8 @@ export async function createArticle(payload, authorId) {
 /**
  * 博客广场列表，无需登录。
  *
- * @param {object} query Express 的 req.query，分页与排序由 parsePagination 校验
+ * @param {object} query Express 的 req.query，分页与排序由 parsePagination 校验，
+ *                      keyword（搜索）由 parseKeyword 解析
  */
 export async function listArticles(query) {
   const pagination = parsePagination(query, {
@@ -104,7 +106,19 @@ export async function listArticles(query) {
     defaultSort: 'createdAt',
   });
 
-  const where = whereNotDeleted();
+  // 搜索：标题 OR 正文 命中即返回（docs/API.md）。空串在 parseKeyword 里已转成 null，
+  // 即「不传」，所以这里只在真有 keyword 时才叠加 OR 条件。
+  // 不搜作者昵称 —— 作者维度筛选不在本期范围。
+  const keyword = parseKeyword(query);
+  const searchWhere = keyword
+    ? {
+        OR: [{ title: { contains: keyword } }, { content: { contains: keyword } }],
+      }
+    : {};
+
+  // whereNotDeleted 内部是 { ...where, deletedAt: null }，
+  // 所以 OR 条件与软删除过滤是 AND 关系：软删除的文章搜不到（docs/API.md 语义第 5 条）。
+  const where = whereNotDeleted(searchWhere);
 
   // 列表要生成 summary，必须取 content。pageSize 上限 100，100 条 MEDIUMTEXT 对 MVP 可接受。
   const [rows, total] = await Promise.all([
