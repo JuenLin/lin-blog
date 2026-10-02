@@ -55,6 +55,18 @@
 
         <AuthorCard v-if="article.author" :author="article.author" class="article-detail-author" />
 
+        <!-- ② 作者其他文章：复用 ③ 已拉的 100 篇窗口，前端过滤同作者（排除当前篇）取前 5 条，复用 ArticleCard。
+             窗口内该作者仅当前篇 / 无其他篇时，整块不渲染。 -->
+        <section v-if="otherArticles.length" class="author-others">
+          <h3 class="author-others-title">作者其他文章</h3>
+          <ArticleCard
+            v-for="a in otherArticles"
+            :key="a.id"
+            :article="a"
+            class="author-others-item"
+          />
+        </section>
+
         <el-divider />
 
         <CommentEditor :article-id="articleId" @created="handleCommentCreated" />
@@ -98,6 +110,7 @@ import ArticleContent from '../components/ArticleContent.vue';
 import AuthorCard from '../components/AuthorCard.vue';
 import CommentEditor from '../components/CommentEditor.vue';
 import CommentList from '../components/CommentList.vue';
+import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 
 const route = useRoute();
@@ -135,6 +148,16 @@ const prevLabel = computed(() => {
 const nextLabel = computed(() => {
   if (nextArticle.value) return nextArticle.value.title;
   return inWindow.value ? '已是最新（窗口内）' : '超出 100 篇窗口，不可用';
+});
+
+// ② 作者其他文章：复用 ③ 已加载的 100 篇窗口，过滤同作者且排除当前篇，取前 5 条复用 ArticleCard。
+// 窗口内该作者仅当前篇 / 无其他篇时返回空数组，区块 v-if 不渲染。
+const otherArticles = computed(() => {
+  const author = article.value && article.value.author;
+  if (!author) return [];
+  return neighborWindow.value
+    .filter((a) => a.author && a.author.id === author.id && Number(a.id) !== articleId.value)
+    .slice(0, 5);
 });
 
 async function loadNeighbors() {
@@ -291,6 +314,18 @@ onBeforeUnmount(() => {
 .article-detail-missing-foot {
   margin-top: 16px;
   text-align: center;
+}
+
+/* ② 作者其他文章 */
+.author-others {
+  margin-top: 24px;
+}
+
+.author-others-title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-strong);
 }
 
 /* ③ 上一篇/下一篇导航 */

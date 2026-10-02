@@ -232,6 +232,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-dark.mjs [截图目录]` | ⑤ 暗色模式：切换按钮可用、变量成对翻转、EP 组件（输入框/主按钮）暗色下无白底白字、刷新保持选择（22/22 通过） |
 | `node scripts/acceptance/probe-profile.mjs [截图目录]` | ① 个人主页：作者名渲染、按 author.id 前端过滤、分页 total 取过滤后真实条数、空态复用 EmptyState |
 | `node scripts/acceptance/probe-prevnext.mjs [截图目录]` | ③ 上一篇/下一篇：拉 100 篇窗口定位当前篇、上=更旧(下一条)/下=更新(上一条)、边界禁用、超出窗口两条都禁用（4 场景共 12 项） |
+| `node scripts/acceptance/probe-author-others.mjs [截图目录]` | ② 作者其他文章：复用 ③ 100 篇窗口、过滤同作者排除当前篇取前 min(5, 窗口内篇数-1)、复用 ArticleCard、窗口内该作者仅当前篇时整块不渲染（2 场景共 5 项） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 
