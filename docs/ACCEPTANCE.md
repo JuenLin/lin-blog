@@ -236,6 +236,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-card-visual.mjs [截图目录]` | ④ 卡片视觉丰富：元数据 chip 化（作者/时间/阅读时长）、卡片按 summary 估算时长且值算对、summary 为空不渲染时长 chip、详情页按 content 算精确值、chip 令牌生效（胶囊圆角/非透明底/无白底白字）、暗色下 chip 底与字成对翻转（4 场景共 14 项） |
 | `node scripts/acceptance/probe-entries.mjs [截图目录]` | 第六批 入口：`UserDropdown` 我的主页（在退出登录上方 / 跳转 id 正确 / 保留退出登录）、卡片作者可点且**不误触发**进详情、点标题仍进详情、AuthorCard 整卡可点、评论者可点、UserProfile 标题为「XXX 的主页」且无编辑资料/关注按钮（16 项） |
 | `node scripts/acceptance/probe-search.mjs [报告目录]` | 第二步 搜索 `GET /api/articles?keyword=`：命中标题 / 命中正文 / 搜不到 / 不匹配作者昵称、空串与纯空白不 400、超 50 字符 400（边界 50 通过）、搜索下分页两页不重叠 / asc-desc 反序 / sortBy 白名单仍生效 / 不传 keyword 行为不变、软删除搜不到、重复传值 400、首尾空格 trim（**纯 API，不启 Chrome**，共 16 项） |
+| `node scripts/acceptance/probe-search-ui.mjs [截图目录]` | 第七批 前端搜索框：未登录时搜索框渲染在 AppHeader 内、回车触发且 URL 带 keyword、真实请求带 keyword（抓 Network）、页面结果与后端命中 id 集合逐一对齐、刷新后搜索态保留、切 Tab 仍带 keyword、第 2 页状态下搜索 page 重置为 1、搜不到时独立文案 + 清空搜索按钮且不误显示「还没有文章」、点清空恢复全量、详情页/个人主页搜索框可见且回车跳回首页带 keyword、卡片与详情页两处阅读时长 chip 悬停出「预计阅读时长」（含暗色，共 20 项） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 

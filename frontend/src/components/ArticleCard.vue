@@ -29,8 +29,15 @@
 
       <span class="article-chip">{{ formatTime(article.createdAt) }}</span>
 
-      <!-- 阅读时长按列表接口给的 summary 估算（详情页才有全文，那里是精确值） -->
-      <span v-if="readingTime" class="article-chip article-chip-accent">{{ readingTime }}</span>
+      <!-- 阅读时长按列表接口给的 summary 估算（详情页才有全文，那里是精确值）。
+           tooltip 解释这个数字的来历 —— 光看「3 分钟」容易被当成发布时间。 -->
+      <el-tooltip
+        v-if="readingTime"
+        content="预计阅读时长"
+        placement="top"
+      >
+        <span class="article-chip article-chip-accent article-chip-time">{{ readingTime }}</span>
+      </el-tooltip>
     </div>
 
     <h2 class="article-title">{{ article.title }}</h2>
@@ -174,6 +181,12 @@ function goToAuthor() {
   background: var(--chip-bg-accent);
   border-color: var(--chip-border-accent);
   color: var(--chip-text-accent);
+}
+
+/* el-tooltip 会把 chip 包在自己的 span 里，这里补一条 cursor 让它看起来可解释。
+   chip 的其余样式仍由 .article-chip 提供，这里只做鼠标形态。 */
+.article-chip-time {
+  cursor: help;
 }
 
 .article-avatar {

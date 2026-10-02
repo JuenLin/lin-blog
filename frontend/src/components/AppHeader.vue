@@ -3,6 +3,10 @@
     <div class="app-header-inner">
       <router-link class="app-logo" :to="{ name: 'home' }">workbuddy</router-link>
 
+      <!-- ⑦ 搜索框：全站常驻。放头部而不是 Home 内部，详情页 / 个人主页 / 写文章页都能直接搜。
+           搜索结果统一落在首页（Home.vue 读 ?keyword=），所以这里不重复放第二个输入框。 -->
+      <SearchBar />
+
       <div class="app-header-right">
         <!-- 暗色模式切换（第五步 ⑤）：不引依赖，直接切 <html>.dark 类并落 localStorage -->
         <el-button
@@ -42,6 +46,7 @@
 import { onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useUserStore } from '../stores/user.js';
+import SearchBar from './SearchBar.vue';
 import UserDropdown from './UserDropdown.vue';
 
 const route = useRoute();
@@ -102,6 +107,9 @@ function goEditor() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* ⑦ 有了搜索框这一项，space-between 会把 logo / 搜索框 / 右侧按钮均分，
+     加 gap 保证 logo 和搜索框之间不会被撑得过散。 */
+  gap: 16px;
 }
 
 .app-logo {

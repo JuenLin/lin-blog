@@ -44,8 +44,15 @@
           <span class="article-detail-dot">·</span>
           <span>{{ formatTime(article.createdAt) }}</span>
 
-          <!-- ④ 阅读时长：这里有全文 content，是精确值（卡片只有 summary，是估算值） -->
-          <span v-if="readingTime" class="article-detail-chip">{{ readingTime }}</span>
+          <!-- ④ 阅读时长：这里有全文 content，是精确值（卡片只有 summary，是估算值）。
+               tooltip 说明数字含义，避免被误读成发布时间。 -->
+          <el-tooltip
+            v-if="readingTime"
+            content="预计阅读时长"
+            placement="top"
+          >
+            <span class="article-detail-chip">{{ readingTime }}</span>
+          </el-tooltip>
 
           <!-- 编辑 / 删除只对作者本人显示，其余人看不到入口。 -->
           <template v-if="isAuthor">
@@ -322,6 +329,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
+  cursor: help;
 }
 
 .article-detail-author {

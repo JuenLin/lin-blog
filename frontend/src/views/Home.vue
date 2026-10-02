@@ -10,6 +10,15 @@
         </el-tabs>
       </div>
 
+      <!-- ⑦ 搜索状态提示条：有搜索词时明确告诉用户「正在看筛选结果」并给一个清空入口。
+           不放这里的话，用户搜到 0 结果会以为博客空了。 -->
+      <div v-if="keyword" class="home-search-tip">
+        <span class="home-search-tip-text">
+          正在搜索「<strong class="home-search-tip-kw">{{ keyword }}</strong>」，共 {{ total }} 篇
+        </span>
+        <el-button size="small" text type="primary" @click="clearKeyword">清空搜索</el-button>
+      </div>
+
       <!-- B1：骨架屏贴形 —— 骨架的外框（内边距 / 圆角 / 边框 / 阴影）跟 ArticleCard 一模一样，
            所以数据到位后只有内容在变，外框不动，不会有位移。
            B2：骨架只在「首次加载」出现；翻页 / 切 Tab 时保留旧列表（见 .home-list.is-refreshing）。 -->
@@ -29,7 +38,16 @@
       </el-skeleton>
 
       <template v-else>
-        <EmptyState v-if="!list.length" description="还没有文章，去写第一篇吧">
+        <!-- ⑦ 两种空态要分开：有搜索词 0 结果 ≠ 博客没文章。
+             混成一句话的话，用户会以为文章被清空了。 -->
+        <EmptyState
+          v-if="keyword && !list.length"
+          :description="`没有找到与「${keyword}」相关的文章`"
+        >
+          <el-button type="primary" @click="clearKeyword">清空搜索</el-button>
+        </EmptyState>
+
+        <EmptyState v-else-if="!list.length" description="还没有文章，去写第一篇吧">
           <!-- D1：空态加「写第一篇」入口；未登录时不显示（点进去也会跳登录页，不如不展示）。 -->
           <el-button v-if="userStore.isLogin" type="primary" @click="goCreate">写第一篇</el-button>
         </EmptyState>
@@ -60,8 +78,8 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { listArticles } from '../api/article.js';
 import { useUserStore } from '../stores/user.js';
@@ -76,10 +94,19 @@ import Pagination from '../components/Pagination.vue';
 // （pageSize 可能是 10 / 20，照它画会把首屏撑得很长）。
 const SKELETON_COUNT = 5;
 
+const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
 
 const activeTab = ref('createdAt');
+
+// ⑦ 搜索词：唯一数据源是 URL 上的 ?keyword=，不另存一份本地 state。
+// 这样刷新页面 / 浏览器前进后退 / 直接分享链接，行为都一致（不会出现「输入框有词但列表没筛」）。
+const keyword = computed(() => {
+  const value = route.query.keyword;
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' ? raw.trim() : '';
+});
 
 // B2：区分「首次加载」和「刷新」。首次才用骨架屏，之后一律保留旧列表。
 const initialized = ref(false);
@@ -99,6 +126,9 @@ async function load() {
       pageSize: pageSize.value,
       sortBy: activeTab.value,
       order: 'desc',
+      // ⑦ 无搜索词时传 undefined，axios 会直接不带这个参数（而不是 keyword= 空串），
+      // 对应后端「空串视为不传」的语义。
+      keyword: keyword.value || undefined,
     });
 
     list.value = data.list;
@@ -133,7 +163,22 @@ function goCreate() {
   router.push({ name: 'editor-create' });
 }
 
+// ⑦ 清空搜索：只删 keyword，保留 pageSize 等其他 query，并回到第 1 页。
+// 必须回到第 1 页 —— 搜索词变宽后原来的第 5 页可能已越界，会显示成空列表。
+function clearKeyword() {
+  const query = { ...route.query };
+  delete query.keyword;
+  router.push({ name: 'home', query });
+}
+
 onMounted(load);
+
+// ⑦ 搜索词变化（含浏览器前进后退）→ 回到第 1 页重新拉。
+// 刻意不复用 handleTabChange：那会把 activeTab 一起重置，而搜索时 Tab 排序是要保留的。
+watch(keyword, () => {
+  page.value = 1;
+  load();
+});
 </script>
 
 <style scoped>
@@ -162,7 +207,6 @@ onMounted(load);
 .home-tabs {
   flex: 0 0 auto;
 }
-
 .home-tabs :deep(.el-tabs__header) {
   margin: 0;
 }
@@ -178,6 +222,26 @@ onMounted(load);
   font-size: 24px;
   font-weight: 600;
   color: var(--text-strong);
+}
+
+/* ⑦ 搜索提示条：贴在标题下方，用主色的浅底把「当前处于筛选状态」明确说出来。 */
+.home-search-tip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px 0 16px;
+  padding: 8px 12px;
+  border: 1px solid rgba(var(--brand-rgb), 0.24);
+  border-radius: 8px;
+  background: rgba(var(--brand-rgb), 0.06);
+  font-size: 13px;
+  color: var(--text-regular);
+}
+
+.home-search-tip-kw {
+  color: var(--brand-start);
+  font-weight: 600;
 }
 
 /* B2：刷新中的旧列表 —— 变淡 + 不可点。
