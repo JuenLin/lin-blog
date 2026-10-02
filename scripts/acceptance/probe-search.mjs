@@ -22,6 +22,7 @@ const OUT = process.argv[2] || path.join('D:/tools/acceptance-shots', `search-${
 fs.mkdirSync(OUT, { recursive: true });
 
 let fx = null; // 夹具清单，结尾按 fx.all 精确回收
+const selfMade = []; // 本脚本自造的靶子文章 id（不在 fx.all 里，必须单独回收）
 const summary = [];
 const log = (label, ok, detail) => {
   summary.push({ label, ok: !!ok, detail });
@@ -78,6 +79,9 @@ try {
   const softTitle = `软删${KW_TITLE}的`;
   const softHit = await createArticle(adminToken, softTitle, '这篇稍后会被软删除。');
   if (!softHit) throw new Error('造软删除靶子失败');
+  // 三篇自造靶子必须自己回收：它们不在 fx.all 里，漏掉就会每轮往库里留 2 篇
+  // （软删那篇 deleteMany 能清掉，但可见的两篇会一直堆着）。
+  selfMade.push(titleHit.id, bodyHit.id, softHit.id);
   const delRes = await fetch(`${ARTICLES}/${softHit.id}`, {
     method: 'DELETE',
     headers: { Authorization: 'Bearer ' + adminToken },
@@ -249,7 +253,7 @@ try {
   console.log('\n[执行中断] ' + (e && e.message ? e.message : String(e)));
 } finally {
   try {
-    const r = await cleanupFixtures(fx ? fx.all : [], [MARKERS.comment]);
+    const r = await cleanupFixtures(fx ? [...fx.all, ...selfMade] : selfMade, [MARKERS.comment]);
     if (r.ok) console.log(`已清理夹具数据：文章 ${r.articles} 篇 / 评论 ${r.comments + r.marked} 条`);
   } catch {
     /* noop */

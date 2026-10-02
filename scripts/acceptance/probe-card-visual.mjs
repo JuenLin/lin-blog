@@ -120,10 +120,27 @@ try {
   let craftedBody = null;
   const fetchHandler = (m) => {
     if (m.method !== 'Fetch.requestPaused') return;
-    const url = (m.params.request && m.params.request.url) || '';
+    const p = m.params;
+    // 跨域预检要单独回 204 + CORS 头，否则真实请求会被浏览器挡掉（docs/ACCEPTANCE.md 记过这个坑）。
+    // request.js 给所有请求（含 GET）都设了 Content-Type: application/json，不是 CORS 安全值，
+    // 所以列表请求**一定**会先发 OPTIONS。若把 OPTIONS 也 fulfill 成列表体，GET 就永远不会发出，
+    // 页面表现为「Network Error + 卡片 0 张」，看起来像前端坏了。
+    if (p.request.method === 'OPTIONS') {
+      s.send('Fetch.fulfillRequest', {
+        requestId: p.requestId,
+        responseCode: 204,
+        responseHeaders: [
+          { name: 'Access-Control-Allow-Origin', value: CONFIG.frontend },
+          { name: 'Access-Control-Allow-Methods', value: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' },
+          { name: 'Access-Control-Allow-Headers', value: 'Content-Type,Authorization' },
+        ],
+      }).catch(() => {});
+      return;
+    }
+    const url = (p.request && p.request.url) || '';
     if (isListRequest(url) && craftedBody) {
       s.send('Fetch.fulfillRequest', {
-        requestId: m.params.requestId,
+        requestId: p.requestId,
         responseCode: 200,
         responseHeaders: [
           { name: 'Content-Type', value: 'application/json; charset=utf-8' },
@@ -132,7 +149,7 @@ try {
         body: Buffer.from(craftedBody, 'utf8').toString('base64'),
       }).catch(() => {});
     } else {
-      s.send('Fetch.continueRequest', { requestId: m.params.requestId }).catch(() => {});
+      s.send('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
     }
   };
   s.onEvent(fetchHandler);

@@ -115,6 +115,19 @@ try {
   let craftedBody = null;
   const fetchHandler = (m) => {
     if (m.method !== 'Fetch.requestPaused') return;
+    // 跨域预检要单独回 204 + CORS 头，否则真实请求会被浏览器挡掉（docs/ACCEPTANCE.md 记过这个坑）。
+    if (m.params.request.method === 'OPTIONS') {
+      s.send('Fetch.fulfillRequest', {
+        requestId: m.params.requestId,
+        responseCode: 204,
+        responseHeaders: [
+          { name: 'Access-Control-Allow-Origin', value: CONFIG.frontend },
+          { name: 'Access-Control-Allow-Methods', value: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' },
+          { name: 'Access-Control-Allow-Headers', value: 'Content-Type,Authorization' },
+        ],
+      }).catch(() => {});
+      return;
+    }
     const url = (m.params.request && m.params.request.url) || '';
     if (url.includes('pageSize=100') && craftedBody) {
       s.send('Fetch.fulfillRequest', {

@@ -241,3 +241,6 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 
 探针会**按住列表请求**（`Fetch.enable` + 暂不 `continueRequest`）来定格骨架屏/刷新态，再用 `fulfillRequest` 造假响应 —— 全程不动真实数据。
+
+> **用 `Fetch` 造假响应时必须单独处理 OPTIONS 预检。** `src/api/request.js` 给所有请求（含 GET）都设了 `Content-Type: application/json`，这不是 CORS 安全值，所以跨源列表请求**一定**会先发一次 OPTIONS 预检。若把 OPTIONS 也 `fulfillRequest` 成列表体、且不返回 `Access-Control-Allow-Methods` / `Access-Control-Allow-Headers`，浏览器会直接拦掉随后的真实 GET —— 页面表现为「Network Error + 卡片 0 张」，看起来像前端坏了，实际是探针自己的问题。
+> 正确写法：先按 `request.method === 'OPTIONS'` 分支回 `204` + 三个 CORS 头并 `return`，其余请求再走原来的 fulfill/continue 逻辑。`probe-card-visual` / `probe-author-others` / `probe-prevnext` / `probe-profile` 都踩过这个坑（2026-10-03 修）。
