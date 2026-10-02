@@ -1,81 +1,120 @@
 <template>
   <div class="home">
-    <div class="home-header">
-      <h1 class="home-title">workbuddy</h1>
-      <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
-    </div>
+    <div class="home-inner">
+      <div class="home-head">
+        <h1 class="home-title">博客广场</h1>
 
-    <el-card shadow="never">
-      <template #header>
-        <span>当前用户</span>
+        <el-tabs v-model="activeTab" class="home-tabs" @tab-change="handleTabChange">
+          <el-tab-pane label="最新" name="createdAt" />
+          <el-tab-pane label="最近更新" name="updatedAt" />
+        </el-tabs>
+      </div>
+
+      <el-skeleton v-if="loading" :rows="5" animated />
+
+      <template v-else>
+        <EmptyState v-if="!list.length" description="还没有文章，去写第一篇吧" />
+
+        <template v-else>
+          <ArticleCard v-for="item in list" :key="item.id" :article="item" />
+
+          <Pagination
+            v-model:page="page"
+            v-model:page-size="pageSize"
+            :total="total"
+            @change="handlePageChange"
+          />
+        </template>
       </template>
-
-      <el-descriptions v-if="userStore.user" :column="1" border>
-        <el-descriptions-item label="ID">{{ userStore.user.id }}</el-descriptions-item>
-        <el-descriptions-item label="用户名">{{ userStore.user.username }}</el-descriptions-item>
-        <el-descriptions-item label="昵称">{{ userStore.user.nickname || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="创建时间">{{ formatTime(userStore.user.createdAt) }}</el-descriptions-item>
-      </el-descriptions>
-
-      <el-empty v-else description="暂无用户信息" />
-    </el-card>
-
-    <el-alert v-if="errorMessage" class="home-alert" type="warning" :closable="false" :title="errorMessage" />
+    </div>
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { useUserStore } from '../stores/user.js';
+import { ElMessage } from 'element-plus';
+import { listArticles } from '../api/article.js';
+import ArticleCard from '../components/ArticleCard.vue';
+import EmptyState from '../components/EmptyState.vue';
+import Pagination from '../components/Pagination.vue';
 
-const router = useRouter();
-const userStore = useUserStore();
+// Tab 只保留「最新 / 最近更新」两个，对应 sortBy 白名单里的 createdAt / updatedAt
+// （docs/API.md 的 sortBy 白名单为 createdAt / updatedAt / id，越界后端返回 40000）。
+// 本期不做「热门」Tab：没有阅读量 / 点赞字段，做出来也是假的。
+const activeTab = ref('createdAt');
 
-const errorMessage = ref('');
+const list = ref([]);
+const total = ref(0);
+const page = ref(1);
+const pageSize = ref(10);
+const loading = ref(false);
 
-function formatTime(value) {
-  if (!value) {
-    return '-';
-  }
+async function load() {
+  loading.value = true;
 
-  return new Date(value).toLocaleString();
-}
-
-async function handleLogout() {
-  userStore.logout();
-  await router.push({ name: 'login' });
-}
-
-onMounted(async () => {
   try {
-    await userStore.fetchMe();
+    const data = await listArticles({
+      page: page.value,
+      pageSize: pageSize.value,
+      sortBy: activeTab.value,
+      order: 'desc',
+    });
+
+    list.value = data.list;
+    total.value = data.total;
   } catch (error) {
-    errorMessage.value = error.message;
+    // 错误提示由 request.js 拦截器统一抛出，这里只保证列表停在空态而不是卡在 loading。
+    list.value = [];
+    total.value = 0;
+    ElMessage.error(error.message);
+  } finally {
+    loading.value = false;
   }
-});
+}
+
+// 严格遵守 Pagination.vue 的约定：只在 @change 里发请求，不 watch 分页状态。
+function handlePageChange({ page: nextPage, pageSize: nextPageSize }) {
+  page.value = nextPage;
+  pageSize.value = nextPageSize;
+  load();
+}
+
+// 切 Tab 等于换排序，回到第一页：不重置的话第 3 页切 Tab 可能直接越界成空列表。
+function handleTabChange() {
+  page.value = 1;
+  load();
+}
+
+onMounted(load);
 </script>
 
 <style scoped>
 .home {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 32px 16px;
+  padding: 24px 16px 48px;
 }
 
-.home-header {
+.home-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.home-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
+  gap: 16px;
+  margin-bottom: 8px;
 }
 
 .home-title {
   margin: 0;
-  font-size: 28px;
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
 }
 
-.home-alert {
-  margin-top: 24px;
+.home-tabs {
+  margin-bottom: -8px;
 }
 </style>

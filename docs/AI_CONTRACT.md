@@ -19,10 +19,10 @@
 
 ## 1. 项目信息
 
-- 项目名：{{项目名}}
-- 项目类型：{{课程设计 / 练手 / Demo / 非生产项目}}
-- 当前模块：{{用户 / 文章 / 订单 / 评论 ...}}
-- 仓库根目录：{{project}}
+- 项目名：workbuddy
+- 项目类型：课程设计
+- 当前模块：文章 / 评论（博客 MVP）
+- 仓库根目录：work-project2
 - 目标：能本地运行，前后端能联调，不要求生产级高可用。
 
 ---
@@ -87,7 +87,11 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  │  │  ├─ auth.js       	# 认证接口：登录、注册、登出、当前用户
 
-│  │  │  └─ user.js       	# 用户管理接口：列表、详情、增删改
+│  │  │  ├─ user.js       	# 用户管理接口：列表、详情、增删改
+
+│  │  │  ├─ article.js              # 文章接口：发布、列表、详情、编辑、删除
+
+│  │  │  └─ comment.js              # 评论接口：发表、文章评论列表
 
 │  │  ├─ router/                      # Vue Router 路由配置
 
@@ -121,13 +125,17 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  │  ├─ utils/                       # 后端工具：统一响应、JWT、密码等
 
-│  │  ├─ prisma/
-
-│  │  │  └─ schema.prisma             # Prisma 数据库模型：表、字段、关系
+│  │  ├─ validators/                  # 入参校验：zod schema，按模块拆分
 
 │  │  ├─ app.js                       # 创建 Express app，注册中间件和路由
 
 │  │  └─ server.js                    # 启动后端服务，监听端口
+
+│  ├─ prisma/                         # Prisma：schema 与迁移
+
+│  │  ├─ schema.prisma                # 数据库模型：表、字段、关系
+
+│  │  └─ migrations/                  # 迁移文件，由 prisma migrate 生成
 
 │  ├─ .env                            # 后端环境变量：数据库密码、JWT_SECRET、端口
 
@@ -139,7 +147,21 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  ├─ API.md                          # 接口文档：路径、参数、返回格式
 
-│  └─ DB.md                           # 数据库文档：表结构、字段说明
+│  ├─ DB.md                           # 数据库文档：表结构、字段说明
+
+ |   ├─ CODING_STYLE.md     #代码风格约定文档
+ 
+ |   └─ ACCEPTANCE.md        #验收说明书。
+
+├─ scripts/               	               #项目级脚本目录
+
+ |   └─ acceptance/                #验收脚本目录。
+
+ |    |   ├─ run.mjs                   #验收主脚本。
+
+ |    |   ├─ cleanup.mjs           #兜底清理脚本。
+
+ |    |   └─ lib/                          #公共库目录
 
 └─ README.md                          # 项目总说明：怎么安装、启动、使用
 
@@ -195,6 +217,7 @@ CORS_ORIGIN=http://localhost:5173
 ### 常见路径规范
 
 ```text
+GET    /api/health             健康检查
 POST   /api/auth/register      注册
 POST   /api/auth/login         登录
 GET    /api/auth/me            当前用户
@@ -203,7 +226,17 @@ GET    /api/users/:id          用户详情
 POST   /api/users              新增用户
 PUT    /api/users/:id          更新用户
 DELETE /api/users/:id          删除用户
+POST   /api/articles           发布文章
+GET    /api/articles           博客广场列表
+GET    /api/articles/:id       文章详情
+PUT    /api/articles/:id       编辑文章（仅作者）
+DELETE /api/articles/:id       删除文章（仅作者，软删除）
+POST   /api/comments           发表评论
+GET    /api/articles/:id/comments   文章评论列表
 ```
+
+> 用户类接口（`/api/users`）MVP 阶段未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
+> 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 
 ---
 
@@ -408,7 +441,8 @@ model User {
 - 控制器：`src/controllers`
 - 业务逻辑：`src/services`
 - 中间件：`src/middlewares`
-- Prisma：`prisma/schema.prisma`
+- 入参校验：`src/validators`，按模块建 `xxx.validator.js`
+- Prisma：`backend/prisma/schema.prisma`
 - 所有接口必须 try/catch 或统一错误中间件。
 - 所有成功/失败必须走统一响应工具。
 - 所有入参必须用 zod 校验。
@@ -459,6 +493,15 @@ model User {
 13. 如果任务很大，先给文件清单，再按文件生成。
 14. 如果修改了公共文件，必须说明影响范围。
 15. 如果发现前后端契约冲突，以 `docs/API.md` 为准。
+16. **读取 `.env` 时只输出 key，不输出 value**（`backend/.env` 与 `backend/.env.example` 同样适用）。
+    - 确需确认连通性时，只允许输出脱敏后的 `host` / `port` / 库名 / 用户名。
+    - **密码、完整连接串、JWT 密钥一律不输出**，需要引用时用「已设置」或长度代替。
+    - 禁止用「只认识 DATABASE_URL 和 JWT_SECRET」这种白名单式脱敏：2026-10-02 就是这么把 `SHADOW_DATABASE_URL` 的密码漏进了对话记录。规则应是——**凡名字含 `PASSWORD` / `SECRET` / `TOKEN` / `KEY`，或值是连接串的，一律脱敏**。
+    - 排查配置问题的正确做法是让用户自己在本地打开 `.env` 比对，而不是把内容贴出来。
+17. 任务结束前必须停掉自己启动的后台服务（backend node server、vite dev server），释放端口。
+    2026-10-02 因遗漏此事，遗留进程占住 3000 与 5175，导致用户侧 `npm run dev` 起不来。
+18. **本机 npm 官方源不可用，`npm install` / `npm ci` / `npm view` 等所有会联网的 npm 命令必须显式加 `--registry=https://registry.npmmirror.com`**。
+    本机 `https://registry.npmjs.org` 会被解析到一个百度 HTML 页面，npm 报 `FETCH_ERROR ... invalid json response body at https://m.baidu.com/`。不加这个参数，安装必然失败（2026-10-02 实测）。
 
 ---
 
