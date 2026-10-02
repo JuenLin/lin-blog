@@ -62,18 +62,18 @@ function handleCommand(command) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--text-on-brand);
   font-size: 14px;
   font-weight: 600;
 }
 
 .user-name {
   font-size: 14px;
-  color: #303133;
+  color: var(--text-strong);
 }
 
 .user-caret {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-muted);
 }
 </style>

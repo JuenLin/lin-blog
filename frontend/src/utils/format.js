@@ -21,15 +21,16 @@ export function formatTime(value) {
   return date.toLocaleString();
 }
 
-// 头像色块的可选背景色，取自 Element Plus 的主题色系，避免出现刺眼的颜色。
+// 头像色板取自「浅色科技感」主色系（靛蓝 / 紫 / 青 / 蓝 / 墨绿），
+// 与 style.css 的设计令牌同色系，避免原先 Element Plus 默认色（含橙、大红）破坏整体调性。
 const AVATAR_COLORS = [
-  '#409eff',
-  '#67c23a',
-  '#e6a23c',
-  '#f56c6c',
-  '#909399',
-  '#8e44ad',
-  '#16a085',
+  '#4f46e5',
+  '#7c3aed',
+  '#06b6d4',
+  '#0ea5e9',
+  '#6366f1',
+  '#8b5cf6',
+  '#0d9488',
 ];
 
 /**

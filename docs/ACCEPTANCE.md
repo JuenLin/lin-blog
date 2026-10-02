@@ -190,6 +190,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 1. **Tab 切换像是没反应**：需要 ≥2 篇文章、且其中至少 1 篇被改过（改过才会让 `updatedAt` 和 `createdAt` 排序不同）。只有 1 篇文章时两个 Tab 返回完全相同的结果，正常。
 2. **长度校验触发不了**：输入框写了 `maxlength="100"`，手工输入到不了 101 字。脚本是用 JS 绕过 `maxlength` 强行赋值的。
 3. **过期/失效 token 不会立刻被拦**：前端只在收到 401 时才清 token 并跳登录。拿旧 token 能进页面，是直到请求返回 401 才被踢出。
+4. **切 Tab / 翻页后不能再用「卡片数 > 0」判断刷新完成**（第二批 B2 之后）：翻页时旧列表是**留在原地**的，卡片数一直 > 0。脚本统一改成等 `.home-list.is-refreshing` 这个刷新标记消失。以后谁再写列表相关的等待，都用这个标记，别退回数卡片。
 
 ---
 
@@ -214,9 +215,23 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 ## 7. 最近一次结果
 
-`node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-02）。
+`node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-03，第三批 F1/F2/F7/D1 + B2 进度条之后，结论不变；第四步 ⑤ 暗色模式叠加后仍是 50/50 全绿）。
 
 历史上一共出现过 2 条 FAIL，**都是脚本自己的断言写错，不是产品问题**，已修复：
 
 1. 把评论接口断言成 `/api/articles/:id/comments`，实际是顶层资源 `/api/comments`（`docs/API.md` 就是这么定的）。
 2. 把「评论总数 +1」写死成「共 2 条」，应先读发表前的总数再比 +1。
+
+### 配套的量化探针（不靠肉眼看截图）
+
+| 脚本 | 量什么 |
+| --- | --- |
+| `node scripts/acceptance/probe-styles.mjs` | 读计算样式：页面底色、卡片盒模型、主色变量、hover 位移 |
+| `node scripts/acceptance/probe-batch2.mjs [截图目录]` | B1 骨架屏与真实卡片的盒模型逐项比对；B2 刷新期间旧列表是否还在；H1 各路由是否按需加载 |
+| `node scripts/acceptance/probe-batch3.mjs [截图目录]` | F1 返回顶部按钮显隐/回顶；F2 卡片是 `<a>` 且键盘可聚焦；F7 标题随文章变+复原；D1 空态「写第一篇」按登录态显隐；B2 刷新进度条激活/变淡/隐藏 |
+| `node scripts/acceptance/probe-dark.mjs [截图目录]` | ⑤ 暗色模式：切换按钮可用、变量成对翻转、EP 组件（输入框/主按钮）暗色下无白底白字、刷新保持选择（22/22 通过） |
+| `node scripts/acceptance/probe-profile.mjs [截图目录]` | ① 个人主页：作者名渲染、按 author.id 前端过滤、分页 total 取过滤后真实条数、空态复用 EmptyState |
+| `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
+| `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
+
+探针会**按住列表请求**（`Fetch.enable` + 暂不 `continueRequest`）来定格骨架屏/刷新态，再用 `fulfillRequest` 造假响应 —— 全程不动真实数据。

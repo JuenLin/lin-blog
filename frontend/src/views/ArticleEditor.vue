@@ -3,7 +3,28 @@
     <div class="editor-inner">
       <h1 class="editor-title">{{ isEdit ? '编辑文章' : '写文章' }}</h1>
 
-      <el-skeleton v-if="loading" :rows="4" animated />
+      <!-- B1：骨架屏贴形 —— 按「标签 + 标题输入框 + 标签 + 正文大文本框 + 按钮」的真实结构画，
+           编辑页加载完就填值，骨架尺寸对得上才不会抖。 -->
+      <el-skeleton v-if="loading" animated>
+        <template #template>
+          <div class="el-skeleton__item sk-line" style="width: 56px; margin-bottom: 10px"></div>
+          <div
+            class="el-skeleton__item sk-line"
+            style="height: 32px; border-radius: var(--radius-panel); margin-bottom: 22px"
+          ></div>
+
+          <div class="el-skeleton__item sk-line" style="width: 56px; margin-bottom: 10px"></div>
+          <div
+            class="el-skeleton__item sk-line"
+            style="height: 356px; border-radius: var(--radius-panel); margin-bottom: 22px"
+          ></div>
+
+          <div class="sk-row">
+            <div class="el-skeleton__item sk-line" style="width: 72px; height: 32px; border-radius: var(--radius-panel)"></div>
+            <div class="el-skeleton__item sk-line" style="width: 72px; height: 32px; border-radius: var(--radius-panel)"></div>
+          </div>
+        </template>
+      </el-skeleton>
 
       <div v-else-if="notAllowed" class="editor-forbidden">
         <EmptyState description="只有作者本人可以编辑这篇文章" />
@@ -188,7 +209,7 @@ onMounted(load);
   margin: 0 0 20px;
   font-size: 22px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-strong);
 }
 
 .editor-forbidden-foot {

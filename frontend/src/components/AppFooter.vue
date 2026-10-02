@@ -14,8 +14,8 @@
 <style scoped>
 .app-footer {
   margin-top: 32px;
-  border-top: 1px solid #e5e4e7;
-  background: #fafafa;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
 }
 
 .app-footer-inner {
@@ -25,7 +25,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: #909399;
+  color: var(--text-muted);
   font-size: 13px;
 }
 </style>

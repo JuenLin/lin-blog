@@ -19,7 +19,7 @@ defineProps({
   word-break: break-word;
   font-size: 16px;
   line-height: 1.8;
-  color: #303133;
+  color: var(--text-strong);
   text-align: left;
 }
 </style>

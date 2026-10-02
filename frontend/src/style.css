@@ -17,6 +17,13 @@
   --brand-gradient: linear-gradient(135deg, var(--brand-start) 0%, var(--brand-end) 100%);
   --accent: #06b6d4;
 
+  /* 主色的 RGB 分量：需要半透明主色时用 rgba(var(--brand-rgb), .x)，
+   * 避免组件里再写死 79,70,229。改主色时这里要跟着改。 */
+  --brand-rgb: 79, 70, 229;
+
+  /* 品牌色 / 强调色底上的文字（头像圆底上的字等） */
+  --text-on-brand: #ffffff;
+
   /* ---------- 中性色 ---------- */
   --bg-page: #f8fafc; /* 不直接用纯白，浅灰蓝底更能托起白卡片 */
   --bg-card: #ffffff;
@@ -74,6 +81,165 @@
   --el-bg-color: var(--bg-card);
   --el-fill-color-blank: var(--bg-card);
   --el-box-shadow-light: var(--shadow-panel);
+
+  /* 骨架屏占位块（第二批 B1）：沿用 Element Plus 的 el-skeleton，
+   * 只把占位色换成设计令牌，避免 Element Plus 默认的灰跟整体调性打架。 */
+  --el-skeleton-color: var(--bg-subtle);
+  --el-skeleton-to-color: var(--border);
+}
+
+/* ==========================================================================
+ * 暗色模式（第五步 ⑤）：深空科技感。
+ * 复用同一套设计令牌，只在 html.dark 下把变量翻成深色值。
+ * 关键不变量：背景类与文字类【成对翻转】，避免出现白底白字。
+ * 切换由 AppHeader 的按钮控制（给 <html> 加 / 去 .dark 类），
+ * index.html 的 <head> 内联脚本会在首帧前读 localStorage 预置，防闪白。
+ * 覆盖说明（用户已确认）：
+ *   - 原生滚动条靠 color-scheme: dark 交给浏览器，一行解决；
+ *   - el-button link/text 的 hover 底色在暗色下改用极淡品牌叠加（rgba .08），观感差异可接受；
+ *   - 本博客用到的 Element Plus 组件全部是 CSS 变量驱动，没有组件内写死颜色，故无「上不了色」的组件。
+ * ========================================================================== */
+html.dark {
+  color-scheme: dark;
+  background: var(--bg-page);
+  color: var(--text-strong);
+
+  /* ---------- 品牌色（保持靛蓝→紫，深底上更出彩，正是要的科技感） ---------- */
+  --brand-start: #4f46e5;
+  --brand-end: #7c3aed;
+  --brand-gradient: linear-gradient(135deg, var(--brand-start) 0%, var(--brand-end) 100%);
+  --accent: #22d3ee; /* 青色提亮，深底上更跳 */
+
+  --brand-rgb: 129, 140, 248;
+  --text-on-brand: #ffffff;
+
+  /* ---------- 中性色 ---------- */
+  --bg-page: #0b1120; /* 深空蓝黑底 */
+  --bg-card: #1e293b; /* 卡片抬升一层 */
+  --bg-subtle: #243042; /* 占位 / 次级底 */
+
+  --text-strong: #e2e8f0;
+  --text-regular: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-faint: #475569;
+
+  --border: #334155;
+  --border-light: #2a3645;
+
+  /* ---------- 阴影（深底上用更深的阴影 + 品牌辉光） ---------- */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 8px 20px rgba(129, 140, 248, 0.18), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.4);
+
+  /* ---------- 动效：所有过渡统一 200ms（与浅色一致） ---------- */
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---------- 尺寸（与浅色一致，仅颜色翻转） ---------- */
+  --radius-card: 12px;
+  --radius-panel: 10px;
+
+  /* 兼容旧写法仍在引用的变量名 */
+  --text: var(--text-strong);
+  --bg: var(--bg-page);
+  --border-color: var(--border);
+
+  /* ---------- Element Plus 主题对齐（暗色镜像，变量成对翻转） ---------- */
+  --el-color-primary: var(--brand-start);
+  --el-color-primary-light-3: rgba(129, 140, 248, 0.32);
+  --el-color-primary-light-5: rgba(129, 140, 248, 0.24);
+  --el-color-primary-light-7: rgba(129, 140, 248, 0.16);
+  --el-color-primary-light-8: rgba(129, 140, 248, 0.12);
+  --el-color-primary-light-9: rgba(129, 140, 248, 0.08);
+  --el-color-primary-dark-2: #a5b4fc;
+
+  --el-color-danger: #f87171;
+
+  /* 状态色 + 其 *-light-9 背景块（暗色下 toast / alert 需要背景块才醒目，用户已确认加） */
+  --el-color-success: #4ade80;
+  --el-color-warning: #fbbf24;
+  --el-color-error: #f87171;
+  --el-color-info: #94a3b8;
+  --el-color-success-light-9: rgba(74, 222, 128, 0.12);
+  --el-color-warning-light-9: rgba(251, 191, 36, 0.12);
+  --el-color-error-light-9: rgba(248, 113, 113, 0.14);
+  --el-color-info-light-9: rgba(148, 163, 184, 0.14);
+
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border-light);
+  --el-border-color-extra-light: #1f2937;
+
+  --el-text-color-primary: var(--text-strong);
+  --el-text-color-regular: var(--text-regular);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: #64748b;
+  --el-text-color-disabled: #475569;
+
+  --el-fill-color: var(--bg-subtle);
+  --el-fill-color-light: #243042;
+  --el-fill-color-lighter: #1e293b;
+  --el-fill-color-blank: #1e293b;
+
+  --el-bg-color: #1e293b;
+  --el-bg-color-overlay: #1e293b;
+  --el-mask-color: rgba(0, 0, 0, 0.5);
+  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.4);
+
+  /* 骨架屏占位块（深底上压暗，与浅色同款思路） */
+  --el-skeleton-color: #1e293b;
+  --el-skeleton-to-color: #334155;
+}
+
+/* 主题切换时平滑过渡（只动颜色类属性，不动布局，避免影响布局断言） */
+body,
+.app-header {
+  transition:
+    background-color var(--transition-base),
+    color var(--transition-base),
+    border-color var(--transition-base);
+}
+
+/* ---------- 骨架屏占位块（B1：形状贴合真实内容，避免加载完「跳一下」） ----------
+ * 用法：容器用 .sk-* 定骨架，占位条一律带 `el-skeleton__item` 类，
+ * 这样能继承 Element Plus 的微光动画；尺寸再用行内 style 或下面这组类调。
+ * 之所以放全局而不是各组件 scoped：4 个页面共用同一套占位形状，写一份就够。
+ */
+.sk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sk-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.sk-line {
+  height: 12px;
+  border-radius: 6px;
+}
+
+.sk-line-lg {
+  height: 20px;
+  border-radius: 6px;
+}
+
+/* 卡片骨架：外形与 ArticleCard 完全一致（内边距 / 圆角 / 边框 / 阴影），
+ * 这样骨架换成真卡片时只有内容在变，外框不动，不会有位移。 */
+.sk-card {
+  padding: 18px 20px;
+  margin-bottom: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.sk-card:last-child {
+  margin-bottom: 0;
 }
 
 *,

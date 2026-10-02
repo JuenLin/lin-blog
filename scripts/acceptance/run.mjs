@@ -209,7 +209,9 @@ if (s) try {
     net = [];
     await clickText('[role="tab"], .el-tabs__item', '最近更新');
     const ok1 = await waitReq((n) => n.url.includes('sortBy=updatedAt'), 8000);
-    await waitFor(`document.querySelectorAll('.article-card').length > 0`, 8000);
+    // B2 之后切 Tab 不再整块换成骨架屏，而是保留旧列表并打上 .is-refreshing，
+    // 所以「卡片数 > 0」已经不能代表刷新完成（旧列表本来就在），必须等刷新标记消失。
+    await waitFor(`!document.querySelector('.home-list.is-refreshing')`, 8000);
     await shot('02-tab-updated');
     ok1 ? pass('A2-1', '切「最近更新」发出 sortBy=updatedAt', '已捕获请求') : fail('A2-1', '切「最近更新」发出 sortBy=updatedAt', '8 秒内未捕获');
     const ft1 = await firstTitle();
@@ -220,7 +222,7 @@ if (s) try {
     net = [];
     await clickText('[role="tab"], .el-tabs__item', '最新', true);
     const ok2 = await waitReq((n) => n.url.includes('sortBy=createdAt'), 8000);
-    await waitFor(`document.querySelectorAll('.article-card').length > 0`, 8000);
+    await waitFor(`!document.querySelector('.home-list.is-refreshing')`, 8000);
     ok2 ? pass('A2-3', '切回「最新」发出 sortBy=createdAt', '已捕获请求') : fail('A2-3', '切回「最新」发出 sortBy=createdAt', '8 秒内未捕获');
     const ft2 = await firstTitle();
     const newestExpected = `${PREFIX} ${String(fx.batch.length).padStart(2, '0')}`;
@@ -237,7 +239,7 @@ if (s) try {
     net = [];
     await clickText('.el-pager li', '2', true);
     const okP = await waitReq((n) => n.url.includes('page=2'), 8000);
-    await waitFor(`document.querySelectorAll('.article-card').length > 0`, 8000);
+    await waitFor(`!document.querySelector('.home-list.is-refreshing')`, 8000);
     const rest = await s.evaluate(`document.querySelectorAll('.article-card').length`);
     await shot('03-page2');
     okP ? pass('A3-1', '点第 2 页发出 page=2', (net.find((n) => n.url.includes('page=2')) || {}).url || '') : fail('A3-1', '点第 2 页发出 page=2', '未捕获');

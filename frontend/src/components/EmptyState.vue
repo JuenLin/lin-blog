@@ -1,5 +1,7 @@
 <template>
-  <el-empty :description="description" :image-size="80" />
+  <el-empty :description="description" :image-size="80">
+    <slot />
+  </el-empty>
 </template>
 
 <script setup>

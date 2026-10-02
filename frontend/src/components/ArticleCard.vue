@@ -1,5 +1,7 @@
 <template>
-  <div class="article-card" @click="openDetail">
+  <!-- F2：从 div@click 改成 router-link，渲染成真正的 <a> —— 可 Tab 聚焦、回车进入，
+       键盘可达。class 会合并到 <a> 上，原来挂 @click 的 openDetail 不再需要。 -->
+  <router-link class="article-card" :to="{ name: 'article-detail', params: { id: article.id } }">
     <div class="article-card-head">
       <span class="article-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
       <span class="article-author">{{ authorName }}</span>
@@ -8,12 +10,11 @@
 
     <h2 class="article-title">{{ article.title }}</h2>
     <p class="article-summary">{{ article.summary }}</p>
-  </div>
+  </router-link>
 </template>
 
 <script setup>
 import { computed } from 'vue';
-import { useRouter } from 'vue-router';
 import { formatTime, getAvatarColor, getAvatarText } from '../utils/format.js';
 
 const props = defineProps({
@@ -22,8 +23,6 @@ const props = defineProps({
     required: true,
   },
 });
-
-const router = useRouter();
 
 const authorName = computed(() => {
   const author = props.article.author;
@@ -37,10 +36,6 @@ const authorName = computed(() => {
 
 const avatarText = computed(() => getAvatarText(authorName.value));
 const avatarColor = computed(() => getAvatarColor(authorName.value));
-
-function openDetail() {
-  router.push({ name: 'article-detail', params: { id: props.article.id } });
-}
 </script>
 
 <style scoped>
@@ -51,6 +46,7 @@ function openDetail() {
  */
 .article-card {
   position: relative;
+  display: block;
   overflow: hidden;
   margin-bottom: 12px;
   padding: 18px 20px;
@@ -60,10 +56,18 @@ function openDetail() {
   box-shadow: var(--shadow-card);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
+  color: inherit;
   transition:
     transform var(--transition-base),
     box-shadow var(--transition-base),
     border-color var(--transition-base);
+}
+
+/* F2：键盘聚焦时给出明显轮廓，让 Tab 用户知道卡片当前可进入 */
+.article-card:focus-visible {
+  outline: 2px solid var(--brand-start);
+  outline-offset: 2px;
 }
 
 /* hover 时左侧浮出一条品牌渐变竖条，是这一版科技感的主要辨识元素 */
@@ -82,7 +86,7 @@ function openDetail() {
 .article-card:hover {
   transform: translateY(-2px);
   box-shadow: var(--shadow-card-hover);
-  border-color: rgba(79, 70, 229, 0.28);
+  border-color: rgba(var(--brand-rgb), 0.28);
 }
 
 .article-card:hover::before {
@@ -112,7 +116,7 @@ function openDetail() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--text-on-brand);
   font-size: 12px;
   font-weight: 600;
 }

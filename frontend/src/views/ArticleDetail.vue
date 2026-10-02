@@ -1,7 +1,33 @@
 <template>
   <div class="article-detail">
     <div class="article-detail-inner">
-      <el-skeleton v-if="loading" :rows="6" animated />
+      <!-- B1：骨架屏贴形 —— 按「大标题 → 作者/时间 → 正文段落 → 作者卡片」的真实结构画，
+           高度和间距跟真实内容接近，数据到位后页面基本不跳动。 -->
+      <el-skeleton v-if="loading" animated>
+        <template #template>
+          <div class="el-skeleton__item sk-line-lg" style="width: 62%; height: 28px"></div>
+
+          <div class="sk-row" style="margin: 16px 0 24px">
+            <div class="el-skeleton__item sk-line" style="width: 72px"></div>
+            <div class="el-skeleton__item sk-line" style="width: 104px"></div>
+          </div>
+
+          <div
+            v-for="i in 5"
+            :key="i"
+            class="el-skeleton__item sk-line"
+            :style="{ width: [100, 96, 100, 88, 54][i - 1] + '%', height: '14px', marginBottom: '12px' }"
+          ></div>
+
+          <div class="sk-card" style="margin-top: 32px">
+            <div class="sk-row">
+              <div class="el-skeleton__item sk-avatar" style="width: 40px; height: 40px"></div>
+              <div class="el-skeleton__item sk-line" style="width: 120px"></div>
+            </div>
+            <div class="el-skeleton__item sk-line" style="width: 78%; margin-top: 12px"></div>
+          </div>
+        </template>
+      </el-skeleton>
 
       <div v-else-if="notFound" class="article-detail-missing">
         <EmptyState description="文章不存在或已被删除" />
@@ -40,7 +66,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { deleteArticle, getArticle } from '../api/article.js';
@@ -60,6 +86,14 @@ const loading = ref(true);
 const notFound = ref(false);
 const article = ref(null);
 const commentListRef = ref(null);
+
+// F7：页面标题随文章变化。详情页加载完把标题设成「文章标题 - 站点名」，
+// 离开时复原（避免返回列表后浏览器标签还停在旧文章标题上）。
+const baseTitle = document.title;
+
+function setTitle(title) {
+  document.title = title;
+}
 
 // 路由参数是字符串，接口路径用字符串即可，但 CommentList 的 articleId 是 Number prop。
 const articleId = computed(() => Number(route.params.id));
@@ -87,10 +121,12 @@ async function load() {
 
   try {
     article.value = await getArticle(route.params.id);
+    setTitle(`${article.value.title} - 博客广场`);
   } catch (error) {
     // 文章不存在 / 已被软删除，后端返回 40400；详情页不抛红，按空态处理。
     article.value = null;
     notFound.value = true;
+    setTitle('文章不存在 - 博客广场');
   } finally {
     loading.value = false;
   }
@@ -135,6 +171,11 @@ function handleCommentCreated() {
 }
 
 onMounted(load);
+
+// F7：离开详情页时把标题复原，避免浏览器标签残留旧文章标题。
+onBeforeUnmount(() => {
+  document.title = baseTitle;
+});
 </script>
 
 <style scoped>
@@ -152,7 +193,7 @@ onMounted(load);
   margin: 0 0 12px;
   font-size: 28px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-strong);
   word-break: break-word;
 }
 
@@ -162,11 +203,11 @@ onMounted(load);
   gap: 8px;
   margin-bottom: 24px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-muted);
 }
 
 .article-detail-dot {
-  color: #c0c4cc;
+  color: var(--text-faint);
 }
 
 .article-detail-author {

@@ -29,10 +29,11 @@ const avatarColor = computed(() => getAvatarColor(displayName.value));
 
 <style scoped>
 .author-card {
-  padding: 16px;
-  border: 1px solid #f0f0f0;
-  border-radius: 8px;
-  background: #fff;
+  padding: 16px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .author-card-head {
@@ -48,7 +49,7 @@ const avatarColor = computed(() => getAvatarColor(displayName.value));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--text-on-brand);
   font-size: 18px;
   font-weight: 600;
 }
@@ -56,11 +57,11 @@ const avatarColor = computed(() => getAvatarColor(displayName.value));
 .author-name {
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-strong);
 }
 
 .author-username {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-muted);
 }
 </style>
