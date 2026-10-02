@@ -233,6 +233,8 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-profile.mjs [截图目录]` | ① 个人主页：作者名渲染、按 author.id 前端过滤、分页 total 取过滤后真实条数、空态复用 EmptyState |
 | `node scripts/acceptance/probe-prevnext.mjs [截图目录]` | ③ 上一篇/下一篇：拉 100 篇窗口定位当前篇、上=更旧(下一条)/下=更新(上一条)、边界禁用、超出窗口两条都禁用（4 场景共 12 项） |
 | `node scripts/acceptance/probe-author-others.mjs [截图目录]` | ② 作者其他文章：复用 ③ 100 篇窗口、过滤同作者排除当前篇取前 min(5, 窗口内篇数-1)、复用 ArticleCard、窗口内该作者仅当前篇时整块不渲染（2 场景共 5 项） |
+| `node scripts/acceptance/probe-card-visual.mjs [截图目录]` | ④ 卡片视觉丰富：元数据 chip 化（作者/时间/阅读时长）、卡片按 summary 估算时长且值算对、summary 为空不渲染时长 chip、详情页按 content 算精确值、chip 令牌生效（胶囊圆角/非透明底/无白底白字）、暗色下 chip 底与字成对翻转（4 场景共 14 项） |
+| `node scripts/acceptance/probe-entries.mjs [截图目录]` | 第六批 入口：`UserDropdown` 我的主页（在退出登录上方 / 跳转 id 正确 / 保留退出登录）、卡片作者可点且**不误触发**进详情、点标题仍进详情、AuthorCard 整卡可点、评论者可点、UserProfile 标题为「XXX 的主页」且无编辑资料/关注按钮（16 项） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 

@@ -6,7 +6,7 @@
       <div class="profile-head">
         <span class="profile-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
         <div class="profile-meta">
-          <h1 class="profile-name">{{ displayName }}</h1>
+          <h1 class="profile-name">{{ displayName }} 的主页</h1>
           <p class="profile-sub">
             {{ total }} 篇文章<template v-if="capped"><span class="profile-cap">（仅显示最近 100 篇）</span></template>
           </p>

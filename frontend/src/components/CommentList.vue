@@ -25,10 +25,21 @@
         <div class="comment-items" :class="{ 'is-refreshing': loading }">
           <div v-for="item in list" :key="item.id" class="comment-item">
             <div class="comment-item-head">
-              <span class="comment-avatar" :style="{ backgroundColor: getAvatarColor(item.author.nickname || item.author.username) }">
-                {{ getAvatarText(item.author.nickname || item.author.username) }}
+              <!-- 入口：评论者头像+昵称可点进 /user/:id。评论区没有外层 router-link，
+                   这里不用 @click.stop 也不会误触发跳转。author 缺失时退化为纯展示（不可点）。 -->
+              <span
+                class="comment-author-link"
+                :class="{ 'is-clickable': commentAuthorId(item) != null }"
+                :role="commentAuthorId(item) != null ? 'link' : null"
+                :tabindex="commentAuthorId(item) != null ? 0 : null"
+                @click="goToProfile(commentAuthorId(item))"
+                @keydown.enter="goToProfile(commentAuthorId(item))"
+              >
+                <span class="comment-avatar" :style="{ backgroundColor: getAvatarColor(authorName(item)) }">
+                  {{ getAvatarText(authorName(item)) }}
+                </span>
+                <span class="comment-author">{{ authorName(item) }}</span>
               </span>
-              <span class="comment-author">{{ item.author.nickname || item.author.username }}</span>
               <span class="comment-time">{{ formatTime(item.createdAt) }}</span>
             </div>
 
@@ -50,6 +61,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { listComments } from '../api/comment.js';
 import { formatTime, getAvatarColor, getAvatarText } from '../utils/format.js';
 import EmptyState from './EmptyState.vue';
@@ -62,6 +74,8 @@ const props = defineProps({
   },
 });
 
+const router = useRouter();
+
 const list = ref([]);
 const total = ref(0);
 const page = ref(1);
@@ -70,6 +84,23 @@ const loading = ref(false);
 
 // B2：区分「首次加载」和「刷新」—— 骨架屏只在首次出现。
 const initialized = ref(false);
+
+// 入口：取评论者展示名 / id。API 保证内嵌 author（docs/API.md），
+// 这里仍做空值兜底，避免 author 缺失时整页报错。
+function authorName(item) {
+  const a = item && item.author;
+  return (a && (a.nickname || a.username)) || '匿名';
+}
+
+function commentAuthorId(item) {
+  const a = item && item.author;
+  return a && a.id != null ? a.id : null;
+}
+
+function goToProfile(id) {
+  if (id == null) return;
+  router.push({ name: 'user-profile', params: { id } });
+}
 
 async function load() {
   loading.value = true;
@@ -151,6 +182,26 @@ defineExpose({
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+/* 入口：评论者头像+昵称整体可点。只有 is-clickable（拿到 author.id）才给可点反馈，
+   避免「看着能点却点了没反应」。 */
+.comment-author-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--chip-radius);
+}
+
+.comment-author-link.is-clickable {
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.comment-author-link.is-clickable:hover,
+.comment-author-link.is-clickable:focus-visible {
+  background: rgba(var(--brand-rgb), 0.1);
+  outline: none;
 }
 
 .comment-avatar {
