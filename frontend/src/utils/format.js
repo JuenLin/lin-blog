@@ -62,3 +62,36 @@ export function getAvatarColor(name) {
 
   return AVATAR_COLORS[sum % AVATAR_COLORS.length];
 }
+
+/* ---------- 阅读时长（④ 卡片视觉丰富） ---------- */
+
+// 中文阅读速度约 400 字/分钟（常见区间 300~500，取中值），不足 1 分钟按 1 分钟算。
+// 纯前端估算：卡片只能用列表接口给的 summary 估算，详情页才有完整 content。
+const READING_CPM = 400;
+
+/**
+ * 估算一段文本的阅读时长。
+ * 只做「字符数 / 阅读速度」的粗估，不区分中英文单词、不扣图片时间——目的是给读者一个量级感知，
+ * 不是精确统计。空文本返回空串，调用方据此隐藏 chip。
+ *
+ * @param {string} text 文本内容（卡片传 summary，详情页传 content）
+ * @returns {string} 形如 '3 分钟'，空文本返回 ''
+ */
+export function getReadingTime(text) {
+  const content = String(text || '').trim();
+
+  if (!content) {
+    return '';
+  }
+
+  // 去掉所有空白字符后再数，避免格式化换行 / 缩进把时长算高
+  const chars = content.replace(/\s+/g, '').length;
+
+  if (chars === 0) {
+    return '';
+  }
+
+  const minutes = Math.max(1, Math.ceil(chars / READING_CPM));
+
+  return `${minutes} 分钟`;
+}

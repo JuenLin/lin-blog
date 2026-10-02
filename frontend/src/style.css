@@ -49,6 +49,18 @@
   --radius-card: 12px;
   --radius-panel: 10px;
 
+  /* ---------- 元数据 chip（④ 卡片视觉丰富） ----------
+   * chip 是对已有元数据（作者 / 时间 / 阅读时长）的视觉强化，不是真标签。
+   * 一律用变量，浅色 / 暗色各给一套，ArticleCard 与 ArticleDetail 共用。 */
+  --chip-bg: rgba(79, 70, 229, 0.07); /* 主色极淡底 */
+  --chip-bg-accent: rgba(6, 182, 212, 0.09); /* 强调色（青色）极淡底，用于阅读时长 */
+  --chip-border: rgba(79, 70, 229, 0.16);
+  --chip-border-accent: rgba(6, 182, 212, 0.2);
+  --chip-text: #4338ca; /* chip 内文字，深于正文保证可读 */
+  --chip-text-accent: #0e7490;
+  --chip-radius: 999px; /* 胶囊形 */
+  --chip-gap: 6px;
+
   /* 兼容旧写法仍在引用的变量名 */
   --text: var(--text-strong);
   --bg: var(--bg-page);
@@ -137,6 +149,16 @@ html.dark {
   /* ---------- 尺寸（与浅色一致，仅颜色翻转） ---------- */
   --radius-card: 12px;
   --radius-panel: 10px;
+
+  /* ---------- 元数据 chip（④，与浅色成对翻转：深底上底色用更亮的半透明、字提亮） ---------- */
+  --chip-bg: rgba(129, 140, 248, 0.14);
+  --chip-bg-accent: rgba(34, 211, 238, 0.14);
+  --chip-border: rgba(129, 140, 248, 0.26);
+  --chip-border-accent: rgba(34, 211, 238, 0.3);
+  --chip-text: #c7d2fe;
+  --chip-text-accent: #67e8f9;
+  --chip-radius: 999px;
+  --chip-gap: 6px;
 
   /* 兼容旧写法仍在引用的变量名 */
   --text: var(--text-strong);

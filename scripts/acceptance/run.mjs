@@ -158,8 +158,12 @@ const clickText = (sel, text, exact = false) =>
       const el = els.find(e => ${JSON.stringify(exact)} ? t(e) === ${JSON.stringify(text)} : t(e).includes(${JSON.stringify(text)}));
       if (!el) return false; el.click(); return true; })()`
   );
+// 取每张卡片的标题。
+// 原来靠 innerText 的第 4 行（[3]）拿标题，那依赖卡片头恰好渲染成 3 行（头像/作者/时间）。
+// ④ 给卡片头加了阅读时长 chip 后行数变了，这个按行取法会取到 chip 文本（如「1 分钟」），
+// 所以改成直接读标题元素本身 —— 与行数解耦，以后再加 chip 也不会误伤。
 const titles = () =>
-  s.evaluate(`Array.from(document.querySelectorAll('.article-card')).map(c => (c.innerText || '').trim().split(String.fromCharCode(10))[3] || '')`);
+  s.evaluate(`Array.from(document.querySelectorAll('.article-card')).map(c => { const t = c.querySelector('.article-title'); return t ? (t.innerText || '').trim() : ''; })`);
 const firstTitle = async () => (await titles())[0] || '';
 const bodyText = () => s.evaluate(`document.body.innerText`);
 const curUrl = () => s.evaluate(`location.href`);

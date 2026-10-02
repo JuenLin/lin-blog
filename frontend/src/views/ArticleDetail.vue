@@ -44,6 +44,9 @@
           <span class="article-detail-dot">·</span>
           <span>{{ formatTime(article.createdAt) }}</span>
 
+          <!-- ④ 阅读时长：这里有全文 content，是精确值（卡片只有 summary，是估算值） -->
+          <span v-if="readingTime" class="article-detail-chip">{{ readingTime }}</span>
+
           <!-- 编辑 / 删除只对作者本人显示，其余人看不到入口。 -->
           <template v-if="isAuthor">
             <el-button link type="primary" @click="goEdit">编辑</el-button>
@@ -104,7 +107,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { deleteArticle, getArticle, listArticles } from '../api/article.js';
-import { formatTime } from '../utils/format.js';
+import { formatTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
 import AuthorCard from '../components/AuthorCard.vue';
@@ -197,6 +200,9 @@ const isAuthor = computed(() => {
 
   return Boolean(userStore.user && author && userStore.user.id === author.id);
 });
+
+// ④ 阅读时长：详情页拿到的是全文 content，算出来是精确值（卡片只有 summary，估算）。
+const readingTime = computed(() => getReadingTime(article.value && article.value.content));
 
 async function load() {
   loading.value = true;
@@ -301,6 +307,21 @@ onBeforeUnmount(() => {
 
 .article-detail-dot {
   color: var(--text-faint);
+}
+
+/* ④ 阅读时长 chip：与 ArticleCard 用同一套 --chip-* 令牌，保证两处观感一致 */
+.article-detail-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--chip-border-accent);
+  border-radius: var(--chip-radius);
+  background: var(--chip-bg-accent);
+  color: var(--chip-text-accent);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .article-detail-author {

@@ -29,6 +29,12 @@ export async function listArticles(token, pageSize = 100) {
   return r.json && r.json.data ? r.json.data : { list: [], total: 0 };
 }
 
+// 取单篇详情（含 content 全文）。列表接口只给 summary，验「详情页精确阅读时长」需要全文。
+export async function getArticle(token, id) {
+  const r = await api('GET', `/articles/${id}`, token);
+  return r.json && r.json.data ? r.json.data : null;
+}
+
 /**
  * 保证验收集据量够用，返回夹具清单。
  * - need = max(pageSize+1 - 现有可见数, 2)：既要凑出第 2 页，也要保证「最新 / 最近更新」两 Tab 结果不同。
