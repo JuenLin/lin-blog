@@ -149,21 +149,27 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  ├─ DB.md                           # 数据库文档：表结构、字段说明
 
- |   ├─ CODING_STYLE.md     #代码风格约定文档
- 
- |   └─ ACCEPTANCE.md        #验收说明书。
+│  ├─ CODING_STYLE.md                 # 代码风格约定文档
 
-├─ scripts/               	               #项目级脚本目录
+│  └─ ACCEPTANCE.md                   # 验收说明书：跑什么、怎么跑、已知边界与不变式
 
- |   └─ acceptance/                #验收脚本目录。
+├─ scripts/                           # 项目级辅助脚本，不进前后端依赖
 
- |    |   ├─ run.mjs                   #验收主脚本。
+│  └─ acceptance/                     # 验收脚本，零新增依赖（只用 Node 内置能力）
 
- |    |   ├─ cleanup.mjs           #兜底清理脚本。
+│     ├─ run.mjs                      # 一键跑完全部断言（主验收）
 
- |    |   └─ lib/                          #公共库目录
+│     ├─ cleanup.mjs                  # 中断后兜底清理
+
+│     ├─ probe-*.mjs                  # 各批次的量化探针（暗色 / 上下篇 / 作者其他文章 …）
+
+│     ├─ shot-*.mjs                   # 截图辅助脚本（不改源码，仅 CDP 注入）
+
+│     └─ lib/                         # 公共库：CDP 封装、JWT 会话、断言、夹具等
 
 └─ README.md                          # 项目总说明：怎么安装、启动、使用
+
+> 说明：`probe-*.mjs` 与 `shot-*.mjs` 按批次持续新增，命名遵循上述模式即可，不在本文件中逐个列举。
 
 ---
 
@@ -431,6 +437,21 @@ model User {
 - 样式使用 `<style scoped>`。
 - 不要引入新依赖，除非用户明确同意。
 
+### 主题机制（浅色 / 暗色）
+
+- 浅色为默认主题，暗色由 `<html class="dark">` 驱动。
+- 所有颜色必须走 `frontend/src/style.css` 中的 CSS 变量（如 `--bg-page`、`--text-strong`、`--border` 等），**禁止在组件内硬编码色值**。
+- 暗色是 `html.dark` 对同名变量的镜像覆盖。新增颜色必须**浅色 / 暗色成对添加**，只加一边会导致暗色下对比度错误。
+- Element Plus 组件同样通过覆盖 `--el-*` 变量适配暗色，不引入官方 dark css 包。
+- 切换状态存 `localStorage.theme`；`frontend/index.html` 内联一小段脚本，在首帧前读 `localStorage` 给 `<html>` 加 class，防闪白。
+- `html.dark` 必须挂在 `<html>` 上（不是 scoped class），否则 teleport 到 body 的 `ElMessage` / `ElMessageBox` / 下拉浮层吃不到变量。
+
+### 前端验收
+
+- 任何前端改动完成后，必须重跑 `node scripts/acceptance/run.mjs`，保持**全部通过**（当前为 50 条断言，随功能增加而变）。
+- 新增功能另写 `scripts/acceptance/probe-*.mjs` 出**客观证据**（计算样式值、DOM 结构、请求参数），不靠截图判断正确性。
+- 截图仅作辅助，产物放 `D:/tools/acceptance-shots/<批次>-<时间戳>/`（见第 13 节第 20 条）。
+
 ---
 
 ## 11. 后端约束
@@ -459,7 +480,7 @@ model User {
 - 字符串：单引号。
 - 语句结尾：分号。
 - 文件名：
-  - 前端组件：PascalCase，例如 `UserList.vue`
+  - 前端组件（含页面级）：PascalCase，例如 `UserList.vue`、`Home.vue`、`ArticleDetail.vue`
   - 前端 JS：camelCase，例如 `request.js`
   - 后端路由：`user.routes.js`
   - 后端控制器：`user.controller.js`
@@ -471,6 +492,7 @@ model User {
 - 不要重写无关文件。
 - 不要修改接口契约。
 - 如果必须改契约，先说明原因并等待确认。
+- 页面级组件命名以实际代码为准（Home.vue / ArticleDetail.vue / ArticleEditor.vue / Login.vue / UserProfile.vue）。若 docs/CODING_STYLE.md 与本条冲突，以本节为准；CODING_STYLE.md 的统一留到后续单独处理。
 
 ---
 
@@ -502,6 +524,11 @@ model User {
     2026-10-02 因遗漏此事，遗留进程占住 3000 与 5175，导致用户侧 `npm run dev` 起不来。
 18. **本机 npm 官方源不可用，`npm install` / `npm ci` / `npm view` 等所有会联网的 npm 命令必须显式加 `--registry=https://registry.npmmirror.com`**。
     本机 `https://registry.npmjs.org` 会被解析到一个百度 HTML 页面，npm 报 `FETCH_ERROR ... invalid json response body at https://m.baidu.com/`。不加这个参数，安装必然失败（2026-10-02 实测）。
+19. **未经用户明确同意，不执行 `git push`**。本地 `commit` 可以，但推送必须等指令。用户明确说「不上传」时，只本地存档，不要推送。
+20. **截图产物放带时间戳的子目录**：`D:/tools/acceptance-shots/<批次名>-<YYYYMMDD-HHMM>/`。
+    不带时间戳的目录容易被外部进程清理（2026-10-03 实测：`batch1-before/` 与 `batch1-after/` 被整目录删除，无法恢复）。探针用 UTC 时间戳时，注意本地分钟变化会生成新目录，找产物时用 `ls -d` 通配。
+21. **发现契约 / API / DB 三边冲突时，先停下来列出冲突点，不要自行选一边。**
+    第 15 条「以 `docs/API.md` 为准」是冲突已明确后的取舍规则；在冲突尚不清楚、或涉及数据库 schema / 接口契约变更时，必须先向用户报告冲突点与影响范围，等待确认后再动手。
 
 ---
 
@@ -555,3 +582,5 @@ model User {
 - [ ] 密码不是明文
 - [ ] 分页参数有边界限制
 - [ ] README 写清楚启动步骤
+- [ ] 前端改动后 `node scripts/acceptance/run.mjs` 全部通过
+- [ ] 新增功能有对应 `probe-*.mjs` 客观证据
