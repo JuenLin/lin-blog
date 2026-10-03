@@ -21,7 +21,10 @@
           />
         </el-form-item>
 
-        <el-form-item>
+        <!-- label-width="0"：这一项没有 label，若继承表单的 72px 会被整体右推，
+             居中前先归零，否则居中的是「右推 72px 后」的剩余区域，视觉上仍然偏右。
+             form-actions：与 ChangePassword.vue 保持一致，提交按钮居中。 -->
+        <el-form-item label-width="0" class="form-actions">
           <el-button type="primary" :loading="loading" @click="handleLogin">登录</el-button>
           <el-button text @click="toggleMode">{{ isRegister ? '去登录' : '去注册' }}</el-button>
         </el-form-item>
@@ -135,5 +138,13 @@ async function handleLogin() {
 
 .login-card {
   width: 420px;
+}
+
+/* 提交区按钮居中，与 ChangePassword.vue 一致。
+   el-form-item 的 content 是 flex 容器且默认 justify-content: flex-start，
+   给 content 加 justify-content: center 比给 item 加 text-align: center 更可靠
+   （flex 子元素会忽略 text-align）。 */
+.form-actions :deep(.el-form-item__content) {
+  justify-content: center;
 }
 </style>

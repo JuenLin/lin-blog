@@ -11,7 +11,17 @@
         修改成功后需要重新登录。已登录的其他设备不会立即失效，密码变更请谨慎。
       </el-alert>
 
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="88px" @submit.prevent="handleSubmit">
+      <!-- label-width 必须显式给足：「确认新密码」5 个汉字（约 70px）+ 必填星号，
+           再加label 自带的 padding-right: 12px，88px 会撑不下导致标签换行、按钮被挤到右边。
+           label-position 默认是right，标签长短不一會右对齐得参差不齐，这里显式改成 left。 -->
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-width="100px"
+        label-position="left"
+        @submit.prevent="handleSubmit"
+      >
         <el-form-item label="当前密码" prop="oldPassword">
           <el-input
             v-model="form.oldPassword"
@@ -42,7 +52,10 @@
           />
         </el-form-item>
 
-        <el-form-item>
+        <!-- label-width="0"：这一项没有 label，若继承表单的 100px，
+             按钮会被整体右推 100px。显式归零让按钮回到卡片左边。
+             form-actions：把提交区按钮居中，和下方 .form-actions 样式配对。 -->
+        <el-form-item label-width="0" class="form-actions">
           <!-- 防连点：改密码不可逆，连点两次第二次会用「新密码当旧密码」，
                必然失败且让用户困惑，所以提交中直接禁用。 -->
           <el-button type="primary" :loading="loading" :disabled="loading" @click="handleSubmit">
@@ -169,5 +182,18 @@ function goBack() {
 
 .change-password-tip {
   margin-bottom: 16px;
+}
+
+/* 兜底：即使在很窄的视口下，标签也不折行（label 已有 100px 固定宽，
+   nowrap 保证「确认新密码」永远单行，超出时宁可溢出也不换行把行高撑乱）。 */
+.change-password :deep(.el-form-item__label) {
+  white-space: nowrap;
+}
+
+/* 提交区按钮居中。el-form-item 的 content 是 flex 容器且默认 justify-content: flex-start，
+   直接给 content 加 justify-content: center 比给 item 加 text-align: center 更可靠
+   （flex 子元素会忽略 text-align）。 */
+.form-actions :deep(.el-form-item__content) {
+  justify-content: center;
 }
 </style>
