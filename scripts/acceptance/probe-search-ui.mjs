@@ -67,7 +67,14 @@ async function typeAndEnter(text) {
 }
 
 // 悬停到某个元素上，验证 el-tooltip 的弹出内容。
-async function hoverTooltip(sel) {
+// ---------- SU-12 tooltip ----------
+// 方案 D 起，卡片时间 chip 悬停出的是**绝对时间**（如 2026/10/3 01:49:50），
+// 不再是「预计阅读时长」（那个 tooltip 随卡片阅读时长 chip 一起移除了）。
+// 详情页阅读时长 chip 保留，tooltip 仍是「预计阅读时长」。
+async function hoverTooltipText(sel, matcher) {
+  // matcher 要被拼进 s.evaluate 的页面上下文中执行，必须序列化成**源码字符串**。
+  // 直接插值正则对象会变成 /re/ 字面量文本——含 \d 的正则插进页面就是语法错误。
+  const reSrc = matcher instanceof RegExp ? matcher.source : String(matcher);
   const box = await s.evaluate(`(() => {
     const el = document.querySelector(${JSON.stringify(sel)});
     if (!el) return null;
@@ -81,15 +88,18 @@ async function hoverTooltip(sel) {
   await sleep(120);
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
   const shown = await waitFor(
-    `Array.from(document.querySelectorAll('.el-popper')).some(p => (p.innerText||'').includes('预计阅读时长'))`,
+    `Array.from(document.querySelectorAll('.el-popper')).some(p => new RegExp(${JSON.stringify(reSrc)}).test((p.innerText||'')))`,
     5000
   );
   const tip = await s.evaluate(`(() => {
-    const hit = Array.from(document.querySelectorAll('.el-popper')).find(p => (p.innerText||'').includes('预计阅读时长'));
+    const re = new RegExp(${JSON.stringify(reSrc)});
+    const hit = Array.from(document.querySelectorAll('.el-popper')).find(p => re.test((p.innerText||'')));
     return hit ? (hit.innerText || '').trim() : '';
   })()`);
   return { hovered: true, shown, tip };
 }
+
+const hoverTooltip = (sel) => hoverTooltipText(sel, /预计阅读时长/);
 
 try {
   if ((await httpOk(CONFIG.frontend)) !== 200) {
@@ -298,12 +308,23 @@ try {
     await s.screenshot(`${OUT}/su11c-profile-bar.png`);
   }
 
-  // ---------- SU-12 两处阅读时长 chip 的 tooltip ----------
+  // ---------- SU-12 tooltip：卡片时间 chip → 绝对时间；详情页阅读时长 chip → 说明 ----------
   await s.goto(CONFIG.frontend + '/');
   await waitFor(`document.querySelector('.article-chip-time')`, 10000);
-  const cardChip = await hoverTooltip('.article-chip-time');
-  log('SU-12a 卡片阅读时长 chip 悬停出「预计阅读时长」', cardChip.shown, `hover=${cardChip.hovered} tip="${cardChip.tip}"`);
+  // 绝对时间格式：Y/M/D 时:分:秒（年/date 部分不补零，时分秒补零）。
+  // 正则放在Node 侧构造后序列化进去，避免模板字符串里出现反斜杠转义问题。
+  const ABSOLUTE_RE = /\d{4}\/\d{1,2}\/\d{1,2}\s+\d{2}:\d{2}:\d{2}/;
+  const cardChip = await hoverTooltipText('.article-chip-time', ABSOLUTE_RE);
+  log('SU-12a 卡片时间 chip 悬停出绝对时间', cardChip.shown, `hover=${cardChip.hovered} tip="${cardChip.tip}"`);
   await s.screenshot(`${OUT}/su12a-card-tooltip.png`);
+
+  // 卡片正文显示的应是相对时间（不是绝对时间），两者不能混。
+  const cardChipText = await s.evaluate(`(() => {
+    const el = document.querySelector('.article-chip-time');
+    return el ? (el.innerText || '').trim() : '';
+  })()`);
+  const isRelative = /^(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前|\d{4}\/\d{1,2}\/\d{1,2})$/.test(cardChipText);
+  log('SU-12a2 卡片 chip 本身显示相对时间（与 tooltip 的绝对时间互补）', isRelative && cardChipText !== cardChip.tip.trim(), `chip="${cardChipText}"`);
 
   await s.goto(`${CONFIG.frontend}/article/${target.id}`);
   await waitFor(`document.querySelector('.article-detail-chip')`, 10000);

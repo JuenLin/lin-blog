@@ -6,10 +6,15 @@ import { CODE, httpError } from '../utils/response.js';
 // docs/API.md：评论列表 sortBy 白名单为 createdAt / id，默认 createdAt desc。
 export const COMMENT_SORT_FIELDS = ['createdAt', 'id'];
 
+// 内嵌 author 的查询字段。
+// avatar 为第九批新增（可空）。bio **刻意不加**：理由见 article.service.js
+// 里的同一处注释。article.service.js 有一份内容相同的重复定义，
+// 本期按「只加字段、不做重构」处理。
 const AUTHOR_SELECT = {
   id: true,
   username: true,
   nickname: true,
+  avatar: true,
 };
 
 const COMMENT_SELECT = {
@@ -27,6 +32,7 @@ function toAuthor(author) {
     id: author.id,
     username: author.username,
     nickname: author.nickname,
+    avatar: author.avatar,
   };
 }
 

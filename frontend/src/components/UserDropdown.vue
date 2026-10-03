@@ -1,20 +1,30 @@
 <template>
   <el-dropdown trigger="click" @command="handleCommand">
     <span class="user-dropdown">
-      <span class="user-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
+      <!-- 头像分两种形态（第九批）：有 avatar 外链渲染 <img>，否则回退色块 + 首字。
+           必须用 v-if 先分出分支，不能只写 :src —— avatar 为 null 或键不存在时会破图。
+           imgBroken 是 @error 回退用的：服务端只校验 URL 格式、不校验可达性，
+           所以外链可能真的加载不出来（见 docs/API.md 的 PUT /api/users/me）。 -->
+      <img
+        v-if="avatarInfo.type === 'image' && !avatarBroken"
+        class="user-avatar-img"
+        :src="avatarInfo.src"
+        :alt="displayName"
+        @error="avatarBroken = true"
+      />
+      <span v-else class="user-avatar" :style="{ backgroundColor: fallbackColor }">{{ fallbackText }}</span>
       <span class="user-name">{{ displayName }}</span>
       <span class="user-caret">▾</span>
     </span>
 
     <template #dropdown>
       <el-dropdown-menu>
-        <!-- 个人主页入口（/user/:id，纯前端跳转，不改接口）。
-             /settings 设置页仍未做，所以不放「编辑个人资料」；关注功能也没做，不放「关注」——
-             宁可少一项，也不给点了没反应的死按钮。 -->
+        <!-- 个人主页入口（/user/:id，纯前端跳转，不改接口）。 -->
         <el-dropdown-item v-if="myProfileId" command="profile">我的主页</el-dropdown-item>
+        <!-- 编辑资料（第九批）：需登录，走 PUT /api/users/me，改头像与简介。 -->
+        <el-dropdown-item command="edit-profile">编辑资料</el-dropdown-item>
         <!-- 修改密码（第二步）：需登录，走的是 PUT /api/auth/password。
-             放在「我的主页」下方、「退出登录」上方—— 改密码是登录态下的账号操作，
-             和「查看自己的主页」归一类，紧挨着；「退出登录」是会话操作，隔开一段。 -->
+             放在账号操作一组的末尾、「退出登录」上方—— 「退出登录」是会话操作，隔开一段。 -->
         <el-dropdown-item command="password">修改密码</el-dropdown-item>
         <el-dropdown-item command="logout">退出登录</el-dropdown-item>
       </el-dropdown-menu>
@@ -23,10 +33,10 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUserStore } from '../stores/user.js';
-import { getAvatarColor, getAvatarText } from '../utils/format.js';
+import { getAvatarColor, getAvatarText, resolveAvatar } from '../utils/format.js';
 
 const router = useRouter();
 const userStore = useUserStore();
@@ -39,8 +49,24 @@ const displayName = computed(() => {
   return userStore.user.nickname || userStore.user.username || '我';
 });
 
-const avatarText = computed(() => getAvatarText(displayName.value));
-const avatarColor = computed(() => getAvatarColor(displayName.value));
+// 头像形态由 resolveAvatar 统一决定：有 avatar 外链走 <img>，否则色块 + 首字。
+// 这里存的是 userStore.user（含 avatar 字段）。
+const avatarInfo = computed(() => resolveAvatar(userStore.user, displayName.value));
+const fallbackText = computed(() => getAvatarText(displayName.value));
+const fallbackColor = computed(() => getAvatarColor(displayName.value));
+
+// 外链图片加载失败（404 / 防盗链 / 网络问题）时回退到色块 + 首字。
+// 服务端只校验 URL 以 http/https 开头，**不保证图片真实存在**（docs/API.md 有说明），
+// 所以这个回退不是兜底而是常态路径之一。
+// 关键：avatar 变化时必须复位，否则换头像后仍会显示上一次的失败状态。
+const avatarBroken = ref(false);
+
+watch(
+  () => (userStore.user ? userStore.user.avatar : null),
+  () => {
+    avatarBroken.value = false;
+  },
+);
 
 // 当前登录用户 id：user 可能为 null（未登录 / fetchMe 还没回来），此时不显示「我的主页」，
 // 避免拼出 /user/undefined 这种死链。
@@ -51,6 +77,11 @@ const myProfileId = computed(() => (userStore.user && userStore.user.id) || null
 function handleCommand(command) {
   if (command === 'profile' && myProfileId.value) {
     router.push({ name: 'user-profile', params: { id: myProfileId.value } });
+    return;
+  }
+
+  if (command === 'edit-profile') {
+    router.push({ name: 'settings-profile' });
     return;
   }
 
@@ -77,6 +108,7 @@ function handleCommand(command) {
   outline: none;
 }
 
+/* 色块头像（无 avatar 时的回退形态） */
 .user-avatar {
   width: 32px;
   height: 32px;
@@ -87,6 +119,16 @@ function handleCommand(command) {
   color: var(--text-on-brand);
   font-size: 14px;
   font-weight: 600;
+}
+
+/* 图片头像（第九批）：尺寸、圆角与色块保持一致，object-fit: cover 防拉伸变形 */
+.user-avatar-img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
 }
 
 .user-name {

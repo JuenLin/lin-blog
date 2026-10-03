@@ -16,6 +16,11 @@ model User {
   username  String    @unique @db.VarChar(50)
   password  String    @db.VarChar(255)
   nickname  String?   @db.VarChar(50)
+  // 第九批（已获用户批准）：头像 URL 与简介。均 nullable，无需回填现有数据。
+  // 头像走「零依赖 URL 版」——只存外链字符串，服务端不上传、不校验可达性，
+  // 但 API 层校验必须以 http:// 或 https:// 开头，挡掉 javascript: / data:。
+  avatar    String?   @db.VarChar(255)
+  bio       String?   @db.VarChar(200)
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")

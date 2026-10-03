@@ -76,6 +76,17 @@ const routes = [
       requiresAuth: true,
     },
   },
+  {
+    // 编辑资料（第九批）：改头像与简介，走 PUT /api/users/me。
+    // 路径沿用 /settings/* 的分组（与修改密码同级），而不是 /profile/edit——
+    // 前者已经是「登录态下的账号操作」这一组，两个页面并列更清楚。
+    path: '/settings/profile',
+    name: 'settings-profile',
+    component: () => import('../views/ProfileEdit.vue'),
+    meta: {
+      requiresAuth: true,
+    },
+  },
 ];
 
 const router = createRouter({

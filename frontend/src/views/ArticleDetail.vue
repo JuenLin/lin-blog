@@ -42,9 +42,19 @@
         <div class="article-detail-meta">
           <span>{{ authorName }}</span>
           <span class="article-detail-dot">·</span>
-          <span>{{ formatTime(article.createdAt) }}</span>
 
-          <!-- ④ 阅读时长：这里有全文 content，是精确值（卡片只有 summary，是估算值）。
+          <!-- 方案 D：时间显示相对时间，悬停给绝对时间。
+               meta 是纯文本流（不是卡片的密集胶囊行），相对时间更短、更好扫读，
+               绝对时间放 tooltip，需要精确引用时能拿到。 -->
+          <el-tooltip
+            :content="absoluteTime"
+            placement="top"
+          >
+            <span class="article-detail-time">{{ relativeTime }}</span>
+          </el-tooltip>
+
+          <!-- ④ 阅读时长：这里有全文 content，是精确值（卡片只有 summary，是估算值），
+               方案 D 后卡片已去掉该 chip，详情页是唯一展示它的地方。保留。
                tooltip 说明数字含义，避免被误读成发布时间。 -->
           <el-tooltip
             v-if="readingTime"
@@ -114,7 +124,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { deleteArticle, getArticle, listArticles } from '../api/article.js';
-import { formatTime, getReadingTime } from '../utils/format.js';
+import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
 import AuthorCard from '../components/AuthorCard.vue';
@@ -208,8 +218,10 @@ const isAuthor = computed(() => {
   return Boolean(userStore.user && author && userStore.user.id === author.id);
 });
 
-// ④ 阅读时长：详情页拿到的是全文 content，算出来是精确值（卡片只有 summary，估算）。
+// ④ + 方案 D：阅读时长（详情页拿全文 content，是精确值）+ 相对/绝对时间。
 const readingTime = computed(() => getReadingTime(article.value && article.value.content));
+const relativeTime = computed(() => formatRelativeTime(article.value && article.value.createdAt));
+const absoluteTime = computed(() => formatAbsoluteTime(article.value && article.value.createdAt));
 
 async function load() {
   loading.value = true;
@@ -314,6 +326,12 @@ onBeforeUnmount(() => {
 
 .article-detail-dot {
   color: var(--text-faint);
+}
+
+/* 方案 D：时间 chip 走 tooltip，补cursor 表明可悬停看绝对时间。
+   只改鼠标形态，字色/字号继承 .article-detail-meta，不重复定义。 */
+.article-detail-time {
+  cursor: help;
 }
 
 /* ④ 阅读时长 chip：与 ArticleCard 用同一套 --chip-* 令牌，保证两处观感一致 */

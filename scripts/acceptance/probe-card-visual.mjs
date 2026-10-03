@@ -163,21 +163,26 @@ try {
   const c1 = await readCard();
   await s.screenshot(`${OUT}/card-chips-light.png`);
 
-  log('C1-1 元数据已 chip 化（≥3 枚）', c1.chipCount >= 3, `chipCount=${c1.chipCount}`);
-  log('C1-2 作者 chip 内含头像 + 名字', c1.hasAvatar && c1.chips.some((c) => c.text && !/^\d+ 分钟$/.test(c.text)), `avatar=${c1.hasAvatar}`);
-  const rtChip = c1.chips.find((c) => c.cls.includes('article-chip-accent'));
-  const expectCardRt = expectedReadingTime(target.summary);
+  log('C1-1 元数据已 chip 化（作者 / 时间 两枚）', c1.chipCount >= 2, `chipCount=${c1.chipCount}`);
+  log('C1-2 作者 chip 内含头像 + 名字', c1.hasAvatar && c1.chips.some((c) => c.text), `avatar=${c1.hasAvatar}`);
+
+  // 方案 D：卡片不再显示阅读时长 chip（列表只有 summary，是估算值，且三枚 chip 窄屏会换行）。
+  // 改成**反向断言**：卡片上不应再出现 accent 样式的 chip（accent 原本专供阅读时长）。
+  // 同时验时间 chip 走的是相对时间而不是绝对时间。
+  const accentChip = c1.chips.find((c) => c.cls.includes('article-chip-accent'));
+  const timeChip = c1.chips.find((c) => c.cls.includes('article-chip-time'));
   log(
-    'C1-3 卡片渲染阅读时长 chip（按 summary 估算）',
-    Boolean(rtChip) && /^\d+ 分钟$/.test(rtChip.text),
-    `chip="${rtChip ? rtChip.text : '(无)'}" 靶子summary期望="${expectCardRt}"`
+    'C1-3 卡片不再渲染阅读时长 chip（无 accent chip）',
+    !accentChip,
+    `accent="${accentChip ? accentChip.text : '(无)'}"`
   );
-  // 读到的第一张卡未必就是靶子（列表按时间排序），所以只在「第一张就是靶子」时做等值断言。
-  if (c1.title === target.title) {
-    log('C1-4 卡片阅读时长值 = ceil(summary字数/400)', rtChip && rtChip.text === expectCardRt, `实测="${rtChip && rtChip.text}" 期望="${expectCardRt}"`);
-  } else {
-    log('C1-4 卡片阅读时长值 = ceil(summary字数/400)', true, `首卡非靶子（"${c1.title.slice(0, 12)}…"），值断言由 C1-3 覆盖`);
-  }
+  // 相对时间格式：刚刚 / X 分钟前 / X 小时前 / X 天前 / YYYY/M/D
+  const RELATIVE_RE = /^(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前|\d{4}\/\d{1,2}\/\d{1,2})$/;
+  log(
+    'C1-4 时间 chip 显示相对时间（非绝对时间）',
+    Boolean(timeChip) && RELATIVE_RE.test(timeChip.text),
+    `chip="${timeChip ? timeChip.text : '(无)'}"`
+  );
   const radiusOk = c1.chips.every((c) => c.radius === '999px');
   log('C1-5 chip 为胶囊形（border-radius=999px）', radiusOk, `radii=${[...new Set(c1.chips.map((c) => c.radius))].join('/')}`);
   const bgOk = c1.chips.every((c) => c.bg && c.bg !== 'rgba(0, 0, 0, 0)' && c.bg !== 'transparent');
@@ -185,7 +190,8 @@ try {
   const contrastOk = c1.chips.every((c) => c.color && c.color !== c.bg);
   log('C1-7 chip 字色与底色不同（无白底白字）', contrastOk, `color=${[...new Set(c1.chips.map((c) => c.color))].join(' | ')}`);
 
-  // ---------- 场景 2：summary 为空 → 阅读时长 chip 不渲染，其余 chip 仍在 ----------
+  // ---------- 场景 2：summary 为空 → 卡片 chip 构成不变（方案 D 后卡片已无阅读时长 chip，
+  // 原「空 summary → 无阅读时长 chip」的前提已不复存在；这里改为验「summary 空/纯空白不影响 chip」）----------
   const emptySummaryList = [
     { ...list[0], id: 800001, title: '无摘要文章', summary: '', author: list[0].author },
     { ...list[0], id: 800002, title: '无摘要文章2', summary: '   ', author: list[0].author },
@@ -200,8 +206,9 @@ try {
   const c2 = await readCard();
   await s.screenshot(`${OUT}/card-chips-nosummary.png`);
   const noRt = !c2.chips.some((c) => c.cls.includes('article-chip-accent'));
-  log('C2-1 summary 为空时不渲染阅读时长 chip', noRt, `chips=${c2.chips.map((c) => c.text).join(' / ')}`);
-  log('C2-2 其余 chip（头像/时间）仍在', c2.chipCount >= 2 && c2.hasAvatar, `chipCount=${c2.chipCount}`);
+  log('C2-1 summary 为空时卡片同样无阅读时长 chip', noRt, `chips=${c2.chips.map((c) => c.text).join(' / ')}`);
+  const c2Time = c2.chips.find((c) => c.cls.includes('article-chip-time'));
+  log('C2-2 summary 为空时时间 chip 仍显示相对时间', c2.chipCount >= 2 && c2.hasAvatar && Boolean(c2Time) && RELATIVE_RE.test(c2Time.text), `chipCount=${c2.chipCount} time="${c2Time ? c2Time.text : '(无)'}"`);
 
   // ---------- 场景 3：详情页阅读时长 = 按全文 content 精确计算 ----------
   // 清掉造假响应，详情页要拿真实的全文 content。

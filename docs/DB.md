@@ -28,7 +28,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 
 | 表名 | 说明 | 状态 |
 |---|---|---|
-| `users` | 用户表 | 已建（迁移 `20260929123151_init`） |
+| `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`） |
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
@@ -172,11 +172,39 @@ Prisma 模型名 `User`，`@@map("users")`。
 | username | username | VARCHAR(50) | 否 | 无 | 用户名，唯一索引 |
 | password | password | VARCHAR(255) | 否 | 无 | bcryptjs 哈希，禁止明文 |
 | nickname | nickname | VARCHAR(50) | 是 | NULL | 昵称 |
+| avatar | avatar | VARCHAR(255) | 是 | NULL | 头像 URL，第九批新增。零依赖方案：只存外链字符串，服务端不存文件、不校验可达性 |
+| bio | bio | VARCHAR(200) | 是 | NULL | 个人简介，第九批新增 |
 | createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
 
-`User` 模型上的 `articles Article[]` / `comments Comment[]` 是**反向关系字段，Prisma 虚拟字段，不产生任何列**，因此加它们不会 ALTER `users` 表（已实测确认）。
+`User` 模型上的 `articles Article[]` / `comments Comment[]` 是**反向关系字段，Prisma 虚拟字段，不产生任何列**，因此加它们不会ALTER `users` 表（已实测确认）。
+
+### 第九批新增字段（avatar / bio）—— schema 变更已获批准，**迁移已执行**
+
+> **本节是一次「禁止修改数据库 schema」例外的书面登记。**
+> 契约第 5 节「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 批准范围：**仅限本次新增 `users.avatar` 与 `users.bio` 两列**，
+> 不含任何其他表结构变更、不含改列名/类型、不含删列。
+> 批准依据与决策过程见 `docs/API.md` 的 `PUT /api/users/me` 章节。
+> **迁移已于 2026-10-03 执行**（`20261003080727_add_user_avatar_bio`），实际结构见本小节末尾与下方建表 SQL。
+
+**为什么必须改 schema 而不能复用 `nickname`**（这是本次豁免的核心论证，登记备查）：
+
+| 理由 | 说明 |
+|---|---|
+| 语义冲突 | `nickname` 被 `UserProfile` / `ArticleCard` / `AuthorCard` / `UserDropdown` 四处当作**显示名**使用，塞入 URL 或长文本会直接破坏这四处 UI |
+| 长度不足 | `nickname` 是 `VARCHAR(50)`，而头像 URL 典型长度 100~200 字符，50 字符放不下 |
+| 探针冲突 | `probe-search.mjs` 有一条「昵称不应被 keyword 搜到」的泄漏断言，往`nickname` 塞 URL 会让昵称变得像搜索关键词，污染该断言的语义 |
+
+**为什么选`VARCHAR` 而不是 `TEXT`**：MySQL `VARCHAR` 长度受行大小限制但索引友好、`avatar` 未来可能加唯一性或排序需求；255 与 200 都在utf8mb4 下远低于行大小上限。排除 `TEXT` 的理由是 `TEXT` 上限按**字节**计（65535 字节），头像 URL 场景用不上却要付出 off-page 存储代价。
+
+**头像为什么只存URL 而不上传文件**：本项目**不引入任何新依赖**（契约第 5 节「禁止擅自引入新依赖」），文件上传需要 `multer` 之类的中间件，且要配套对象存储。零依赖方案下用户自己把图片传到图床，把链接填进来。代价是**服务端不保证图片真实存在**，因此 API 层只做「必须以 `http://` 或 `https://` 开头」的格式校验（挡掉 `javascript:` / `data:` 这类会构成 XSS 的伪协议），**不发起任何网络请求校验可达性**——否则每次改资料都要等外部 HTTP 响应，接口会变得不可控。
+
+**`avatar` / `bio` 均 nullable 的影响**：现有用户（`demo` / `admin`）迁移后这两个字段为 `NULL`，**无需回填数据**。前端渲染头像时 `NULL` 必须回退到基于昵称生成的头像首字（现有 `getAvatarText` 逻辑），不能直接渲染 `<img src="null">`。
+
+**内嵌 author 对象的字段边界**：`avatar` 会进入文章与评论的内嵌 `author` 对象（两处 `AUTHOR_SELECT`，见 `docs/API.md`），`bio` **不会**——简介只在个人主页展示，塞进每条评论的 author 里是纯粹的响应体浪费。两处 `AUTHOR_SELECT` 当前是**重复定义**，本期按「只加字段、不做重构」处理，抽取公共定义单独排一批。
+
 
 ### 索引
 
@@ -187,20 +215,37 @@ Prisma 模型名 `User`，`@@map("users")`。
 
 ### 建表 SQL（迁移生成，未手工改写）
 
+> 下方是**迁移执行后** `SHOW CREATE TABLE users` 的实际输出（2026-10-03 第九批核对）。
+> 注意 MySQL 把 `int` 归一化成了小写 `int`，并为每个字符串列显式补上了
+> `COLLATE utf8mb4_unicode_ci`——这两处与 Prisma schema 的写法不同但属正常归一化，**不是差异**。
+> 与迁移前相比仅新增 `avatar` / `bio` 两列，索引、字符集、外键均未变化。
+
 ```sql
 CREATE TABLE `users` (
-    `id` INTEGER NOT NULL AUTO_INCREMENT,
-    `username` VARCHAR(50) NOT NULL,
-    `password` VARCHAR(255) NOT NULL,
-    `nickname` VARCHAR(50) NULL,
-    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    `updated_at` DATETIME(3) NOT NULL,
-    `deleted_at` DATETIME(3) NULL,
-
-    UNIQUE INDEX `users_username_key`(`username`),
-    PRIMARY KEY (`id`)
-) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  `id` int NOT NULL AUTO_INCREMENT,
+  `username` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `password` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `nickname` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL,
+  `deleted_at` datetime(3) DEFAULT NULL,
+  `avatar` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `bio` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `users_username_key` (`username`)
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ```
+
+### 第九批的迁移 SQL（实际生成）
+
+```sql
+-- AlterTable
+ALTER TABLE `users` ADD COLUMN `avatar` VARCHAR(255) NULL,
+    ADD COLUMN `bio` VARCHAR(200) NULL;
+```
+
+**迁移是纯 `ADD COLUMN`，不含任何数据回填语句**。两列均 nullable 且无默认值，MySQL 对既有行直接填 `NULL`；已核对 `demo`（id=1）与 `admin`（id=2）迁移后 `avatar` / `bio` 均为 `NULL`，符合预期，**不需要回填脚本**。
+
 
 ---
 
@@ -300,6 +345,13 @@ const summary = [...content].slice(0, 100).join('');
 | `20260929123151_init` | 创建 `users` 表 | 已应用 |
 | `20260929144738_blog_articles_comments` | 创建 `articles`、`comments` 表及三条外键 | 已应用 |
 | `20260929145244_comments_idx_article_created` | `comments` 索引由 `(article_id, deleted_at, created_at)` 调整为 `(article_id, created_at)`；因外键依赖该索引，迁移内先 DROP 再 ADD 外键 | 已应用 |
+| `20261003080727_add_user_avatar_bio` | `users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列，均 nullable、无默认、不需回填 | 已应用 |
+
+> 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
+> 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
+> `PRIMARY KEY (id)` 与 `UNIQUE KEY users_username_key (username)` 未受影响，
+> `demo` / `admin` 两行新列均为 `NULL`。实际 DDL 与迁移 SQL 已回填到「users」小节。
+> `AUTO_INCREMENT=11` 说明迁移过程未插入任何新行（纯 `ADD COLUMN`，无回填）。
 
 迁移文件位于 `backend/prisma/migrations/`：
 

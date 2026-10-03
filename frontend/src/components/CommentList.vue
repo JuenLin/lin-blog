@@ -35,12 +35,33 @@
                 @click="goToProfile(commentAuthorId(item))"
                 @keydown.enter="goToProfile(commentAuthorId(item))"
               >
-                <span class="comment-avatar" :style="{ backgroundColor: getAvatarColor(authorName(item)) }">
-                  {{ getAvatarText(authorName(item)) }}
+                <!-- 头像两种形态（第九批）：有 avatar 外链渲染 <img>，否则回退色块 + 首字。
+                     列表里每个作者是独立一条，所以失败状态按评论 id 记在 brokenAvatars 里，
+                     不能用单个 ref ——否则一个作者的图片加载失败会让整页都显示成色块。 -->
+                <img
+                  v-if="commentAvatar(item).type === 'image' && !brokenAvatars[item.id]"
+                  class="comment-avatar-img"
+                  :src="commentAvatar(item).src"
+                  :alt="authorName(item)"
+                  @error="markAvatarBroken(item)"
+                />
+                <span
+                  v-else
+                  class="comment-avatar"
+                  :style="{ backgroundColor: commentAvatar(item).color }"
+                >
+                  {{ commentAvatar(item).text }}
                 </span>
                 <span class="comment-author">{{ authorName(item) }}</span>
               </span>
-              <span class="comment-time">{{ formatTime(item.createdAt) }}</span>
+              <!-- 方案 D：评论时间同样改相对时间（列表里绝对时间又长又占位），
+                   悬停 tooltip 给绝对时间。 -->
+              <el-tooltip
+                :content="formatAbsoluteTime(item.createdAt)"
+                placement="top"
+              >
+                <span class="comment-time">{{ formatRelativeTime(item.createdAt) }}</span>
+              </el-tooltip>
             </div>
 
             <div class="comment-content">{{ item.content }}</div>
@@ -60,10 +81,10 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { listComments } from '../api/comment.js';
-import { formatTime, getAvatarColor, getAvatarText } from '../utils/format.js';
+import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 import EmptyState from './EmptyState.vue';
 import Pagination from './Pagination.vue';
 
@@ -97,6 +118,30 @@ function commentAuthorId(item) {
   return a && a.id != null ? a.id : null;
 }
 
+// 头像形态（第九批）。resolveAvatar 用 truthy 检查，**author 没有 avatar 键时**
+// （探针造的对象就是这种）会自然落到 text 分支。
+// image 分支返回 { src }，text 分支返回 { text, color }，模板按type 取对应字段。
+function commentAvatar(item) {
+  const a = item && item.author;
+  const info = resolveAvatar(a, authorName(item));
+
+  if (info.type === 'image') {
+    return info;
+  }
+
+  return { type: 'text', text: info.text, color: info.color };
+}
+
+// 外链图片加载失败的记录：key 是评论 id。
+// 为什么按评论 id 而不是作者 id：同一个人可能评论多条，用评论 id 粒度最简单，
+// 且一条评论的图片失败不影响同作者的其他评论。
+// 换页/刷新时整体清空（见 load 的 finally）。
+const brokenAvatars = reactive({});
+
+function markAvatarBroken(item) {
+  brokenAvatars[item.id] = true;
+}
+
 function goToProfile(id) {
   if (id == null) return;
   router.push({ name: 'user-profile', params: { id } });
@@ -122,6 +167,11 @@ async function load() {
   } finally {
     loading.value = false;
     initialized.value = true;
+    // 换页/ 刷新后重置图片失败记录：新一页的头像重新尝试加载。
+    // 不清的话，翻到下一页若有个别头像加载失败，会永久停留在色块形态。
+    Object.keys(brokenAvatars).forEach((key) => {
+      delete brokenAvatars[key];
+    });
   }
 }
 
@@ -216,6 +266,16 @@ defineExpose({
   font-weight: 600;
 }
 
+/* 图片头像（第九批）：与色块同尺寸，object-fit: cover 防变形 */
+.comment-avatar-img {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
+}
+
 .comment-author {
   font-size: 13px;
   color: var(--text-regular);
@@ -224,6 +284,7 @@ defineExpose({
 .comment-time {
   font-size: 12px;
   color: var(--text-muted);
+  cursor: help; /* 方案 D：走 tooltip 看绝对时间 */
 }
 
 .comment-content {

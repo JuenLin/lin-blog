@@ -10,10 +10,16 @@ export const ARTICLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'id'];
 // 列表的 summary 取正文前 100 个字符。
 const SUMMARY_LENGTH = 100;
 
+// 内嵌 author 的查询字段。
+// avatar 为第九批新增（可空）。bio **刻意不加**：简介只在个人主页展示，
+// 塞进每条列表项的 author 里是纯粹的响应体浪费。
+// 注意：comment.service.js 里有一份**内容相同**的重复定义，
+// 本期按「只加字段、不做重构」处理，抽取公共定义单独排一批。
 const AUTHOR_SELECT = {
   id: true,
   username: true,
   nickname: true,
+  avatar: true,
 };
 
 // 显式 select，不使用 SELECT *（契约第 11 节）。
@@ -50,6 +56,7 @@ function toAuthor(author) {
     id: author.id,
     username: author.username,
     nickname: author.nickname,
+    avatar: author.avatar,
   };
 }
 

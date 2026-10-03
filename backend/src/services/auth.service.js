@@ -8,6 +8,8 @@ const PUBLIC_FIELDS = {
   id: true,
   username: true,
   nickname: true,
+  avatar: true,
+  bio: true,
   createdAt: true,
 };
 
@@ -16,6 +18,8 @@ function toPublicUser(user) {
     id: user.id,
     username: user.username,
     nickname: user.nickname,
+    avatar: user.avatar,
+    bio: user.bio,
     createdAt: user.createdAt,
   };
 }
@@ -52,6 +56,8 @@ export async function login({ username, password }) {
       username: true,
       nickname: true,
       password: true,
+      avatar: true,
+      bio: true,
       createdAt: true,
     },
   });

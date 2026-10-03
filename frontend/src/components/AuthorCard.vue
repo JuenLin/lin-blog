@@ -9,7 +9,16 @@
     @keydown.enter="goToProfile"
   >
     <span class="author-card-head">
-      <span class="author-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
+      <!-- 头像两种形态（第九批）：有 avatar 外链渲染 <img>，否则回退色块 + 首字。
+           用 v-if 分支而不是只写 :src —— avatar 为 null 或键不存在时会破图。 -->
+      <img
+        v-if="avatarInfo.type === 'image' && !avatarBroken"
+        class="author-avatar-img"
+        :src="avatarInfo.src"
+        :alt="displayName"
+        @error="avatarBroken = true"
+      />
+      <span v-else class="author-avatar" :style="{ backgroundColor: avatarInfo.color }">{{ avatarInfo.text }}</span>
 
       <span class="author-meta">
         <span class="author-name">{{ displayName }}</span>
@@ -20,9 +29,9 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { getAvatarColor, getAvatarText } from '../utils/format.js';
+import { resolveAvatar } from '../utils/format.js';
 
 const props = defineProps({
   author: {
@@ -34,8 +43,28 @@ const props = defineProps({
 const router = useRouter();
 
 const displayName = computed(() => props.author.nickname || props.author.username || '匿名');
-const avatarText = computed(() => getAvatarText(displayName.value));
-const avatarColor = computed(() => getAvatarColor(displayName.value));
+
+// 头像形态（第九批）。resolveAvatar 用 truthy 检查，avatar 键不存在时自然回退文字头像。
+// text 分支返回 { text, color }，image 分支返回 { src }。
+const avatarInfo = computed(() => {
+  const info = resolveAvatar(props.author, displayName.value);
+
+  if (info.type === 'image') {
+    return info;
+  }
+
+  return { type: 'text', text: info.text, color: info.color };
+});
+
+// 外链加载失败回退色块（服务端不保证 URL 可达，见 docs/API.md）。
+const avatarBroken = ref(false);
+
+watch(
+  () => props.author.avatar,
+  () => {
+    avatarBroken.value = false;
+  },
+);
 
 function goToProfile() {
   const id = props.author && props.author.id;
@@ -85,6 +114,16 @@ function goToProfile() {
   color: var(--text-on-brand);
   font-size: 18px;
   font-weight: 600;
+}
+
+/* 图片头像（第九批）：与色块同尺寸，object-fit: cover 防变形 */
+.author-avatar-img {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
 }
 
 .author-name {

@@ -2,8 +2,9 @@
   <!-- F2：从 div@click 改成 router-link，渲染成真正的 <a> —— 可 Tab 聚焦、回车进入，
        键盘可达。class 会合并到 <a> 上，原来挂 @click 的 openDetail 不再需要。 -->
   <router-link class="article-card" :to="{ name: 'article-detail', params: { id: article.id } }">
-    <!-- ④ 元数据 chip 化：作者 / 时间 / 阅读时长三枚胶囊。
-         chip 是对已有元数据的视觉强化，不是真标签（后端没有 tag 字段，不动 schema / 契约）。 -->
+    <!-- ④ 元数据 chip 化：作者 / 时间两枚胶囊。
+         chip 是对已有元数据的视觉强化，不是真标签（后端没有 tag 字段，不动 schema / 契约）。
+         方案 D 起去掉了阅读时长 chip，改成时间 chip 显示相对时间。 -->
     <div class="article-card-head">
       <!-- 入口：作者头像+名可点进 /user/:id。
            整张卡是 router-link（渲染成真实 <a href>），所以这里必须同时做两件事：
@@ -19,24 +20,36 @@
         @click.prevent.stop="goToAuthor"
         @keydown.enter.prevent.stop="goToAuthor"
       >
-        <span class="article-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
+        <img
+          v-if="avatarInfo.type === 'image' && !avatarBroken"
+          class="article-avatar-img"
+          :src="avatarInfo.src"
+          :alt="authorName"
+          @error="avatarBroken = true"
+        />
+        <span v-else class="article-avatar" :style="{ backgroundColor: avatarInfo.color }">{{ avatarInfo.text }}</span>
         <span class="article-author">{{ authorName }}</span>
       </span>
       <span v-else class="article-chip article-chip-author">
-        <span class="article-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
+        <img
+          v-if="avatarInfo.type === 'image' && !avatarBroken"
+          class="article-avatar-img"
+          :src="avatarInfo.src"
+          :alt="authorName"
+          @error="avatarBroken = true"
+        />
+        <span v-else class="article-avatar" :style="{ backgroundColor: avatarInfo.color }">{{ avatarInfo.text }}</span>
         <span class="article-author">{{ authorName }}</span>
       </span>
 
-      <span class="article-chip">{{ formatTime(article.createdAt) }}</span>
-
-      <!-- 阅读时长按列表接口给的 summary 估算（详情页才有全文，那里是精确值）。
-           tooltip 解释这个数字的来历 —— 光看「3 分钟」容易被当成发布时间。 -->
+      <!-- 时间 chip（方案 D）：正文显示相对时间（「3 小时前」），悬停 tooltip 给绝对时间。
+           卡片头是密集信息位，绝对时间（2026/10/3 01:49:50）太长会挤掉标题，
+           所以绝对时间只在 hover / 聚焦时出现。 -->
       <el-tooltip
-        v-if="readingTime"
-        content="预计阅读时长"
+        :content="absoluteTime"
         placement="top"
       >
-        <span class="article-chip article-chip-accent article-chip-time">{{ readingTime }}</span>
+        <span class="article-chip article-chip-time">{{ relativeTime }}</span>
       </el-tooltip>
     </div>
 
@@ -46,9 +59,9 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { formatTime, getAvatarColor, getAvatarText, getReadingTime } from '../utils/format.js';
+import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 
 const props = defineProps({
   article: {
@@ -69,11 +82,37 @@ const authorName = computed(() => {
   return author.nickname || author.username || '匿名';
 });
 
-const avatarText = computed(() => getAvatarText(authorName.value));
-const avatarColor = computed(() => getAvatarColor(authorName.value));
+// 头像形态（第九批）：有 avatar 外链渲染 <img>，否则回退色块 + 首字。
+// resolveAvatar 内部用 truthy 检查，**avatar 键不存在时**（探针造的对象就没有这个键）
+// 会自然落到 text 分支，不会因为 undefined 而破图。
+// 注意：text 分支返回的是 { text, color }，image 分支返回的是 { src }，
+// 所以模板里两种形态取的字段不一样，但都从同一个 avatarInfo 上读。
+const avatarInfo = computed(() => {
+  const info = resolveAvatar(props.article.author, authorName.value);
 
-// ④ 阅读时长：列表接口只给 summary，这里是估算值；详情页用全文 content 算精确值。
-const readingTime = computed(() => getReadingTime(props.article.summary));
+  if (info.type === 'image') {
+    return info;
+  }
+
+  return { type: 'text', text: info.text, color: info.color };
+});
+
+// 外链图片加载失败时回退色块（服务端不保证 URL 可达，见 docs/API.md）。
+// article 变化（含分页换页）时必须复位，否则会一直显示失败状态。
+const avatarBroken = ref(false);
+
+watch(
+  () => (props.article.author ? props.article.author.avatar : null),
+  () => {
+    avatarBroken.value = false;
+  },
+);
+
+// 方案 D：卡片不再显示阅读时长 chip（列表只有 summary，时长是估算值，参考价值低，
+// 而且三枚 chip 并排在窄屏会换行）。改用相对时间 + hover 给绝对时间。
+// 详情页有全文 content，那里保留精确的阅读时长。
+const relativeTime = computed(() => formatRelativeTime(props.article.createdAt));
+const absoluteTime = computed(() => formatAbsoluteTime(props.article.createdAt));
 
 // 入口：进该作者的个人主页。author 缺失（不该发生，API 保证内嵌 author）时不渲染入口。
 const authorId = computed(() => {
@@ -183,7 +222,7 @@ function goToAuthor() {
   color: var(--chip-text-accent);
 }
 
-/* el-tooltip 会把 chip 包在自己的 span 里，这里补一条 cursor 让它看起来可解释。
+/* 时间 chip 带 tooltip（方案 D），补一条 cursor 让它看起来可解释。
    chip 的其余样式仍由 .article-chip 提供，这里只做鼠标形态。 */
 .article-chip-time {
   cursor: help;
@@ -199,6 +238,16 @@ function goToAuthor() {
   color: var(--text-on-brand);
   font-size: 11px;
   font-weight: 600;
+}
+
+/* 图片头像（第九批）：与色块同尺寸，object-fit: cover 防变形 */
+.article-avatar-img {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
 }
 
 .article-author {
