@@ -4,7 +4,8 @@
 // 现状（第九批起变化）：MVP 不做用户管理——
 // docs/API.md 已把 GET/POST/PUT/DELETE /api/users 全部登记为「未实现」，
 // 文章与评论的作者信息通过内嵌 author 对象返回，不依赖用户列表接口。
-// **唯一已实现的是 PUT /api/users/me**（修改自己的资料），见下方updateMyProfile。
+// **已实现的是 PUT /api/users/me（改资料）与 POST /api/users/me/avatar（传头像）**，
+// 这是本项目仅有的两个 user 接口。
 //
 // 保留本文件而不删除：契约第 3 节声明了api/ 下的文件划分（契约 §3 有清单）。
 import request from './request.js';
@@ -30,6 +31,42 @@ import request from './request.js';
  */
 export function updateMyProfile(data) {
   return request.put('/users/me', data);
+}
+
+/**
+ * 上传头像文件。对应 docs/API.md 的 POST /api/users/me/avatar。
+ *
+ * **一步到位**：后端落盘 → 写库 → 删旧文件，一次请求全做完，
+ * 不返回「临时 url 让你再调 PUT /me」——那样中途放弃就会留下孤儿文件。
+ *
+ * ## ⚠️ Content-Type 的两道保险（本项目最容易踩的坑）
+ * request.js 给实例默认设了 `Content-Type: application/json`，
+ * 而 multipart 的 boundary 只能由浏览器生成，手工写死就会解析失败
+ * （表现为「接口说没收到文件」）。这里靠两道保险把默认头摘掉：
+ *
+ *   1. **显式置 undefined**（下面 headers 里那行）。
+ *      axios 的 `AxiosHeaders.toJSON()` 会过滤掉 `null / undefined` 的值
+ *      （见 axios/lib/core/AxiosHeaders.js），所以置 undefined = 删掉这个头，
+ *      不会真的发出一个值为 "undefined" 的头。
+ *   2. **axios 自己在浏览器环境也会摘**：data 是 FormData 时，
+ *      axios/lib/helpers/resolveConfig.js 调 `headers.setContentType(undefined)`，
+ *      把 Content-Type 留给浏览器。
+ *
+ * 两道保险都写上，是为了将来有人换了 axios 版本 / 换了请求库时，
+ * 至少有一处还生效——这个坑排查起来非常费劲（症状是「上传接口什么都没收到」）。
+ *
+ * @param {File} file 来自 <input type="file"> 的图片文件
+ * @returns {Promise<object>} 更新后的 public user（data.avatar 是站内相对路径）
+ */
+export function uploadAvatar(file) {
+  const form = new FormData();
+
+  // 字段名必须是 avatar，与后端 multer 的 single('avatar') 对齐
+  form.append('avatar', file);
+
+  return request.post('/users/me/avatar', form, {
+    headers: { 'Content-Type': undefined },
+  });
 }
 
 // 将来的形状示例（未启用）：

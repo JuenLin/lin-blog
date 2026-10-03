@@ -6,7 +6,8 @@
       </template>
 
       <el-alert type="info" :closable="false" show-icon class="profile-edit-tip">
-        头像是<strong>图片外链</strong>，请先把图片上传到图床，再把链接填到下面。系统不会替你托管图片，也不会检查链接是否真的能打开。
+        头像可以<strong>直接上传</strong>（JPG / PNG / WebP，不超过 2MB），也可以<strong>填图片外链</strong>。
+        <strong>上传是立即生效的</strong>，不必再点保存；简介仍要点保存。外链方式系统不托管图片，也不会检查链接是否真的能打开。
       </el-alert>
 
       <div class="avatar-preview">
@@ -36,6 +37,29 @@
         </div>
       </div>
 
+      <!-- 上传区（第十一批）。原生 input 用 CSS 藏起来，靠按钮代触发 click：
+           这样可以完全控制按钮文案 / loading 态，而不用去改 el-upload 的 DOM 结构
+           （也避免为了一个上传框引入 Element Plus 的 upload 组件）。 -->
+      <div class="avatar-upload">
+        <input
+          ref="fileInput"
+          class="avatar-file-input"
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          @change="handleFileChange"
+        />
+        <el-button
+          size="small"
+          type="primary"
+          :loading="uploading"
+          :disabled="uploading"
+          @click="pickFile"
+        >
+          {{ uploading ? '上传中…' : '上传图片' }}
+        </el-button>
+        <span class="avatar-upload-hint">支持 JPG / PNG / WebP，不超过 2MB</span>
+      </div>
+
       <!-- label-width 给足：「头像链接」与「个人简介」长度不同，
            label-position 默认 right 会让长短标签参差不齐，这里显式 left。
            label-width="0"：提交区没有 label，不归零会被右推 100px。 -->
@@ -47,12 +71,15 @@
         label-position="left"
         @submit.prevent="handleSubmit"
       >
-        <el-form-item label="头像链接" prop="avatar">
+        <el-form-item label="或图片外链" prop="avatar">
           <el-input
             v-model="form.avatar"
             placeholder="https://example.com/avatar.png，留空表示不改"
             clearable
           />
+          <p v-if="isUploadedAvatar" class="avatar-uploaded-tip">
+            当前是已上传的站内图片（服务端生成的路径，不建议手改）。
+          </p>
           <div class="avatar-actions">
             <el-button size="small" text type="primary" @click="clearAvatar">
               {{ form.avatar ? '清除头像' : '已是清除状态' }}
@@ -94,17 +121,28 @@
 import { computed, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { updateMyProfile } from '../api/user.js';
+import { updateMyProfile, uploadAvatar } from '../api/user.js';
 import { useUserStore } from '../stores/user.js';
-import { getAvatarColor, getAvatarText } from '../utils/format.js';
+import { getAvatarColor, getAvatarText, resolveAvatarUrl } from '../utils/format.js';
 
 const AVATAR_MAX_LENGTH = 255;
 const BIO_MAX_LENGTH = 200;
+
+// 与后端 utils/upload.js 的白名单、services/upload.service.js 的 limits 保持一致。
+// 前端先拦一道是为了**体验**（选错文件立刻提示，不用等上传完），
+// 不是为了安全——服务端会再拦一次，前端这层绕过毫无难度。
+const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_AVATAR_SIZE = 2 * 1024 * 1024;
 
 const router = useRouter();
 const userStore = useUserStore();
 const formRef = ref(null);
 const loading = ref(false);
+
+// 上传是独立的一次请求，与「保存资料」的 loading 互不干扰：
+// 上传中仍可编辑简介，两个按钮各管各的禁用态。
+const uploading = ref(false);
+const fileInput = ref(null);
 
 const displayName = computed(() => {
   if (!userStore.user) {
@@ -146,12 +184,19 @@ const avatarCleared = ref(false);
 const previewBroken = ref(false);
 
 // 预览源：清除状态 或 用户填了链接 才用链接，否则回退文字头像。
+//
+// 第十一批：值可能是站内相对路径（/uploads/avatars/1/xxx.png），
+// 必须过 resolveAvatarUrl 补上后端 origin，否则浏览器会去前端自己的 5173 端口找图。
+// 补 origin 只在这一个地方做（format.js 里），其它组件走 resolveAvatar 同样是这一处。
 const previewSrc = computed(() => {
   if (avatarCleared.value) return '';
-  return form.avatar.trim();
+  return resolveAvatarUrl(form.avatar.trim());
 });
 const previewText = computed(() => getAvatarText(displayName.value));
 const previewColor = computed(() => getAvatarColor(displayName.value));
+
+// 当前头像是不是「上传得来的站内路径」：是的话给一句提示，别让用户手改这个路径。
+const isUploadedAvatar = computed(() => !avatarCleared.value && form.avatar.trim().startsWith('/uploads/'));
 
 // 前端只做「格式」校验，「是否真的存在」「是否与他人重复」等一律以服务端为准。
 const rules = computed(() => ({
@@ -165,10 +210,11 @@ const rules = computed(() => ({
           return callback();
         }
 
-        // 与后端user.validator.js 同一套规则：不接受 javascript: / data: 等伪协议，
-        // 它们会在前端被渲染进 <img src>，等同于 XSS。
-        if (!/^https?:\/\//i.test(text)) {
-          return callback(new Error('头像链接必须以 http:// 或 https:// 开头'));
+        // 与后端 user.validator.js 同一套规则：接受 http(s) 外链，
+        // 或第十一批上传产生的站内路径（/uploads/ 开头）。
+        // javascript: / data: 等伪协议仍然要挡——它们会被渲染进 <img src>，等同于 XSS。
+        if (!/^https?:\/\//i.test(text) && !text.startsWith('/uploads/')) {
+          return callback(new Error('必须是 http(s):// 外链，或 /uploads/ 开头的站内路径'));
         }
 
         if (text.length > AVATAR_MAX_LENGTH) {
@@ -195,6 +241,77 @@ const rules = computed(() => ({
     },
   ],
 }));
+
+/**
+ * 上传头像（第十一批）。
+ *
+ * 与「保存」是两条独立路径：上传**立即写库**（后端一步到位，见 docs/API.md），
+ * 不走 buildPayload / 不点保存。所以成功后要同步三件事，否则表单会「以为没改」：
+ *   ① store（顶部下拉、文章卡片等处立刻显示新头像）
+ *   ② originalAvatar（buildPayload 的比对基准，不同步会把新头像误判成「用户改了」再提交一次）
+ *   ③ form.avatar（输入框与预览的源）
+ *
+ * @param {Event} event input[type=file] 的 change 事件
+ */
+async function handleFileChange(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+
+  // 无论成败都清空 input.value：否则用户第二次选**同一个文件**不会触发 change，
+  // 表现为「点了没反应」——这是原生 file input 的经典坑。
+  const reset = () => {
+    input.value = '';
+  };
+
+  if (!file) {
+    reset();
+    return;
+  }
+
+  if (!ALLOWED_TYPES.includes(file.type)) {
+    ElMessage.error('只支持 JPG / PNG / WebP 格式');
+    reset();
+    return;
+  }
+
+  if (file.size > MAX_AVATAR_SIZE) {
+    ElMessage.error('图片不能超过 2MB');
+    reset();
+    return;
+  }
+
+  uploading.value = true;
+
+  try {
+    const user = await uploadAvatar(file);
+
+    userStore.setUser(user);
+    originalAvatar.value = user.avatar !== undefined ? user.avatar : null;
+    form.avatar = originalAvatar.value || '';
+    avatarCleared.value = false;
+    previewBroken.value = false;
+
+    // 清掉之前的校验报错（例如原先填过非法外链留下的红字）
+    formRef.value && formRef.value.clearValidate('avatar');
+
+    ElMessage.success('头像已更新');
+  } catch (error) {
+    // 错误提示由 request.js 拦截器统一抛出，这里不重复处理 code。
+    ElMessage.error(error.message);
+  } finally {
+    uploading.value = false;
+    reset();
+  }
+}
+
+function pickFile() {
+  if (uploading.value) {
+    return;
+  }
+
+  // display:none 的 input 依然可以被程序触发 click —— 这是隐藏原生文件框的标准做法。
+  fileInput.value && fileInput.value.click();
+}
 
 function clearAvatar() {
   avatarCleared.value = true;
@@ -363,6 +480,29 @@ async function handleSubmit() {
   margin: 0;
   font-size: 12px;
   color: #e6a23c;
+}
+
+.avatar-upload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -8px 0 20px;
+}
+
+/* 原生文件框藏起来，只留按钮。display:none 不影响程序化 click()。 */
+.avatar-file-input {
+  display: none;
+}
+
+.avatar-upload-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.avatar-uploaded-tip {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .avatar-actions {

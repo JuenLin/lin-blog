@@ -4,7 +4,18 @@
       <!-- 头部：作者信息 + 返回广场。作者名从命中文章里取昵称 / 用户名；
            若 100 窗内没有该作者的文章（0 篇），退化为「用户 #id」。 -->
       <div class="profile-head">
-        <span class="profile-avatar" :style="{ backgroundColor: avatarColor }">{{ avatarText }}</span>
+        <!-- 第五处头像渲染（第十一批补）：前四处是 UserDropdown / ArticleCard /
+             AuthorCard / CommentList，都走 resolveAvatar；这里原本只渲染文字头像，
+             第九批漏了，导致「上传了头像却在个人主页看不到」。
+             两种形态同样用 v-if 分支：有 avatar 渲染 <img>，否则回退色块 + 首字。 -->
+        <img
+          v-if="avatarInfo.type === 'image' && !avatarBroken"
+          class="profile-avatar-img"
+          :src="avatarInfo.src"
+          :alt="displayName"
+          @error="avatarBroken = true"
+        />
+        <span v-else class="profile-avatar" :style="{ backgroundColor: fallbackColor }">{{ fallbackText }}</span>
         <div class="profile-meta">
           <h1 class="profile-name">{{ displayName }} 的主页</h1>
           <p class="profile-sub">
@@ -58,7 +69,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { listArticles } from '../api/article.js';
-import { getAvatarColor, getAvatarText } from '../utils/format.js';
+import { getAvatarColor, getAvatarText, resolveAvatar } from '../utils/format.js';
 import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import Pagination from '../components/Pagination.vue';
@@ -99,8 +110,23 @@ const displayName = computed(() => {
   return targetId.value === null ? '用户' : `用户 #${targetId.value}`;
 });
 
-const avatarText = computed(() => getAvatarText(displayName.value));
-const avatarColor = computed(() => getAvatarColor(displayName.value));
+// 头像形态由 resolveAvatar 统一决定：有 avatar 渲染 <img>，否则色块 + 首字。
+// authorInfo 在「该作者 0 篇」时为 null，resolveAvatar 内部有 truthy 判断，自然回退文字头像。
+const avatarInfo = computed(() => resolveAvatar(authorInfo.value, displayName.value));
+const fallbackText = computed(() => getAvatarText(displayName.value));
+const fallbackColor = computed(() => getAvatarColor(displayName.value));
+
+// 图片加载失败（文件被手工删了 / 悬空引用）时回退到色块 + 首字。
+// 头像 URL 服务端只校验形态、不保证可达（docs/API.md），所以这是常态路径之一，不是兜底。
+// 关键：作者切换时必须复位，否则跳到下一个作者会沿用上一次的失败状态。
+const avatarBroken = ref(false);
+
+watch(
+  () => route.params.id,
+  () => {
+    avatarBroken.value = false;
+  }
+);
 
 // 过滤后的真实条数（受 100 窗上限约束，可能小于作者实际总数）
 const total = computed(() => filtered.value.length);
@@ -181,7 +207,8 @@ onMounted(load);
   margin-bottom: 20px;
 }
 
-.profile-avatar {
+.profile-avatar,
+.profile-avatar-img {
   width: 48px;
   height: 48px;
   border-radius: 50%;
@@ -192,6 +219,12 @@ onMounted(load);
   font-size: 20px;
   font-weight: 600;
   flex: 0 0 auto;
+}
+
+/* object-fit: cover —— 上传的原图长宽比不确定，不裁会撑变形 */
+.profile-avatar-img {
+  object-fit: cover;
+  display: block;
 }
 
 .profile-meta {

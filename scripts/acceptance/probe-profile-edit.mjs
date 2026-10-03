@@ -10,7 +10,9 @@
 //   B. 校验规则（5 条）
 //      5. 空 body {} → 40000
 //      6. 禁传 username / id / userId / password 各→ 40000
-//      7. avatar 必须 http/https 开头（javascript: / data: / ftp:// / 相对路径各→ 40000）
+//      7. avatar 必须是 http(s) 外链**或** /uploads/ 站内路径（第十一批放宽；
+//         javascript: / data: / ftp:// / 其它相对路径仍→ 40000）
+//      7b. /uploads/ 开头的站内路径放行（第十一批新增）
 //      8. avatar 超长（256 字符）→ 40000；边界 255 放行
 //      9. bio 超长（201 字符）→ 40000；边界 200 放行
 //   C. 鉴权与存在性（2 条）
@@ -200,11 +202,14 @@ try {
     );
   }
 
-  // ---------- B3. avatar 伪协议必须拦下（防 XSS：前端会渲染成 <img src>）----------
+  // ---------- B3. avatar 伪协议 / 非法前缀必须拦下（防 XSS：前端会渲染成 <img src>）----------
+  // 第十一批放宽后放行两种形态：http(s) 外链 与 /uploads/ 站内路径。
+  // `ftp://` 是非 http 协议；`/local/a.png` 是站内路径之外的相对路径；
+  // `example.com/a.png` 没有协议头 —— 三者都要继续拦住。
   for (const bad of ['javascript:alert(1)', 'data:image/png;base64,iVBOR', 'ftp://x.com/a.png', '/local/a.png', 'example.com/a.png']) {
     const r = await call(ME_URL, { method: 'PUT', token, body: { avatar: bad } });
     log(
-      `PE-B3 avatar="${bad}" → 40000（必须 http/https 开头）`,
+      `PE-B3 avatar="${bad}" → 40000（只允许 http(s) 外链或 /uploads/ 站内路径）`,
       r.status === 400 && codeOf(r) === 40000,
       `status=${r.status} code=${codeOf(r)}`
     );
@@ -222,6 +227,17 @@ try {
 
   const b4bioLong = await call(ME_URL, { method: 'PUT', token, body: { bio: bio201 } });
   log('PE-B4d bio 超长 201 字符 → 40000', b4bioLong.status === 400 && codeOf(b4bioLong) === 40000, `status=${b4bioLong.status} code=${codeOf(b4bioLong)}`);
+
+  // ---------- B5. 第十一批放宽：/uploads/ 站内路径放行 ----------
+  // 放在 B4 之后是刻意的：本条会把头像改成站内路径，而「改头像」会触发服务端删旧文件。
+  // 放在最后一位，后面就不再有 avatar 写入（D1 只改 bio），也就不会真的去删磁盘上不存在的
+  // 这个文件（删不掉只是 warn，但没必要给后端日志添噪音）。
+  const b5 = await call(ME_URL, { method: 'PUT', token, body: { avatar: '/uploads/avatars/1/x.png' } });
+  log(
+    'PE-B5 avatar="/uploads/avatars/1/x.png" → 放行（第十一批新增的站内路径形态）',
+    b5.status === 200 && codeOf(b5) === 0 && (dataOf(b5) || {}).avatar === '/uploads/avatars/1/x.png',
+    `status=${b5.status} code=${codeOf(b5)} avatar=${JSON.stringify((dataOf(b5) || {}).avatar)}`
+  );
 
   // ---------- C1. 未登录 401，且优先于参数校验 ----------
   const c1 = await call(ME_URL, { method: 'PUT', body: { username: 'x' } });
