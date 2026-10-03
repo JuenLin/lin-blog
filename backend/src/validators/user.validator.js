@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { AVATAR_URL_PREFIX } from '../utils/upload.js';
 
 // docs/API.md 的 PUT /api/users/me：
-//   avatar  1–255 字符，必须以 http:// 或 https:// 开头，可为 null（清空）
+//   avatar  1–255 字符，必须是外链（http:// / https://）或站内路径（/uploads/ 开头），可为 null（清空）
 //   bio     1–200 字符，可为 null（清空）；空串在入口转成 null
 //
 // 长度上限与 DB.md 的列定义严格一致（avatar VARCHAR(255) / bio VARCHAR(200)），
@@ -11,17 +12,32 @@ const AVATAR_MAX_LENGTH = 255;
 const BIO_MAX_LENGTH = 200;
 
 /**
- * 头像 URL 的协议白名单。
+ * 头像取值：外链或站内路径，二选一。
  *
- * 为什么必须挡伪协议：零依赖方案下服务端不上传图片，前端会把这个 URL
- * 直接渲染进 <img src> / background-image。若允许 javascript: 或 data:，
- * 就等于把 XSS 的执行权交给用户输入。限定 http / https 两种即可挡住这两类，
- * 且不影响正常图床链接。
+ * ## 为什么必须挡伪协议
+ * 零依赖方案下服务端不上传图片，前端会把这个值直接渲染进 <img src> / background-image。
+ * 若允许 javascript: 或 data:，就等于把 XSS 的执行权交给用户输入。限定 http / https
+ * 即可挡住这两类，且不影响正常图床链接。
  *
- * 注意：这里只校验「长得像不像 URL」，**不校验可达性**——校验可达性要发外部
- * HTTP 请求，会让本接口耗时不可控（外部站点超时/挂掉会拖住我们），也违背
- * 「零依赖、不发额外网络请求」的约束。代价是服务端不保证图片真实存在。
+ * ## 为什么站内路径（第十一批放开）同样安全
+ * 前缀被钉死成 `/uploads/`，后面那截**不是用户自由输入的**，安全性由四层约束保证：
+ *   ① 文件名由服务端生成（时间戳 + randomBytes），`file.originalname` 不参与命名或拼路径
+ *   ② 扩展名由服务端按 mimetype 白名单映射，只有 .jpg / .png / .webp 三种
+ *   ③ 目录按 token 里的 userId 分，用户碰不到别人的目录
+ *   ④ express.static 关了目录列表与点文件
+ * 因此放开前缀 ≠ 放开任意路径。这里校验的是「形态」，不是「内容」。
+ *
+ * 注意：只校验「长得像不像」，**不校验可达性**——校验可达性要发外部 HTTP 请求，
+ * 会让本接口耗时不可控（外部站点超时/挂掉会拖住我们），也违背「零依赖、不发额外
+ * 网络请求」的约束。代价是服务端不保证图片真实存在（破图由前端 error 事件兜底）。
+ *
+ * 补充：`users.avatar` 理论上仍可被手工写成 `/uploads/../../xx`，但取文件时
+ * express.static 会把解析后越出 root 的路径挡成 403，且 services/upload.service.js
+ * 的 deleteLocalAvatar 在真正 rm 之前还有一道「必须在 UPLOAD_DIR 内」的校验。
  */
+const isExternalUrl = (value) => /^https?:\/\//i.test(value);
+const isLocalPath = (value) => value.startsWith(AVATAR_URL_PREFIX);
+
 const avatarSchema = z
   .string()
   .max(AVATAR_MAX_LENGTH, `不能超过 ${AVATAR_MAX_LENGTH} 个字符`)
@@ -30,8 +46,8 @@ const avatarSchema = z
     '不能为空字符串，清空头像请传 null'
   )
   .refine(
-    (value) => /^https?:\/\//i.test(value),
-    '必须以 http:// 或 https:// 开头'
+    (value) => isExternalUrl(value) || isLocalPath(value),
+    `必须是 ${AVATAR_URL_PREFIX} 开头的站内路径，或 http:// / https:// 开头的外链`
   );
 
 const bioSchema = z.string().max(BIO_MAX_LENGTH, `不能超过 ${BIO_MAX_LENGTH} 个字符`);

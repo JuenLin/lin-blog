@@ -2,6 +2,7 @@ import prisma from '../utils/prisma.js';
 import { whereNotDeleted } from '../utils/query.js';
 import { CODE, httpError } from '../utils/response.js';
 import { hasField } from '../validators/user.validator.js';
+import { deleteLocalAvatar, deleteUploadedFile, toAvatarUrl } from './upload.service.js';
 
 // 对外返回的 user 字段。
 // **与 validators/user.validator.js 的 forbiddenIdentityFields 是两回事**：
@@ -50,6 +51,12 @@ function toPublicUser(user) {
  * 空串处理：bio 传 '' 时视为「清空」（docs/API.md 规定），
  * 统一转成 null 存储，不接受「空字符串」这种状态。
  *
+ * ## 旧头像文件的清理（第十一批）
+ * 若本次改动了 avatar，且**旧值是站内路径**（`/uploads/` 开头），写库成功后把旧文件删掉。
+ * 顺序是**先写库、再删文件**：反过来（先删后写）一旦写库失败，用户就彻底没头像了；
+ * 前者删失败只留一个垃圾文件（登记在 docs/DB.md「已知限制」第 4 条），不影响正确性。
+ * 旧值是外链时不动——文件本来就不在我们的磁盘上。
+ *
  * @param {object} params
  * @param {number} params.userId 来自 token
  * @param {object} params.body 已通过 zod 校验的请求体
@@ -58,7 +65,8 @@ function toPublicUser(user) {
 export async function updateProfile({ userId, body }) {
   const user = await prisma.user.findFirst({
     where: whereNotDeleted({ id: userId }),
-    select: { id: true },
+    // 多查一个 avatar：写库成功后要拿旧值清文件，不查就得再发一条 SQL。
+    select: { id: true, avatar: true },
   });
 
   if (!user) {
@@ -88,6 +96,58 @@ export async function updateProfile({ userId, body }) {
     data,
     select: PUBLIC_FIELDS,
   });
+
+  // 写库成功后才清旧文件；改的是 bio 时 avatar 键没出现，不做任何删除。
+  if (hasField(body, 'avatar')) {
+    deleteLocalAvatar(user.avatar);
+  }
+
+  return toPublicUser(updated);
+}
+
+/**
+ * 上传头像：把「multer 已落盘的文件」变成 users.avatar 的站内路径并写库。
+ * 对应 docs/API.md 的 POST /api/users/me/avatar。
+ *
+ * ## 为什么写成三个分支（而不是一个 try 包到底）
+ * 磁盘与数据库之间没有事务，只能靠**补偿动作**兜底：
+ *   - 用户不存在 → 文件已经落盘了，删掉，不留孤儿
+ *   - 写库失败   → 同上，删掉刚落盘的文件（API.md 处理顺序第 5 步的反向操作）
+ *   - 写库成功   → 删旧头像（顺序是先写库再删，理由见 updateProfile 的注释）
+ *
+ * 前两个分支是「回滚」，第三个是「清理」，性质不同，分开写更清楚。
+ *
+ * @param {object} params
+ * @param {number} params.userId 来自 token
+ * @param {object} params.file multer 的 file 对象（diskStorage，必有 path）
+ * @returns {Promise<object>} 完整的 public user
+ */
+export async function updateAvatar({ userId, file }) {
+  const user = await prisma.user.findFirst({
+    where: whereNotDeleted({ id: userId }),
+    select: { id: true, avatar: true },
+  });
+
+  if (!user) {
+    deleteUploadedFile(file.path);
+    throw httpError(404, CODE.NOT_FOUND, '用户不存在');
+  }
+
+  const avatar = toAvatarUrl(file);
+
+  let updated;
+  try {
+    updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { avatar },
+      select: PUBLIC_FIELDS,
+    });
+  } catch (error) {
+    deleteUploadedFile(file.path);
+    throw error;
+  }
+
+  deleteLocalAvatar(user.avatar);
 
   return toPublicUser(updated);
 }

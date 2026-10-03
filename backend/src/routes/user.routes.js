@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import validate from '../middlewares/validate.js';
 import auth from '../middlewares/auth.js';
-import { updateProfile } from '../controllers/user.controller.js';
+import { updateProfile, uploadAvatar } from '../controllers/user.controller.js';
 import { updateProfileSchema } from '../validators/user.validator.js';
+import { avatarUpload } from '../services/upload.service.js';
 
 const router = Router();
 
@@ -18,5 +19,20 @@ const router = Router();
  * 避免未登录的人拿构造的请求体探测参数错误信息。
  */
 router.put('/me', auth, validate({ body: updateProfileSchema }), updateProfile);
+
+/**
+ * 上传头像（第十一批）。对应 docs/API.md 的 POST /api/users/me/avatar。
+ *
+ * 中间件顺序：**auth → avatarUpload（multer）**。
+ * auth 必须在前，未登录的请求根本不进入 multipart 解析——解析是要收完整请求体的，
+ * 让匿名请求触发文件解析等于白送一个放大攻击面。
+ *
+ * 这里**没有 validate**：请求体是 multipart 不是 JSON，字段规则由 multer 的
+ * limits / fileFilter 承担（大小、格式、字段名），不走 zod 那一套。
+ *
+ * 注意 `/me/avatar` 与 `PUT /me` 是两个独立路径，不是 `/me` 的子资源路由：
+ * 前者收文件、后者收字符串，语义不同，合成一个反而要在本函数里分叉。
+ */
+router.post('/me/avatar', auth, avatarUpload, uploadAvatar);
 
 export default router;
