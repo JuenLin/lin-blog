@@ -26,6 +26,7 @@ model User {
   deletedAt DateTime? @map("deleted_at")
   articles  Article[]
   comments  Comment[]
+  likes     Like[]
 
   @@map("users")
 }
@@ -40,6 +41,7 @@ model Article {
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
   comments  Comment[]
+  likes     Like[]
 
   @@index([deletedAt, createdAt])
   @@index([deletedAt, updatedAt])
@@ -59,4 +61,27 @@ model Comment {
 
   @@index([articleId, createdAt])
   @@map("comments")
+}
+
+// 第十批：文章点赞。
+// 「点赞」是一个动作而不是一条可隐藏的内容，所以本表**刻意不设 deleted_at**
+// （与 articles / comments 的软删除约定不同）：取消点赞是撤销动作，用物理 DELETE。
+// 若改成软删，同一 (user_id, article_id) 取消后再赞会撞唯一约束，
+// 只能变成 UPDATE 而非 INSERT，「点赞 = 该行存在」这个不变式就不再成立。
+model Like {
+  id        Int      @id @default(autoincrement())
+  // 点赞者不是「作者」，按 docs/DB.md「外键命名规则」用 user_id 而非 author_id。
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  articleId Int      @map("article_id")
+  article   Article  @relation(fields: [articleId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 防重复点赞的唯一约束。应用层「先查后写」存在竞态窗口（两个并发请求都查到
+  // 「未赞」→ 都插入），**DB 唯一约束是唯一真相**，由它最终拦截并回 P2002。
+  @@unique([userId, articleId], name: "likes_user_id_article_id_key")
+  // 支撑「某篇文章的 likeCount」实时 count（走 SELECT COUNT(*) WHERE article_id = ?）
+  // 与「我赞过哪些文章」。user_id 侧不另建索引：上面唯一索引的左前缀已承担。
+  @@index([articleId])
+  @@map("likes")
 }

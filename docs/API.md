@@ -265,6 +265,7 @@ Authorization: Bearer <token>
 - 文章列表支持 `keyword` 模糊搜索，命中范围为**标题 + 正文**（不含作者昵称），详见 `GET /api/articles`。
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
+- **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
 
@@ -279,6 +280,8 @@ Authorization: Bearer <token>
 | GET    | /api/articles/:id          | 文章详情                       | 否  |
 | PUT    | /api/articles/:id          | 编辑文章（仅作者）                  | 是  |
 | DELETE | /api/articles/:id          | 删除文章（仅作者，软删除）              | 是  |
+| POST   | /api/articles/:id/like     | 点赞文章（可对自己的文章点赞）             | 是  |
+| DELETE | /api/articles/:id/like     | 取消点赞                        | 是  |
 | POST   | /api/comments              | 发表评论                       | 是  |
 | GET    | /api/articles/:id/comments | 文章评论列表                     | 否  |
 
@@ -315,11 +318,15 @@ Authorization: Bearer <token>
     "title": "我的第一篇博客",
     "content": "正文……",
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
+    "likeCount": 0,
     "createdAt": "2026-09-29T14:00:00.000Z",
     "updatedAt": "2026-09-29T14:00:00.000Z"
   }
 }
 ```
+
+> 新建文章的 `likeCount` **恒为 0**（`likes` 表里还没有任何行）。这里显式返回 0 而不是省略该键 ——
+> 文章对象在任何接口里都带 `likeCount`，前端不需要区分「接口没返回」和「确实是 0」。
 
 失败：
 
@@ -365,6 +372,7 @@ Authorization: Bearer <token>
         "title": "我的第一篇博客",
         "summary": "正文前 100 字……",
         "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
+        "likeCount": 3,
         "createdAt": "2026-09-29T14:00:00.000Z",
         "updatedAt": "2026-09-29T14:00:00.000Z"
       }
@@ -377,10 +385,14 @@ Authorization: Bearer <token>
 }
 ```
 
-| 字段             | 类型     | 说明                                |
-| -------------- | ------ | --------------------------------- |
-| list[].summary | string | 后端截取 `content` 前 100 字符，列表不返回全文   |
-| list[].author  | object | 作者 `id` / `username` / `nickname` |
+| 字段               | 类型     | 说明                                 |
+| ---------------- | ------ | ---------------------------------- |
+| list[].summary   | string | 后端截取 `content` 前 100 字符，列表不返回全文    |
+| list[].author    | object | 作者 `id` / `username` / `nickname`  |
+| list[].likeCount | number | 该文章的点赞数（第十批新增），实时 `COUNT(*)`；不含 `liked` |
+
+- `likeCount` 是**实时统计**而非冗余字段：由 `likes` 表 `COUNT(*)` 得出，不在 `articles` 表存列，因此永远不会与真实点赞数不一致。
+- 列表**不返回 `liked`**（当前用户是否已赞）。这两个接口无需登录，若要在它们里区分「当前用户是否已赞」，就必须给 `auth` 中间件加「token 无效也不报错」的可选模式 —— 那会改动所有接口共用的中间件，影响面超出点赞功能本身。详见 `POST /api/articles/:id/like` 的「为什么不返回 `liked`」。
 
 `summary` 为原始 `content` 截取，可能包含 Markdown 标记，前端负责渲染时清理。
 
@@ -405,11 +417,14 @@ Authorization: Bearer <token>
     "title": "我的第一篇博客",
     "content": "正文……",
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
+    "likeCount": 3,
     "createdAt": "2026-09-29T14:00:00.000Z",
     "updatedAt": "2026-09-29T14:00:00.000Z"
   }
 }
 ```
+
+`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`**。
 
 失败：
 
@@ -459,6 +474,126 @@ Authorization: Bearer <token>
 判断顺序：**先查文章是否存在（不存在返回 404），再判断是否为作者（非作者返回 403）**。不得先判断作者，避免通过 403 / 404 的差异枚举真实存在的文章 id。
 
 删除后，该文章的评论数据保留，但随文章一起不可见。
+
+---
+
+### POST /api/articles/:id/like
+
+点赞文章。**需要登录**。点赞者取 token 中的 `userId`，不接受请求体里的身份字段。
+
+路径参数：`id`，正整数。**无请求体**（传了也忽略，不校验、不报错）。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "已点赞",
+  "data": {
+    "liked": true,
+    "likeCount": 4
+  }
+}
+```
+
+| 字段                | 类型      | 说明                                    |
+| ----------------- | ------- | ------------------------------------- |
+| data.liked        | boolean | 恒为 `true`（点赞后的状态）                     |
+| data.likeCount    | number  | **点赞后**的总数，已包含本次这一票                   |
+
+失败：
+
+| HTTP | code  | message        | 场景                       |
+| ---- | ----- | -------------- | ------------------------ |
+| 400  | 40000 | id 非正整数        | 路径参数非法                   |
+| 401  | 40100 | 未登录或 token 无效  | 未提供 token、token 无效或过期    |
+| 404  | 40400 | 文章不存在          | 文章不存在**或已被软删除**          |
+| 409  | 40900 | 已点赞过这篇文章       | 同一用户对同一文章重复点赞            |
+
+判断顺序：**先校验路径参数 → 再鉴权（401）→ 再判定文章存在性（404）→ 最后才写库**。与 `DELETE /api/articles/:id` 一致，**文章不存在必须先于任何写操作返回**，不得先写后回滚。
+
+**允许给自己的文章点赞**。理由：① 技术上无任何约束障碍（唯一约束只管「同一人不能重复赞」）；② 小红书 / 掘金 / 知乎等主流平台均允许，楼主给自己文章点赞是常见行为；③ 禁止反而会让「用户给自己发的文章点赞做功能验证」这个正常场景失败。
+
+#### 幂等与并发：唯一约束是唯一真相
+
+`likes` 表有唯一约束 `likes_user_id_article_id_key (user_id, article_id)`。**并发下的重复点赞只能由数据库拦截**，应用层的「先查是否已赞再插入」存在竞态窗口 —— 两个并发请求都在对方写入前查到「未赞过」，然后都会执行 INSERT。
+
+因此实现必须是：
+
+1. 直接 `create`，捕获 Prisma 的 `P2002`（底层是 MySQL `1062`）→ 转 `409 / 40900`。
+2. **不允许把「先查后写」当作正确性保障**。它最多用来给出更友好的提示，真正的拦截靠唯一约束。
+
+> 该约束已在数据库层实测：重复插入报 `1062 Duplicate entry '1-7' for key 'likes.likes_user_id_article_id_key'`
+> （见 `docs/DB.md`「likes」小节的「约束实测」）。本接口要做的只是把这个错误翻译成 409。
+
+`40900`（资源冲突）是**既有业务码**，此前用于「用户名已存在」，本接口复用它，**不新增业务码**。
+
+#### 为什么不返回 `liked`（列表 / 详情接口）
+
+`GET /api/articles` 与 `GET /api/articles/:id` **都是无需登录的公开接口**。若在它们里返回 `liked`，就必须判断「请求带没带 token、token 是否对应某个真实用户」—— 而本项目的 `auth` 中间件是强制 401 的，没有「可选认证」这个模式。
+
+给 `auth` 加可选模式能解决这个问题，但**改的是所有接口共用的中间件**，影响面超出点赞这一项功能，属于契约第 12 节「一个改动影响超过 3 个功能点需先确认」的情形。因此本批采用：
+
+- 列表 / 详情**只返回 `likeCount`，不返回 `liked`**；
+- `liked` 由本接口与 `DELETE` 接口的**响应**给出。
+
+**已知代价（用户已确认，单独排一批改善）**：已点赞的用户刷新详情页后，按钮仍显示「未赞」态（`likeCount` 是对的，只有按钮态不准）。此时再点一次会收到 `409`。MVP 可接受。
+
+---
+
+### DELETE /api/articles/:id/like
+
+取消点赞。**需要登录**。
+
+路径参数：`id`，正整数。**无请求体**。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "已取消点赞",
+  "data": {
+    "liked": false,
+    "likeCount": 3
+  }
+}
+```
+
+| 字段             | 类型      | 说明                |
+| -------------- | ------- | ----------------- |
+| data.liked     | boolean | 恒为 `false`        |
+| data.likeCount | number  | **取消后**的总数，已扣除这一票 |
+
+失败：
+
+| HTTP | code  | message       | 场景              |
+| ---- | ----- | ------------- | --------------- |
+| 400  | 40000 | id 非正整数       | 路径参数非法          |
+| 401  | 40100 | 未登录或 token 无效 | 未提供 token、token 无效或过期 |
+| 404  | 40400 | 文章不存在         | 文章不存在或已被软删除     |
+| 404  | 40400 | 还没有点赞过这篇文章    | 用户此前未点赞，或已取消过   |
+
+判断顺序同 `POST`：参数 → 鉴权 → 文章存在性 → 写库。
+
+**取消点赞未点赞过的文章返回 404 而非 204**：这两个状态在语义上不同 —— 「文章不存在」和「你没赞过」都是调用方的错误假设，静默成功会让前端无法区分「已取消」与「本来就没赞」。
+
+#### 为什么是物理 DELETE 而不是软删
+
+`likes` 表**不设 `deleted_at`**（与 `articles` / `comments` 不同，是刻意设计，理由见 `docs/DB.md`）：
+
+- 点赞是**一个动作**，不是一条可隐藏的内容，没有「隐藏但保留」的语义；
+- 若做软删，同一 `(user_id, article_id)` 取消后再点赞会撞唯一约束，只能改成 `UPDATE ... SET deleted_at = NULL` 而非 `INSERT`，「点赞 = 该行存在」这个不变式就不成立了。
+
+因此取消点赞是 `DELETE FROM likes WHERE user_id = ? AND article_id = ?`，且**用 `deleteMany` 而非 `delete`** —— 后者在记录不存在时会抛 `P2025`，前者返回 `{ count }`，用 `count === 0` 判断「没赞过」更直接。
+
+#### 软删除联动
+
+| 场景                     | 行为                                                                          |
+| ---------------------- | --------------------------------------------------------------------------- |
+| 对已软删的文章点赞 / 取消点赞      | **404**（复用 `requireArticleForWrite(id)`，与发表评论同一条路径）                         |
+| 文章被软删后，已有的点赞行         | **保留**，不连带删除。文章整体不可见，其 `likeCount` 不会外泄                                     |
+| 点赞者被软删后，他的点赞行         | **保留，且仍计入 `likeCount`** —— 计数只按 `article_id` 过滤，不过滤点赞者。MVP 无用户删除功能故不触发，已登记在 `docs/DB.md`「已知限制」第 3 条 |
 
 ---
 
@@ -701,8 +836,10 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 
 ### MVP 范围外（明确不做）
 
-点赞、收藏、标签、评论删除、「只看我的文章」筛选。
+收藏、标签、评论删除、「只看我的文章」筛选。
 
+> 说明 0：**点赞已实现**（第十批，`POST` / `DELETE /api/articles/:id/like`，列表与详情返回 `likeCount`），已从上表移出。遗留项：`liked`（当前用户是否已赞）不在列表 / 详情返回，刷新详情页后按钮态会显示为「未赞」，**单独排一批改善**。
+>
 > 说明 1：「只看我的文章」不涉及表结构变更，将来做「我的博客」页时，在 `GET /api/articles` 加一个可选 `authorId` 查询参数即可。
 >
 > 说明 2：**搜索已实现**（`GET /api/articles` 的 `keyword` 参数，命中标题 + 正文），已从上表移出。搜索**不含作者昵称**，也不做标签 / 分类聚合搜索。

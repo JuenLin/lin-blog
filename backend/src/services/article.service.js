@@ -33,6 +33,13 @@ const ARTICLE_DETAIL_SELECT = {
   author: {
     select: AUTHOR_SELECT,
   },
+  // 第十批：点赞数。用 relation count 而不是单独发 COUNT 查询，
+  // 否则列表接口每篇文章一次 COUNT 就是 N+1。Prisma 会把它编成一条
+  // 关联子查询（或 join 后聚合），**列表接口只发一次 SQL**。
+  // 不加 articles.like_count 冗余列（docs/API.md 通用约定）。
+  _count: {
+    select: { likes: true },
+  },
 };
 
 // 写入类操作只需要判断存在性与作者，不取正文。
@@ -66,6 +73,7 @@ function toArticleDetail(article) {
     title: article.title,
     content: article.content,
     author: toAuthor(article.author),
+    likeCount: article._count ? article._count.likes : 0,
     createdAt: article.createdAt,
     updatedAt: article.updatedAt,
   };
@@ -77,6 +85,9 @@ function toArticleListItem(article) {
     title: article.title,
     summary: buildSummary(article.content),
     author: toAuthor(article.author),
+    // 与详情口径一致：实时 COUNT(*)。_count 缺失时降级为 0 而不是 undefined，
+    // 这样「接口没返回」和「确实是 0」对前端是同一个值（docs/API.md 的约定）。
+    likeCount: article._count ? article._count.likes : 0,
     createdAt: article.createdAt,
     updatedAt: article.updatedAt,
   };
@@ -166,7 +177,9 @@ export async function getArticleDetail(id) {
 /**
  * 取文章用于「存在性 / 权限」判断。不存在或已软删除一律 404。
  */
-async function requireArticleForWrite(id) {
+// 导出供 like.service.js 复用：点赞/取消点赞要的是同一套「文章存在且未软删」判定，
+// 与其在 like.service 里再写一遍，不如共用一处，避免两边口径漂移。
+export async function requireArticleForWrite(id) {
   const article = await prisma.article.findFirst({
     where: whereNotDeleted({ id }),
     select: ARTICLE_OWNER_SELECT,

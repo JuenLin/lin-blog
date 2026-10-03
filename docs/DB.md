@@ -31,6 +31,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`） |
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
+| `likes` | 文章点赞表（第十批） | **待迁移**（schema 已改，尚未执行 `migrate dev`） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
 
 ---
@@ -42,11 +43,13 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | 规则 | 列名 | 说明 |
 |---|---|---|
 | 有明确业务角色 → 用角色名 | `author_id` | 作者。`articles` 与 `comments` 两张表**统一用 `author_id`**，不用 `user_id` |
-| 无特殊角色 → 目标实体单数名 + `_id` | `article_id` | 评论所属文章，角色就是「所属对象」本身，无更具体的业务角色名 |
+| 用户本人（非作者角色） → `user_id` | `user_id` | 点赞者。`likes` 表用 `user_id`，见下方说明 |
+| 无特殊角色 → 目标实体单数名 + `_id` | `article_id` | 评论所属文章 / 点赞所属文章，角色就是「所属对象」本身，无更具体的业务角色名 |
 
 - 选 `author_id` 而非 `user_id` 的理由：`articles` / `comments` 里的这个外键表达的是「作者」这一业务角色，且 `docs/API.md` 的作者信息以 `author` 对象（`id` / `username` / `nickname`）返回，DB 列名与 API 字段名呼应，读代码时不用做心智转换。
 - Prisma 侧字段名用 camelCase（`authorId` / `articleId`），关系字段名为 `author` / `article`；`User` 模型侧的反向关系为 `articles` / `comments`。
-- 一致性要求：**凡是「作者」语义的外键一律 `author_id`**，即使指向 `users` 表也不写成 `user_id`；反过来，若某表的 `user_id` 表达的是「用户本人」而非「作者」（例如将来做收藏表 `favorites`），则用 `user_id`。
+- 一致性要求：**凡是「作者」语义的外键一律 `author_id`**，即使指向 `users` 表也不写成 `user_id`；反过来，若某表的 `user_id` 表达的是「用户本人」而非「作者」则用 `user_id`。
+- **`likes` 表用的是 `user_id`（第十批）**：点赞者是「用户本人」而非「作者」。本条是该规则写下时预留的两种情形之一（另一种是当时举例的收藏表 `favorites`），现由`likes` 落地。Prisma 侧字段名 `userId`、关系字段名 `user`，`User` 模型侧反向关系为 `likes`。
 - 该规则是**设计变更**：初版 DB 设计草案写的是 `userId → user_id`，最终按上述理由改为 `authorId → author_id`，已在本书面登记。
 
 ---
@@ -249,6 +252,152 @@ ALTER TABLE `users` ADD COLUMN `avatar` VARCHAR(255) NULL,
 
 ---
 
+## likes（点赞表）
+
+Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移尚未执行。**
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键（代理键，无业务含义） |
+| userId | user_id | INT | 否 | 无 | 点赞人 id，外键 → `users.id` |
+| articleId | article_id | INT | 否 | 无 | 被点赞文章 id，外键 → `articles.id` |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 点赞时间 |
+
+**本表刻意不设 `updated_at` 与 `deleted_at`**，与 `articles` / `comments` 不同，原因见下方「为什么没有软删除列」。
+
+### schema 变更已获批准（豁免登记）
+
+> **本节是一次「禁止修改数据库 schema」例外的书面登记。**
+> 契约第 5 节「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 批准范围：**仅限新建`likes` 一张表**（含其两条外键与两个索引），
+> **不含修改 `users` / `articles` / `comments` 任何一列**。
+> 批准依据与决策过程见 `docs/API.md` 的 `POST /api/articles/:id/like` 章节。
+>
+> 注意：第九批的豁免明确写了「仅限那两列，除此之外的任何 schema 变更仍需重新批准」，
+> 因此**本次是独立的一次批准，不是援引第九批的例外**。
+> 契约 `AI_CONTRACT.md` 第 69 行的例外说明**本批不修改**（按用户要求，豁免只登记在本书）。
+
+### 为什么必须有独立表（不能复用现有表加列）
+
+| 理由 | 说明 |
+|---|---|
+| 多对多 | 一篇文章被N 个用户点赞，一个用户点赞 M 篇文章，是标准的多对多关系，`users` / `articles` 两张表都放不下 |
+| 不能在 `articles` 加冗余列存 id 列表 | 用 `VARCHAR` 存逗号分隔的 user_id 列表，无法索引、无法保证原子性、并发下必然错乱 |
+| 不能靠 `comments.content` 标记 | 语义完全不同（点赞不是评论），且会让「评论数」统计掺入点赞 |
+
+### 唯一约束是防重复点赞的唯一真相
+
+`@@unique([userId, articleId])`（`likes_user_id_article_id_key`）。
+
+应用层「先查 `findUnique` 再 `create`」**存在竞态窗口**：两个并发请求都在对方写入前查到「未赞过」，然后都执行 INSERT，产生两条重复记录。只有 DB 唯一约束能真正防住—— service 层捕获 Prisma 的 `P2002` 转成`409 /40900`（「已点赞过这篇文章」）。
+
+**这意味着实现层不允许「先查后写」当作正确性保障**，它只能用来给出更友好的提示；真正的拦截靠唯一约束。
+
+### 为什么 `article_id` 要单独建索引
+
+`@@index([articleId])`（`likes_article_id_idx`）支撑两处高频查询：
+
+1. **实时 `likeCount`**：`SELECT COUNT(*) FROM likes WHERE article_id = ?` —— 列表与详情接口都要用
+2. 「某篇文章的点赞明细」（将来若做）
+
+`user_id` 侧**不另建索引**：`likes_user_id_article_id_key` 的左前缀已承担 `WHERE user_id = ?`，MySQL 不会重复创建。迁移执行后需用 `SHOW INDEX FROM likes` 核实这一点。
+
+### 为什么没有软删除列
+
+`likes` 是本项目**第一张不做软删除的业务表**，这是刻意偏离契约第 9 节「每张业务表建议包含 `deleted_at`」的结果，理由：
+
+- **点赞是一个动作，不是一条可隐藏的内容**。`articles` / `comments` 软删是为了「从列表里消失但保留数据」，点赞没有「隐藏但保留」的语义。
+- **软删会与唯一约束直接冲突**：若取消点赞时置 `deleted_at` 而保留行，那么同一 `(user_id, article_id)` 取消后再点赞会撞唯一约束，只能改成 `UPDATE ... SET deleted_at = NULL` 而不是 `INSERT`。这样一来「点赞 = 该行存在且未删除」这个不变式就不再直观，且每次查询都要额外带 `deleted_at IS NULL` 条件 —— 为一个没有语义需求的场景付出复杂度，不值。
+- **物理 DELETE 让不变式始终成立**：`likes` 表里存在一行 ⟺ 该用户赞了这篇文章。计数只需 `COUNT(*)`，无需任何额外条件。
+
+### 软删除联动：文章/ 用户软删后点赞行会残留
+
+与其他表一致，**软删除不触发外键**，因此：
+
+| 场景 | 行为 |
+|---|---|
+| 文章软删 | `likes` 行**保留**，不连带删除。`GET /api/articles` / `/:id` 已按 `deleted_at IS NULL` 过滤，文章不可见→ `likeCount` 不会外泄 |
+| 对已软删的文章调 `POST /like` | **404**。service 层先复用 `requireArticleForWrite(id)` 判定存在性（与发表评论完全同一条路径） |
+| 用户软删 | 该用户的 `likes` 行保留。**注意：仍会计入 `likeCount`** —— 计数只按 `article_id` 过滤，不过滤点赞者。当前 MVP 无用户删除功能故不触发，已登记在「已知限制」第 3 条 |
+| 将来物理清理（硬删除） | 顺序必须是 `likes → comments → articles → users`，`likes` 是最上游 |
+
+**这与评论的现有处理完全一致**（`deleteArticle` 的注释原文：「只 UPDATE deleted_at，物理行保留，因此不触发外键」）。点赞行残留**不是bug**，与评论行残留是同一个设计取舍。
+
+### 建表 SQL
+
+下方是**迁移执行后** `SHOW CREATE TABLE likes` 的实际输出（2026-10-03 第十批核对）。
+与 Prisma schema 一致：无 `deleted_at` / `updated_at` 两列，`user_id` 未被额外补索引。
+
+```sql
+CREATE TABLE `likes` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `article_id` int NOT NULL,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `likes_user_id_article_id_key` (`user_id`,`article_id`),
+  KEY `likes_article_id_idx` (`article_id`),
+  CONSTRAINT `likes_article_id_fkey` FOREIGN KEY (`article_id`) REFERENCES `articles` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `likes_user_id_fkey` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+```
+
+### 索引（实际核对结果）
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | id | |
+| likes_user_id_article_id_key | **唯一** | user_id, article_id | **防重复点赞的唯一真相**，并发下由 MySQL 最终拦截（重复插入报 `1062`） |
+| likes_article_id_idx | 普通 | article_id | 支撑 `likeCount` 的实时 `COUNT(*)` |
+
+- ✅ **MySQL 没有为 `user_id` 额外补单列索引** —— 唯一索引的左前缀已承担，符合设计预期（已用 `SHOW INDEX FROM likes` 实测）。
+
+### 第十批的迁移 SQL（实际生成）
+
+```sql
+-- CreateTable
+CREATE TABLE `likes` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `user_id` INTEGER NOT NULL,
+    `article_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `likes_article_id_idx`(`article_id`),
+    UNIQUE INDEX `likes_user_id_article_id_key`(`user_id`, `article_id`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `likes` ADD CONSTRAINT `likes_user_id_fkey` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `likes` ADD CONSTRAINT `likes_article_id_fkey` FOREIGN KEY (`article_id`) REFERENCES `articles`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+**新表无既有数据，不涉及任何回填。**
+
+### 约束实测（迁移后当场验证）
+
+唯一约束与外键都用**真实插入**证过，不依赖后端代码：
+
+| 用例 | 结果 |
+|---|---|
+| 插入 `(user_id=1, article_id=7)` | 成功 |
+| 再插入完全相同的一条 | **被拒** —— MySQL `1062 Duplicate entry '1-7' for key 'likes.likes_user_id_article_id_key'` |
+| 给不存在的文章（id=999999）点赞 | **被拒** —— MySQL `1452` 外键 `likes_article_id_fkey` 失败 |
+| 清理后 `likes` 行数 | **0**（测试数据已回收，基线未变） |
+
+> 这证明了「DB 唯一约束是唯一真相」这条设计**在数据库层面确实成立**。
+> 后续后端代码要做的只是把这份 `1062`（Prisma 侧即 `P2002`）翻译成 `409 / 40900`。
+
+### Prisma Client 生成状态（待知会用户）
+
+> ⚠️ **本次 `migrate dev` 建表成功，但末尾的 `prisma generate` 失败（EPERM）**。
+> 详见迁移记录小节末尾的说明，**不影响本步结论**（表结构已确认正确）。DL
+```
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -262,17 +411,18 @@ ALTER TABLE `users` ADD COLUMN `avatar` VARCHAR(255) NULL,
 
 ## 软删除与外键的交互
 
-三条外键全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`（Prisma 默认值，schema 中未显式声明 `onDelete`，已在迁移 SQL 中核对确认）。
+> 第十批起共**五条**外键（原有三条 + `likes` 表的两条），全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`（Prisma 默认值，schema 中未显式声明 `onDelete`，已在迁移 SQL 中核对确认）。
 
-- **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 的引用依然有效，因此**评论不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
-- 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。
+- **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 与 `likes.article_id` 的引用依然有效，因此**评论与点赞都不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
+- 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。点赞同理。
 - **将来若要物理清理**（硬删除），顺序必须是：
 
 ```text
-comments → articles → users
+likes → comments → articles → users
 ```
 
-  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章或评论会报错；`DELETE FROM articles` 若还有评论挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞会报错；`DELETE FROM articles` 若还有评论或点赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  特别注意**必须先清 `likes`**：它是唯一一张上游可能「悬挂」在被软删对象上的表。
 
 ---
 
@@ -323,6 +473,12 @@ const summary = [...content].slice(0, 100).join('');
    - MVP 阶段不处理。触发条件：真实数据量上升，列表接口耗时不可接受。
    - 处理方向：① 把截取下沉到 SQL（`SUBSTRING(content, 1, 100)`，MySQL 按字符计数、天然安全，但会把截取逻辑从 service 层挪进 SQL，可测试性变差）② 写入时把 summary 落成真实列（与「列表不存冗余字段」的当前约定冲突，需重新评估）③ 收紧 `pageSize` 上限。
 
+3. **`likeCount` 包含已软删用户投出的赞**：`likeCount` 是 `SELECT COUNT(*) FROM likes WHERE article_id = ?`，**只按文章过滤，不过滤点赞者**。因此某个用户被软删后，他此前投出的赞**仍然计入**该文章的 `likeCount`。
+   - **当前可接受**：MVP 没有用户删除功能（`DELETE /api/users/:id` 未实现），`users.deleted_at` 恒为 NULL，实际不会出现这种数据。
+   - 触发条件：将来做了用户注销 / 禁用功能。
+   - 处理方向：把计数改成 `JOIN users u ON u.id = l.user_id AND u.deleted_at IS NULL`，代价是每次计数都要 JOIN（列表接口每篇文章一次）。
+   - ⚠️ 与「文章软删」不要混淆：**文章**软删后该文**整体不可见**（`articles.deleted_at IS NULL` 过滤在前），其 `likeCount` 不会外泄；本条说的是**点赞者**被软删的情形，两者不同。
+
 ---
 
 ## 新增业务表流程
@@ -336,6 +492,8 @@ const summary = [...content].slice(0, 100).join('');
 
 前置检查：`users` / `articles` / `comments` 的现有约定（软删除列、UTC 时间、`DATETIME(3)`、`utf8mb4_unicode_ci`、外键 Restrict）一律沿用，不要为新表开特例。
 
+**唯一的已知例外**：`likes` 表**不含 `deleted_at` / `updated_at`**，是经论证后刻意偏离的（理由见「likes」小节），不是可以随手复制的模板。
+
 ---
 
 ## 迁移记录
@@ -346,6 +504,22 @@ const summary = [...content].slice(0, 100).join('');
 | `20260929144738_blog_articles_comments` | 创建 `articles`、`comments` 表及三条外键 | 已应用 |
 | `20260929145244_comments_idx_article_created` | `comments` 索引由 `(article_id, deleted_at, created_at)` 调整为 `(article_id, created_at)`；因外键依赖该索引，迁移内先 DROP 再 ADD 外键 | 已应用 |
 | `20261003080727_add_user_avatar_bio` | `users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列，均 nullable、无默认、不需回填 | 已应用 |
+| `20261003140221_add_user_likes` | 新建 `likes` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键 + `likes_user_id_article_id_key` 唯一约束 + `likes_article_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，理由见「likes」小节） | **已应用** |
+
+> 第十批（点赞）迁移**已于 2026-10-03 执行完成**，迁移名 `20261003140221_add_user_likes`。
+> 已用 `SHOW CREATE TABLE likes`、`information_schema.COLUMNS` 与 `SHOW INDEX FROM likes` 核对：
+> 4 列齐全（**确认无 `deleted_at` / `updated_at`**）、两条外键均为 `ON DELETE RESTRICT ON UPDATE CASCADE`、
+> **`user_id` 未被 MySQL 额外补单列索引**（唯一索引左前缀已承担）。实际 DDL 与迁移 SQL 已回填到「likes」小节。
+> `_prisma_migrations` 共 **5 条**全部 `finished=Y / rolled_back=N`。
+> 唯一约束与外键已用**真实插入**实测通过：重复插入报 `1062`、不存在的文章报 `1452`，测试数据已回收（`likes` 行数 0）。
+> 基线未受影响：可见文章=11、评论=1、users=2。
+
+> ⚠️ **本次 `migrate dev` 的建表成功，但末尾的 `prisma generate` 失败**：
+> `EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'`。
+> 根因是**当时有 node 进程占着这个 DLL**（本机 3000 端口的后端 dev server，PID 15136），Windows 不允许替换正在被加载的文件。
+> **影响**：`node_modules/.prisma/client/` 下的引擎 DLL 仍是旧文件；但 Prisma 6 的引擎 DLL **不内嵌 schema**
+> （schema 在生成的 JS 里），实测 `prisma.like` 的 `count` / `create` / `delete` 均正常，故功能不受影响。
+> **收尾动作**：后续让 3000 端口的后端进程释放后，重跑一次 `npx prisma generate` 即可补齐（`npm run prisma:generate`）。
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
@@ -362,6 +536,10 @@ prisma/migrations/
 ├─ 20260929144738_blog_articles_comments/
 │  └─ migration.sql
 ├─ 20260929145244_comments_idx_article_created/
+│  └─ migration.sql
+├─ 20261003080727_add_user_avatar_bio/
+│  └─ migration.sql
+├─ 20261003140221_add_user_likes/
 │  └─ migration.sql
 └─ migration_lock.toml
 ```
