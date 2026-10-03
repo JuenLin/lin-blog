@@ -55,13 +55,40 @@
 
     <h2 class="article-title">{{ article.title }}</h2>
     <p class="article-summary">{{ article.summary }}</p>
+
+    <!-- 第十批：点赞。
+         整张卡是 router-link（渲染成真实 <a href>），所以这里必须 @click.prevent.stop ——
+         和作者头像入口是同一个坑：.stop 只拦冒泡，拦不住 <a> 的**原生导航**，
+         不写 .prevent 点一下点赞就跳去详情页了。
+         另外 <a> 里不能嵌 <button>（HTML 规范：<a> 内不允许交互内容），
+         所以沿用作者入口的写法：<span role="button" tabindex="0"> + 键盘处理，
+         既合法又可 Tab 聚焦、回车触发。 -->
+    <div class="article-card-foot">
+      <span
+        class="article-like"
+        :class="{ 'is-liked': liked, 'is-busy': liking }"
+        role="button"
+        tabindex="0"
+        :aria-pressed="liked"
+        :aria-label="liked ? '取消点赞' : '点赞'"
+        @click.prevent.stop="toggleLike"
+        @keydown.enter.prevent.stop="toggleLike"
+        @keydown.space.prevent.stop="toggleLike"
+      >
+        <span class="article-like-icon" aria-hidden="true">{{ liked ? '♥' : '♡' }}</span>
+        <span class="article-like-count">{{ likeCount }}</span>
+      </span>
+    </div>
   </router-link>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
+import { useUserStore } from '../stores/user.js';
+import { likeArticle, unlikeArticle } from '../api/like.js';
 
 const props = defineProps({
   article: {
@@ -71,6 +98,7 @@ const props = defineProps({
 });
 
 const router = useRouter();
+const userStore = useUserStore();
 
 const authorName = computed(() => {
   const author = props.article.author;
@@ -123,6 +151,84 @@ const authorId = computed(() => {
 function goToAuthor() {
   if (authorId.value == null) return;
   router.push({ name: 'user-profile', params: { id: authorId.value } });
+}
+
+/* --------------------------------------------------------------------------
+ * 第十批：点赞
+ * ------------------------------------------------------------------------ */
+
+// 已点赞态。**只维护「本次会话内在这张卡上点过」**：
+// 列表 / 详情这类公开接口不返回 liked（docs/API.md 通用约定，避免响应随登录态变化），
+// 所以刷新页面后按钮会回到「未赞」。
+// 已知限制（本批不处理，等后续补 liked 查询接口）：刷新后再点会拿到 409，
+// 下面 catch 里把本地态纠正成已赞并提示，不会让按钮一直卡在错误状态。
+const liked = ref(false);
+
+// likeCount 的本地覆盖值。null = 还没本地改过，显示 props 里的值。
+// 不能直接改 props.article（单向数据流），所以用一个 override，换页时 watch 复位。
+const likeCountOverride = ref(null);
+
+// 防连点：接口回来之前忽略后续点击，否则连点两下会打两发 POST 撞 409。
+const liking = ref(false);
+
+// 兼容探针造的假对象没有 likeCount 键（undefined）：按 0 显示。
+// 与后端口径一致 —— 「接口没返回」和「确实是 0」对前端是同一个值。
+const likeCount = computed(() => {
+  if (likeCountOverride.value != null) {
+    return likeCountOverride.value;
+  }
+
+  const count = props.article.likeCount;
+
+  return typeof count === 'number' ? count : 0;
+});
+
+// 换页 / 换文章（含详情页「作者其他文章」复用同一组件）时复位本地态，
+// 否则上一篇文章的点赞数和已赞态会串到下一篇上。
+watch(
+  () => props.article.id,
+  () => {
+    liked.value = false;
+    likeCountOverride.value = null;
+  },
+);
+
+async function toggleLike() {
+  // 未登录：点赞必须登录，跳登录页并带 redirect，登录后能回到原来那一屏。
+  // 这一支同时兜住 token 已过期但 store 里还有值的情况。
+  if (!userStore.isLogin) {
+    router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } });
+
+    return;
+  }
+
+  if (liking.value) return;
+
+  liking.value = true;
+
+  try {
+    const data = liked.value
+      ? await unlikeArticle(props.article.id)
+      : await likeArticle(props.article.id);
+
+    liked.value = Boolean(data && data.liked);
+
+    if (data && typeof data.likeCount === 'number') {
+      likeCountOverride.value = data.likeCount;
+    }
+  } catch (error) {
+    // 409「已点赞过这篇文章」：说明本地 liked 是错的（刷新丢状态、或在别处点过赞），
+    // 顺手纠正成已赞，避免按钮每次点都报错。404「还没有点赞过这篇文章」同理反向纠正。
+    if (error.httpStatus === 409) {
+      liked.value = true;
+    } else if (error.httpStatus === 404) {
+      liked.value = false;
+    }
+
+    ElMessage.error(error.message || '操作失败，请稍后重试');
+  } finally {
+    liking.value = false;
+  }
 }
 </script>
 
@@ -289,5 +395,69 @@ function goToAuthor() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* 第十批：卡片底栏。摘要上方是标题 / 摘要，点赞单独一行放右下，
+   不与正文抢视觉重心。 */
+.article-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* 点赞按钮：胶囊形，未点赞是弱化灰（只显示计数），点赞后点亮成暖红。
+   颜色全部走 style.css 的 --like-* 令牌，浅色 / 暗色自动成对切换。
+   用 span[role=button] 而非 <button>：整卡是 <a>，HTML 规范不允许 <a> 内嵌交互元素。 */
+.article-like {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.article-like:hover {
+  border-color: var(--like-border);
+  background: var(--like-bg);
+  color: var(--like-color);
+}
+
+/* 键盘可达（tabindex=0），聚焦要有轮廓 —— 否则 Tab 用户看不出这里能按 */
+.article-like:focus-visible {
+  outline: 2px solid var(--like-color);
+  outline-offset: 2px;
+}
+
+/* 已点赞：实心心形 + 点亮底色。aria-pressed 同步给读屏软件。 */
+.article-like.is-liked {
+  border-color: var(--like-border);
+  background: var(--like-bg-active);
+  color: var(--like-color);
+}
+
+/* 请求进行中：压低透明度 + 禁用指针，避免用户以为没点上而连点 */
+.article-like.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.article-like-icon {
+  font-size: 13px;
+}
+
+.article-like-count {
+  font-variant-numeric: tabular-nums; /* 数字等宽，计数变化时宽度不跳 */
 }
 </style>

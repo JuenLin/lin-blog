@@ -64,6 +64,23 @@
             <span class="article-detail-chip">{{ readingTime }}</span>
           </el-tooltip>
 
+          <!-- 第十批：点赞。详情页不在 router-link 里（卡片才是），所以不需要 .prevent，
+               只加 .stop 防止冒泡到外层容器。形态与卡片保持一致的胶囊按钮 + 心形。 -->
+          <span
+            class="article-detail-like"
+            :class="{ 'is-liked': liked, 'is-busy': liking }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="liked"
+            :aria-label="liked ? '取消点赞' : '点赞'"
+            @click.stop="toggleLike"
+            @keydown.enter.prevent.stop="toggleLike"
+            @keydown.space.prevent.stop="toggleLike"
+          >
+            <span class="article-detail-like-icon" aria-hidden="true">{{ liked ? '♥' : '♡' }}</span>
+            <span class="article-detail-like-count">{{ likeCount }}</span>
+          </span>
+
           <!-- 编辑 / 删除只对作者本人显示，其余人看不到入口。 -->
           <template v-if="isAuthor">
             <el-button link type="primary" @click="goEdit">编辑</el-button>
@@ -124,6 +141,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { deleteArticle, getArticle, listArticles } from '../api/article.js';
+import { likeArticle, unlikeArticle } from '../api/like.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
@@ -223,10 +241,70 @@ const readingTime = computed(() => getReadingTime(article.value && article.value
 const relativeTime = computed(() => formatRelativeTime(article.value && article.value.createdAt));
 const absoluteTime = computed(() => formatAbsoluteTime(article.value && article.value.createdAt));
 
+/* --------------------------------------------------------------------------
+ * 第十批：点赞
+ * ------------------------------------------------------------------------ */
+
+// 与卡片同口径：公开接口不返回 liked，这里只维护「本次会话点过」。
+// 换文章（load）时复位，否则上一篇的已赞态会串到下一篇。
+const liked = ref(false);
+
+// 防连点。
+const liking = ref(false);
+
+// 兼容探针造的假对象没有 likeCount 键：按 0 显示，与后端口径一致。
+const likeCount = computed(() => {
+  const count = article.value && article.value.likeCount;
+
+  return typeof count === 'number' ? count : 0;
+});
+
+async function toggleLike() {
+  // 未登录：跳登录页并带 redirect，登录后能回到这篇文章。
+  if (!userStore.isLogin) {
+    router.push({ name: 'login', query: { redirect: route.fullPath } });
+
+    return;
+  }
+
+  if (liking.value || !article.value) return;
+
+  liking.value = true;
+
+  try {
+    const data = liked.value
+      ? await unlikeArticle(articleId.value)
+      : await likeArticle(articleId.value);
+
+    liked.value = Boolean(data && data.liked);
+
+    // 详情页的 article 是本组件的 ref（不是父组件的 prop），可以直接改，
+    // 不像 ArticleCard 那样得用本地 override 绕开单向数据流。
+    // **已知限制（本批不处理）**：只改这一处，列表页（Home）那份数据不会同步 ——
+    // 点完赞返回列表看到的还是旧数字，刷新列表后才更新。
+    // 要修得把点赞态提到全局 store 或让列表重新拉取，属于另一批的改动。
+    if (data && typeof data.likeCount === 'number') {
+      article.value.likeCount = data.likeCount;
+    }
+  } catch (error) {
+    // 409 = 已经赞过了（例如刷新丢状态），404 = 本来就没赞过，都顺手纠正本地态。
+    if (error.httpStatus === 409) {
+      liked.value = true;
+    } else if (error.httpStatus === 404) {
+      liked.value = false;
+    }
+
+    ElMessage.error(error.message || '操作失败，请稍后重试');
+  } finally {
+    liking.value = false;
+  }
+}
+
 async function load() {
   loading.value = true;
   notFound.value = false;
   neighborWindow.value = []; // 重置，避免从上一篇/下一篇跳转时残留旧文章的邻居
+  liked.value = false; // 换文章时复位点赞态（接口不返回 liked，无法从数据恢复）
 
   try {
     article.value = await getArticle(route.params.id);
@@ -348,6 +426,54 @@ onBeforeUnmount(() => {
   line-height: 1;
   white-space: nowrap;
   cursor: help;
+}
+
+/* 第十批：点赞按钮。与 ArticleCard 用同一套 --like-* 令牌，两处观感一致。
+   meta 行是纯文本流，所以它比卡片那颗稍矮一点（22px），不抢标题视觉重心。 */
+.article-detail-like {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.article-detail-like:hover {
+  border-color: var(--like-border);
+  background: var(--like-bg);
+  color: var(--like-color);
+}
+
+.article-detail-like:focus-visible {
+  outline: 2px solid var(--like-color);
+  outline-offset: 2px;
+}
+
+.article-detail-like.is-liked {
+  border-color: var(--like-border);
+  background: var(--like-bg-active);
+  color: var(--like-color);
+}
+
+.article-detail-like.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.article-detail-like-count {
+  font-variant-numeric: tabular-nums;
 }
 
 .article-detail-author {

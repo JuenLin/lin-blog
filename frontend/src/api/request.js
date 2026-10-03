@@ -49,7 +49,14 @@ request.interceptors.response.use(
       }
     }
 
-    return Promise.reject(new Error(message));
+    const failure = new Error(message);
+
+    // 第十批：把 HTTP 状态码挂到 error 上。
+    // 原来非 2xx 一律丢成「只有 message 的 Error」，调用方分不清 409 和 404，
+    // 而这两者对点赞来说语义完全不同（重复点赞 vs 没赞过）。纯附加字段，不改已有行为。
+    failure.httpStatus = response ? response.status : 0;
+
+    return Promise.reject(failure);
   }
 );
 
