@@ -267,6 +267,7 @@ Authorization: Bearer <token>
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
 - **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。
+- **`avatar` 有两种形态**（第十一批起）：① **外链 URL**（`http://` / `https://` 开头，第九批起的既有形态）；② **站内相对路径**（`/uploads/avatars/{userId}/{filename}`，`POST /api/users/me/avatar` 上传产生）。两者都可能出现在 `author` 内嵌对象里。**前端渲染时必须对形态 ② 补上后端 origin**，规则见文末「前端调用约定」。
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
 
 ### 接口清单
@@ -275,6 +276,7 @@ Authorization: Bearer <token>
 | ------ | -------------------------- | -------------------------- | -- |
 | PUT    | /api/auth/password         | 修改当前用户密码（详见通用接口一节）         | 是  |
 | PUT    | /api/users/me              | 修改当前用户资料（头像 / 简介，详见业务接口一节） | 是  |
+| POST   | /api/users/me/avatar       | 上传头像（multipart，详见业务接口一节）      | 是  |
 | POST   | /api/articles              | 发布文章                       | 是  |
 | GET    | /api/articles              | 博客广场列表                     | 否  |
 | GET    | /api/articles/:id          | 文章详情                       | 否  |
@@ -691,7 +693,7 @@ Authorization: Bearer <token>
 
 | 字段 | 类型 | 必填 | 校验 |
 |---|---|---|---|
-| avatar | string \| null | 否 | 1–255 字符；**必须以 `http://` 或 `https://` 开头**。不校验 URL 可达性 |
+| avatar | string \| null | 否 | 1–255 字符；**必须以 `http://` / `https://` 开头（外链），或以 `/uploads/` 开头（第十一批上传的站内路径）**。不校验可达性 |
 | bio | string \| null | 否 | 空串视为「清空」并转成 `null` 存储；非空时 1–200 字符 |
 
 两个字段**都是可选的**，但**至少要传一个**（见下方「三态语义」与校验规则）。
@@ -743,10 +745,23 @@ Authorization: Bearer <token>
 | 禁传 `id` / `userId` / `username` / `password` | 40000 | 身份只能来自 token。携带即报错，**不做静默忽略**（沿用 `PUT /api/auth/password` 的口径） |
 | 至少有一个键出现 | 40000 | **即使值是 `null` 也算有效操作**。见下方说明 |
 | `avatar` 长度 1–255 | 40000 | 与 `VARCHAR(255)` 对齐 |
-| `avatar` 必须 `http://` / `https://` 开头 | 40000 | **安全要求**，见下方说明 |
+| `avatar` 必须是外链或站内路径 | 40000 | **安全要求**：`http://` / `https://` 开头，或 `/uploads/` 开头。其余一律拒绝，见下方说明 |
 | `bio` 长度 1–200 | 40000 | 空串已在入口转 `null`，不参与长度校验 |
 
-**`avatar` 为什么必须挡伪协议**：零依赖方案下服务端不上传图片，前端会把这个 URL 直接渲染进`<img src>` / `background-image`。如果允许 `javascript:` 或 `data:`，就等于把 XSS 的执行权交给用户输入。限定 `http` / `https` 两种协议即可挡住这两类伪协议，同时不影响正常的图床链接（`https://cdn...`、外链http 图床等）。
+**`avatar` 为什么只放行这两种前缀**：前端会把它直接渲染进 `<img src>` / `background-image`。如果允许 `javascript:` 或 `data:`，就等于把 XSS 的执行权交给用户输入。限定「`http` / `https` 外链」+「`/uploads/` 站内路径」两种，即可挡住伪协议，同时不影响正常用法。
+
+**为什么 `/uploads/` 站内路径同样安全**：它不是用户能自由填写的任意路径 ——
+
+| 环节 | 约束 |
+|---|---|
+| 文件名 | 由**服务端**生成（时间戳 + 随机 hex），**不使用客户端的 `originalname`**，因此不可枚举、无法路径穿越 |
+| 扩展名 | 由服务端按 mimetype 白名单映射（`.jpg` / `.png` / `.webp`），不接受客户端给的扩展名 |
+| 目录 | 固定 `avatars/{userId}/`，`{userId}` 来自 token，改不了别人的目录 |
+| 静态服务 | `express.static` 关闭目录列表（`index: false`）与点文件（`dotfiles: 'deny'`） |
+
+也就是说，用户能控制的只有「哪张图」，控制不了「写到哪、叫什么、什么类型」。
+
+> ⚠️ 校验规则放宽后，**验收探针 `probe-profile-edit.mjs` 里若有「avatar 必须 http(s) 开头」的断言要同步改成「http(s) 或 `/uploads/` 前缀」**，否则会误报。
 
 **「至少有一个键出现」的确切含义**：判断依据是**请求体对象的自有键数量**（`Object.keys(body).length > 0`），**不是「有没有非 null 的值」**。
 
@@ -784,11 +799,13 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 
 前端拿到这个对象后应**直接用它更新本地 store**，不必再发一次 `GET /api/auth/me`。`data` 中**永远不含 `password`**。
 
+`avatar` 也可能是**站内相对路径**（第十一批上传产生），此时 `data.avatar` 形如 `"/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png"` —— 前端渲染前要补上后端 origin，规则见「前端调用约定」。
+
 #### 失败
 
 | HTTP | code | message | 场景 |
 |---|---|---|---|
-| 400 | 40000 | 依据具体字段 | 请求体为空（无任何键）/ avatar 超长 / avatar 协议不合法 / bio 超长 |
+| 400 | 40000 | 依据具体字段 | 请求体为空（无任何键）/ avatar 超长 / avatar 前缀不合法（既不是 `http(s)://` 外链、也不是 `/uploads/` 站内路径）/ bio 超长 |
 | 400 | 40000 | 不允许修改其他用户的资料 | 请求体携带 `id` / `userId` / `username` / `password` |
 | 401 | 40100 | — | 未提供 token、token 格式错、token 过期或签名无效（`auth` 中间件既有行为） |
 | 404 | 40400 | 用户不存在 | token 有效但用户不存在（已删除等），与 `GET /api/auth/me` 口径一致 |
@@ -817,11 +834,126 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 
 ---
 
+### POST /api/users/me/avatar
+
+上传头像文件（站内存储）。**需要登录**。身份完全取自 token，**不接受请求体里的任何身份字段**。
+
+与 `PUT /api/users/me` 的分工：那个接口改的是「`avatar` 这个字符串是什么」（可以是外链，也可以是站内路径）；**本接口直接收图片文件**，落盘后把生成的站内路径写进 `avatar`，**一步到位**。
+
+#### 为什么是 `/users/me/avatar` 而不是通用 `/api/upload`
+
+| 对比项 | `POST /api/users/me/avatar`（本接口） | 通用 `POST /api/upload` |
+|---|---|---|
+| 步骤 | 一次请求完成：落盘 → 改库 → 清旧文件 | 两步：先上传拿 url，再 `PUT /api/users/me` |
+| 孤儿文件 | **不会**（写库失败会反向删掉刚落盘的文件） | **会**：上传完不保存，文件就永远留在磁盘上 |
+| 权限 | 天然只能改自己 | 还要额外判断「谁能用这个 url」 |
+| 通用性 | 只服务头像 | 将来文章插图可复用 |
+
+MVP 只有头像一个上传场景，选专用的那个。将来真出现第二个场景（文章插图）时再抽通用 `/api/upload`，本接口保留为语义化的专用入口。
+
+#### 请求格式
+
+`multipart/form-data`，字段名 **`avatar`**，单文件。
+
+```text
+POST /api/users/me/avatar
+Authorization: Bearer <token>
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary...
+
+------WebKitFormBoundary...
+Content-Disposition: form-data; name="avatar"; filename="me.png"
+Content-Type: image/png
+
+<文件二进制内容>
+------WebKitFormBoundary...--
+```
+
+> ⚠️ **前端不要手动设置 `Content-Type`**。boundary 必须由浏览器 / axios 自动生成；手写会把 boundary 弄丢，后端解析不到文件，表现为「接口说没收到文件」。用 `FormData` 配 `api/user.js` 的封装即可，axios 会自动处理。
+>
+> 同理，`request.js` 给所有请求默认设了 `Content-Type: application/json`，**上传接口必须覆盖掉**（传 `FormData` 时显式置空或让 axios 自行决定），否则 multipart 会被当成 JSON 解析。
+
+#### 限制
+
+| 限制项 | 值 | 超出时 |
+|---|---|---|
+| 文件大小 | 2 MB（`2 * 1024 * 1024` 字节） | 400 / 40000 |
+| 文件个数 | 1，且字段名必须是 `avatar` | 400 / 40000 |
+| 图片格式 | `image/jpeg` / `image/png` / `image/webp` | 400 / 40000 |
+
+**不给 SVG**：SVG 可以内嵌 `<script>`，同源渲染下有 XSS 面，而头像场景也用不上矢量图的优势。
+
+#### 服务端处理顺序
+
+1. `auth` 中间件 —— 未登录直接 401，不进入文件解析
+2. multer 解析，带 `limits`（大小 / 个数）与 `fileFilter`（mimetype 白名单）
+3. 落盘到 `backend/uploads/avatars/{userId}/`，**文件名由服务端生成**
+4. 写库：`users.avatar = '/uploads/avatars/{userId}/{filename}'`
+5. 写库**成功** → 删掉旧头像文件；写库**失败** → 删掉刚落盘的文件（不留孤儿）
+
+**文件名规则**：`{毫秒时间戳}-{16 位随机 hex}.{扩展名}`，随机值用 `node:crypto` 的 `randomBytes`（内置模块，不加依赖）。扩展名**由服务端按 mimetype 映射**：`image/jpeg`→`.jpg`、`image/png`→`.png`、`image/webp`→`.webp`。
+
+> ⚠️ **绝不让 `file.originalname` 参与命名或路径拼接**。它完全由客户端控制，可以用来做路径穿越（`../../`）或伪造扩展名（`x.html`）。服务端只按 mimetype 白名单决定扩展名，随机名保证文件名不可枚举。
+
+#### 成功响应
+
+HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同构）。上传得到的地址就是 `data.avatar`：
+
+```json
+{
+  "code": 0,
+  "message": "头像已更新",
+  "data": {
+    "id": 1,
+    "username": "demo",
+    "nickname": "Demo",
+    "avatar": "/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png",
+    "bio": "写点自我介绍",
+    "createdAt": "2026-09-29T12:49:05.911Z"
+  }
+}
+```
+
+前端拿到后**直接用它更新本地 store**，不必再发 `GET /api/auth/me`。
+
+#### 失败
+
+| HTTP | code | message | 场景 |
+|---|---|---|---|
+| 400 | 40000 | 请选择要上传的图片 | 请求里没有文件，或字段名不是 `avatar` |
+| 400 | 40000 | 只支持 JPG / PNG / WebP 格式 | mimetype 不在白名单 |
+| 400 | 40000 | 图片不能超过 2MB | 超过 `limits.fileSize` |
+| 401 | 40100 | — | 未提供 token、token 格式错、token 过期或签名无效 |
+| 404 | 40400 | 用户不存在 | token 有效但用户不存在（与 `PUT /api/users/me` 同一口径） |
+| 500 | 50000 | — | 未预期错误（含磁盘写入失败） |
+
+本接口**不新增业务码**，复用既有的 40000 / 40100 / 40400 / 50000。
+
+#### 旧头像文件的清理
+
+判定「旧头像要不要删」的依据只有一个：**旧值是不是站内路径**（以 `/uploads/` 开头）。
+
+| 操作 | 是否删旧文件 |
+|---|---|
+| 本接口上传新头像 | **删**（旧值是站内路径时） |
+| `PUT /api/users/me` 传 `avatar: null` 清空头像 | **删**（旧值是站内路径时） |
+| `PUT /api/users/me` 把头像改成外链 | **删**（旧值是站内路径时） |
+| 旧头像本来就是外链 | **不删**（文件不在我们的磁盘上） |
+
+**顺序必须是「先写库，再删旧文件」**：反过来（先删后写）一旦写库失败，用户就彻底没有头像了；前者删失败只留一个垃圾文件，不影响正确性。删除失败只记日志，**不回滚、不报错**。
+
+#### 已知取舍（MVP 不处理，登记在 `docs/DB.md`）
+
+- **孤儿文件 / 悬空引用**：进程在「写库成功 → 删旧文件」之间崩溃会留下孤儿文件；手工清了磁盘而 DB 还指着它会渲染成破图（前端按 `img` 的 `error` 事件回退文字头像，不会崩）。两者都不做定时对账。
+- **不做压缩 / 缩略图**：原图直出，显示尺寸由前端 CSS 控制。头像小、量级低，够用。
+- **不校验 magic bytes**：只按 mimetype 白名单 + 服务端映射扩展名判断。mimetype 由客户端提供、理论上可伪造，但**不允许 SVG** 且 `express.static` 按扩展名回 `Content-Type: image/*`，浏览器不会把它当 HTML 执行，风险可接受。要收紧时读文件头 12 字节比对 JPEG `FF D8 FF` / PNG `89 50 4E 47` / WebP `RIFF....WEBP` 即可，零依赖。
+
+---
+
 ### 用户接口（其余未实现）
 
 契约第 5 节列出的用户类接口**保持未实现**：MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 对象返回。
 
-第九批**只实现了 `PUT /api/users/me`**（修改自己的资料），这是本项目唯一的 user 接口。它位于「业务接口」一节，不在下表内。
+第九批实现了 `PUT /api/users/me`（改资料）、第十一批实现了 `POST /api/users/me/avatar`（上传头像），**这两个是本项目仅有的 user 接口**，都位于「业务接口」一节，不在下表内。
 
 | 方法 | 路径 | 状态 |
 |---|---|---|
@@ -844,7 +976,7 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 >
 > 说明 2：**搜索已实现**（`GET /api/articles` 的 `keyword` 参数，命中标题 + 正文），已从上表移出。搜索**不含作者昵称**，也不做标签 / 分类聚合搜索。
 >
-> 说明 3：**头像文件上传明确不做**。第九批的 `avatar` 只存**外链 URL**（零依赖方案，见 `PUT /api/users/me`），用户需自行把图片传到图床再把链接填进来。若将来要做「站内上传」，需要引入文件上传中间件、对象存储与文件生命周期管理，属独立需求，届时本节重新论证。
+> 说明 3：**头像上传已实现**（第十一批，`POST /api/users/me/avatar`，文件落 `backend/uploads/`），已从上表移出。**外链方式保留** —— `PUT /api/users/me` 的 `avatar` 仍接受 `http(s)://` 外链，两种并存，用户可自选。遗留项：不做图片压缩 / 缩略图、不做孤儿文件定时对账、不校验 magic bytes，均登记在 `docs/DB.md`。
 
 ---
 
@@ -853,3 +985,8 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 - 所有请求走 `frontend/src/api/request.js` 导出的 axios 实例。
 - 响应拦截器约定：`code === 0` 直接返回 `data`；`code !== 0` 抛出携带 `message` 的 Error；HTTP 401 清除本地 token 并跳转登录页。
 - `frontend/src/api/auth.js` 封装本文件的 auth 接口，组件与 store 不直接写 URL。
+- **`avatar` 的 URL 拼接规则**（第十一批）：库里的头像可能是**站内相对路径** `/uploads/avatars/1/xxx.png`，直接塞进 `<img src>` 会被浏览器解析成**前端自己的 origin**（`localhost:5173`）而 404。
+  - 以 `http://` / `https://` 开头 → **原样使用**（外链，第九批既有形态）。
+  - 否则 → **补上后端 origin** 再使用。
+  - ⚠️ 后端 origin 要**去掉 `VITE_API_BASE_URL` 末尾的 `/api`**：接口基址是 `http://localhost:3000/api`，而静态资源挂在 `http://localhost:3000/uploads/...`，**不带 `/api`**。
+  - 拼接只在 `frontend/src/utils/format.js` 的 `resolveAvatar()` 里做**一次**；`ArticleCard` / `AuthorCard` / `UserDropdown` / `CommentList` / `UserProfile` 五处渲染都走它，组件不用各自处理。

@@ -31,7 +31,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`） |
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
-| `likes` | 文章点赞表（第十批） | **待迁移**（schema 已改，尚未执行 `migrate dev`） |
+| `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
 
 ---
@@ -175,7 +175,7 @@ Prisma 模型名 `User`，`@@map("users")`。
 | username | username | VARCHAR(50) | 否 | 无 | 用户名，唯一索引 |
 | password | password | VARCHAR(255) | 否 | 无 | bcryptjs 哈希，禁止明文 |
 | nickname | nickname | VARCHAR(50) | 是 | NULL | 昵称 |
-| avatar | avatar | VARCHAR(255) | 是 | NULL | 头像 URL，第九批新增。零依赖方案：只存外链字符串，服务端不存文件、不校验可达性 |
+| avatar | avatar | VARCHAR(255) | 是 | NULL | 头像，第九批新增。**两种取值**：外链 URL（`http(s)://` 开头）或**站内相对路径**（`/uploads/` 开头，第十一批上传产生）。长度论证与文件存储见下方「第十一批：头像文件存储」 |
 | bio | bio | VARCHAR(200) | 是 | NULL | 个人简介，第九批新增 |
 | createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
@@ -208,6 +208,53 @@ Prisma 模型名 `User`，`@@map("users")`。
 
 **内嵌 author 对象的字段边界**：`avatar` 会进入文章与评论的内嵌 `author` 对象（两处 `AUTHOR_SELECT`，见 `docs/API.md`），`bio` **不会**——简介只在个人主页展示，塞进每条评论的 author 里是纯粹的响应体浪费。两处 `AUTHOR_SELECT` 当前是**重复定义**，本期按「只加字段、不做重构」处理，抽取公共定义单独排一批。
 
+### 第十一批：头像文件存储（uploads 目录）
+
+第十一批起头像支持**站内上传**（`POST /api/users/me/avatar`，见 `docs/API.md`）。**本节不涉及任何表结构变更** —— 下面先用一张表说清楚「为什么不用改 schema」。
+
+| 存的是什么 | 示例 | 长度 |
+|---|---|---|
+| 外链 URL | `https://cdn.example.com/a/1.png` | 典型 100~200 字符 |
+| **站内相对路径** | `/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png` | 约 **70** 字符 |
+
+`VARCHAR(255)` 对两种都绰绰有余（站内路径最坏情况：`/uploads/avatars/` 17 + userId 10 位 + `/` 1 + 时间戳 13 + `-` 1 + 随机 hex 16 + `.webp` 5 ≈ 63，留了 4 倍余量）。**因此本批不迁移、不动 `schema.prisma`**。
+
+#### 磁盘上的目录结构
+
+```text
+backend/
+└─ uploads/                      ← 不进 git（已加 .gitignore）
+   └─ avatars/
+      └─ {userId}/               ← 按用户 id 分目录
+         └─ {时间戳}-{16位随机hex}.{扩展名}
+```
+
+- **按 `userId` 分目录**：便于按用户排查、迁移，以及将来做「用户注销时整个目录一起清」。文件名本身已是随机的，分目录不为了防枚举。
+- **文件名 = 时间戳 + `randomBytes(8).toString('hex')`**：不可枚举；同一毫秒内上传也不会撞名。`node:crypto` 是 Node 内置模块，**不新增依赖**。
+- **扩展名由服务端按 mimetype 映射**（`.jpg` / `.png` / `.webp`），**不使用 `file.originalname`** —— 后者客户端可控，会有路径穿越与伪扩展名风险。
+- 目录按需 `fs.mkdirSync(dir, { recursive: true })` 创建：因为目录不进 git，clone 下来是不存在的。
+
+#### 为什么不进 git
+
+`backend/.gitignore` 增补 `uploads/`。原文件内容只有 `node_modules` / `.env` / `*.log`。
+
+理由：上传的文件是**运行时数据**，不是代码。进 git 会导致 ① 用户上传的私人图片被提交进版本库；② 每次换头像都产生一条二进制变更，仓库体积无谓膨胀；③ 多环境（本地 / 生产）文件本就不该共享。
+
+#### 生产部署提示 ⚠️
+
+> **`backend/uploads/` 是本地磁盘目录，进程重启 / 重新部署会丢文件**（容器化部署尤其明显：镜像重建后目录回到空）。
+> **生产部署时必须给它挂载持久卷**（Docker volume / K8s PVC / 宿主机目录 bind mount），否则用户头像会在每次发布后神秘消失，而数据库里的路径还好好地指着一个不存在的文件。
+> MVP 本地开发不涉及，但**上线前必须处理**。将来若迁移到对象存储（OSS / S3），只需把「落盘 + 拼 `/uploads/` 路径」换成「上传 SDK + 存完整 URL」，`avatar` 列长度仍够（见上文长度论证）。
+
+#### 与数据库的一致性（不保证强一致）
+
+DB 存路径、磁盘存文件，两者**没有事务保护**：
+
+| 情形 | 结果 | MVP 处理 |
+|---|---|---|
+| 写库成功、删旧文件前崩溃 | **孤儿文件**（磁盘上有，DB 不指向它） | 不处理，登记在「已知限制」第 4 条 |
+| 手工删了磁盘文件、DB 还指着它 | **悬空引用**（前端渲染破图） | 前端按 `img` 的 `error` 回退文字头像，不崩 |
+| 上传成功、写库失败 | 服务端**反向删除**刚落盘的文件 | 已处理（见 `docs/API.md` 的处理顺序） |
 
 ### 索引
 
@@ -254,7 +301,7 @@ ALTER TABLE `users` ADD COLUMN `avatar` VARCHAR(255) NULL,
 
 ## likes（点赞表）
 
-Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移尚未执行。**
+Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移已执行（`20261003140221_add_user_likes`）。**
 
 ### 字段
 
@@ -302,7 +349,7 @@ Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移尚未执
 1. **实时 `likeCount`**：`SELECT COUNT(*) FROM likes WHERE article_id = ?` —— 列表与详情接口都要用
 2. 「某篇文章的点赞明细」（将来若做）
 
-`user_id` 侧**不另建索引**：`likes_user_id_article_id_key` 的左前缀已承担 `WHERE user_id = ?`，MySQL 不会重复创建。迁移执行后需用 `SHOW INDEX FROM likes` 核实这一点。
+`user_id` 侧**不另建索引**：`likes_user_id_article_id_key` 的左前缀已承担 `WHERE user_id = ?`，MySQL 不会重复创建。迁移执行后已用 `SHOW INDEX FROM likes` 核实：MySQL 未额外补单列索引（见下方「索引（实际核对结果）」）。
 
 ### 为什么没有软删除列
 
@@ -393,7 +440,10 @@ ALTER TABLE `likes` ADD CONSTRAINT `likes_article_id_fkey` FOREIGN KEY (`article
 ### Prisma Client 生成状态（待知会用户）
 
 > ⚠️ **本次 `migrate dev` 建表成功，但末尾的 `prisma generate` 失败（EPERM）**。
-> 详见迁移记录小节末尾的说明，**不影响本步结论**（表结构已确认正确）。DL
+> 详见迁移记录小节末尾的说明，**不影响本步结论**（表结构已确认正确）。DLL
+
+```text
+EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'
 ```
 
 ---
@@ -459,11 +509,13 @@ const summary = [...content].slice(0, 100).join('');
 
 4. **表结构变更流程**：改 `backend/prisma/schema.prisma` → 更新本文档 → `npx prisma migrate dev --name <名字>` → 核对生成的 `migration.sql` 与 `SHOW CREATE TABLE` 实际输出。
 
+5. **`backend/uploads/` 必须挂载持久卷**（第十一批）：本目录存放用户上传的头像，是运行时数据、不进 git。**生产部署时若不做持久化，重启 / 重新部署会丢文件**，而 `users.avatar` 仍指向不存在的路径。详见「users」小节的「第十一批：头像文件存储」。
+
 ---
 
 ## 已知限制
 
-以下两条是本阶段刻意不处理的，登记在此，将来不用重新论证。
+以下四条是本阶段刻意不处理的，登记在此，将来不用重新论证。
 
 1. **更新 / 删除的并发缺口**：`updateArticle` / `deleteArticle` 的写入语句是 `prisma.article.update({ where: { id } })`，where 只按主键。「校验文章存在且是作者」与「写入」分两步，不是原子操作，极端时序下会出现 last-write-wins（覆盖掉另一条并发请求刚写入的内容，或对已被软删的文章再次软删）。
    - MVP 阶段不处理。触发条件：出现真实的竞态 bug，或将来出现多人协作编辑同一篇文章的需求。
@@ -478,6 +530,12 @@ const summary = [...content].slice(0, 100).join('');
    - 触发条件：将来做了用户注销 / 禁用功能。
    - 处理方向：把计数改成 `JOIN users u ON u.id = l.user_id AND u.deleted_at IS NULL`，代价是每次计数都要 JOIN（列表接口每篇文章一次）。
    - ⚠️ 与「文章软删」不要混淆：**文章**软删后该文**整体不可见**（`articles.deleted_at IS NULL` 过滤在前），其 `likeCount` 不会外泄；本条说的是**点赞者**被软删的情形，两者不同。
+
+4. **`users.avatar` 与磁盘文件不保证强一致**（第十一批上传引入）：DB 存路径、磁盘存文件，两者之间没有事务。
+   - **孤儿文件**（磁盘上有、DB 不指向）：进程在「写库成功 → 删旧头像」之间崩溃时产生。**悬空引用**（DB 指向、磁盘上没有）：手工删了文件、或直接改库时产生。
+   - **当前可接受**：MVP 无用户注销功能、无定时清理，量级极低；悬空引用在前端表现为破图，已有 `img` 的 `error` 回退兜底，不会崩。
+   - 触发条件：上传量上来、或出现用户注销功能。
+   - 处理方向：定时对账任务（扫 `users.avatar` 的站内路径、与磁盘比对），或在用户注销流程里连目录一起清。**不做强一致** —— 那需要跨「文件系统 + 数据库」的分布式事务，代价远超收益。
 
 ---
 
@@ -521,6 +579,8 @@ const summary = [...content].slice(0, 100).join('');
 > （schema 在生成的 JS 里），实测 `prisma.like` 的 `count` / `create` / `delete` 均正常，故功能不受影响。
 > **收尾动作**：后续让 3000 端口的后端进程释放后，重跑一次 `npx prisma generate` 即可补齐（`npm run prisma:generate`）。
 
+> 第十一批（头像上传）**不涉及表结构变更，没有迁移**：`avatar` 列不动、`VARCHAR(255)` 长度对站内路径够用（论证见「users」小节的「第十一批：头像文件存储」）。文件落在 `backend/uploads/`，不进数据库，故本表不新增行。
+>
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
 > `PRIMARY KEY (id)` 与 `UNIQUE KEY users_username_key (username)` 未受影响，
