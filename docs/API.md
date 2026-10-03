@@ -24,6 +24,8 @@
 
 ## 通用接口（已实现）
 
+本节含健康检查与认证类接口：`GET /api/health`、`POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me`、`PUT /api/auth/password`。
+
 ### GET /api/health
 
 健康检查，**无需登录**。不查数据库，只反映服务进程本身存活。
@@ -177,6 +179,75 @@ Authorization: Bearer <token>
 
 ---
 
+### PUT /api/auth/password
+
+修改当前登录用户的密码。**需要登录**。身份完全取自 token。
+
+放在 `/api/auth/` 下而非 `/api/users/`：这是**认证凭据变更**，不是资料编辑，与下方「用户接口（未实现）」是两类事。
+
+请求头：
+
+```text
+Authorization: Bearer <token>
+```
+
+请求体：
+
+| 字段 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| oldPassword | string | 是 | 1–100 字符，原样比对，不 trim（密码首尾空格有意义） |
+| newPassword | string | 是 | 6–100 字符，不 trim；UTF-8 编码后不超过 72 字节；不得与 oldPassword 相同 |
+
+```json
+{
+  "oldPassword": "old-pass-123",
+  "newPassword": "new-pass-456"
+}
+```
+
+**不接受** `userId` / `id` / `username`：身份只能来自 token。携带这三个字段一律报 40000，不做静默忽略（静默忽略会让调用方误以为参数生效了）。
+
+> 72 字节上限说明：bcrypt 的经典实现只取密码前 72 字节，超出部分被**静默丢弃**。若不在入口拦截，一个 72 字节之后的字符根本不参与哈希计算，攻击者提交前 72 字节即可通过校验。
+>
+> 长度上限 100 与 `POST /api/auth/register` 的 `password` 规则严格一致，避免出现「能注册却不能改成同一个密码」的情况。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "密码已修改",
+  "data": null
+}
+```
+
+`data` 固定为 `null`，**不返回新 token** —— 旧 token 判定为仍然有效（见下方「旧 token 语义」），发新 token 会让人误以为旧的已失效。
+
+失败：
+
+| HTTP | code | message | 场景 |
+|---|---|---|---|
+| 400 | 40000 | 依据具体字段 | oldPassword 为空 / newPassword 少于 6 个字符 / newPassword 超过 100 个字符 / newPassword 超过 72 字节 / newPassword 与 oldPassword 相同 |
+| 400 | 40000 | 不允许修改其他用户的密码 | 请求体携带 `userId` / `id` / `username` |
+| 401 | 40100 | 用户名或密码错误 | oldPassword 与当前密码不匹配（含「用户不存在」，不区分以免成为账号枚举接口） |
+| 401 | 40100 | — | 未提供 token、token 格式错、token 过期或签名无效（`auth` 中间件既有行为） |
+| 404 | 40400 | 用户不存在 | token 有效但用户不存在（已删除等），与 `GET /api/auth/me` 口径一致 |
+| 500 | 50000 | — | 未预期错误 |
+
+本接口**不新增业务码**，全部复用既有的 40000 / 40100 / 40400 / 50000。
+
+> 注：`newPassword` 与 `oldPassword` 是否相同这条校验**只能在服务端做**。前端拿不到当前密码的哈希，无法可靠判断；前端只做长度与「两次输入一致」的即时校验。
+
+### 旧 token 语义
+
+**旧 token 语义**：修改密码后，服务端**不强制失效已签发的 token**。此前签发的 token 在其 `JWT_EXPIRES_IN`（默认 `7d`）到期前仍然有效。
+
+原因：JWT载荷为 `{ userId, username }`，不含密码版本号，`auth` 中间件只校验签名与过期时间。服务端要主动失效需引入版本号或黑名单，属额外机制，本期不做。
+
+**前端约定**：修改成功后应**清除本地 token 并跳转登录页**。这是客户端行为约定，不构成安全保证 —— 其他设备上已登录的会话仍会保持有效，直到 token 自然过期。如需立即失效所有会话，属后续需求。
+
+---
+
 ## 业务接口
 
 ### 通用约定（业务部分）
@@ -195,6 +266,7 @@ Authorization: Bearer <token>
 
 | 方法 | 路径 | 说明 | 登录 |
 |---|---|---|---|
+| PUT | /api/auth/password | 修改当前用户密码（详见通用接口一节） | 是 |
 | POST | /api/articles | 发布文章 | 是 |
 | GET | /api/articles | 博客广场列表 | 否 |
 | GET | /api/articles/:id | 文章详情 | 否 |

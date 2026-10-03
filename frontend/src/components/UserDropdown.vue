@@ -12,6 +12,10 @@
              /settings 设置页仍未做，所以不放「编辑个人资料」；关注功能也没做，不放「关注」——
              宁可少一项，也不给点了没反应的死按钮。 -->
         <el-dropdown-item v-if="myProfileId" command="profile">我的主页</el-dropdown-item>
+        <!-- 修改密码（第二步）：需登录，走的是 PUT /api/auth/password。
+             放在「我的主页」下方、「退出登录」上方—— 改密码是登录态下的账号操作，
+             和「查看自己的主页」归一类，紧挨着；「退出登录」是会话操作，隔开一段。 -->
+        <el-dropdown-item command="password">修改密码</el-dropdown-item>
         <el-dropdown-item command="logout">退出登录</el-dropdown-item>
       </el-dropdown-menu>
     </template>
@@ -47,6 +51,13 @@ const myProfileId = computed(() => (userStore.user && userStore.user.id) || null
 function handleCommand(command) {
   if (command === 'profile' && myProfileId.value) {
     router.push({ name: 'user-profile', params: { id: myProfileId.value } });
+    return;
+  }
+
+  // 整个下拉菜单只在登录态渲染（AppHeader 的 v-if），所以直接推即可；
+  // 真要手工兜一道，路由的 meta.requiresAuth 也会把未登录者弹去登录页。
+  if (command === 'password') {
+    router.push({ name: 'settings-password' });
     return;
   }
 

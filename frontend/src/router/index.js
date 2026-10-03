@@ -12,6 +12,8 @@ const ArticleDetailView = () => import('../views/ArticleDetail.vue');
 const ArticleEditorView = () => import('../views/ArticleEditor.vue');
 // 第一步 ①：个人主页，按 authorId 前端过滤现有列表，公开页不要求登录。
 const UserProfileView = () => import('../views/UserProfile.vue');
+// 第二步：修改密码，需登录，未登录由beforeEach 统一跳登录页（带 redirect）。
+const ChangePasswordView = () => import('../views/ChangePassword.vue');
 
 // meta.layout 决定 App.vue 是否渲染 Header / Footer：
 // - 默认（不写）：带 Header + Footer
@@ -61,6 +63,18 @@ const routes = [
     path: '/user/:id',
     name: 'user-profile',
     component: UserProfileView,
+  },
+  {
+    // 修改密码（PUT /api/auth/password）：
+    // 需登录——未登录时 beforeEach 跳登录页并带 redirect，登录后可直接回来。
+    // 路径刻意用 /settings/password 而不是 /user/password：
+    // 将来「/settings」做个人资料编辑时，密码与资料可以并排成子页面。
+    path: '/settings/password',
+    name: 'settings-password',
+    component: ChangePasswordView,
+    meta: {
+      requiresAuth: true,
+    },
   },
 ];
 

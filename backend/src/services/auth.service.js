@@ -86,3 +86,49 @@ export async function getMe(userId) {
 
   return toPublicUser(user);
 }
+
+/**
+ * 修改当前用户的密码（docs/API.md 的 PUT /api/auth/password）。
+ *
+ * 身份完全来自 token 的 userId，请求体里的 userId / id / username
+ * 已由 validators/auth.validator.js 拦掉，这里不再考虑。
+ *
+ * 旧 token **不失效**（docs/API.md「旧 token 语义」一节）：JWT 载荷只有
+ * { userId, username }，不含密码版本号，auth 中间件只验签名与过期时间。
+ * 所以这个函数**不需要**动任何已签发的 token，前端约定自行清 token 跳登录。
+ *
+ * 失败口径：
+ * - 用户不存在 → 404，与 getMe 一致
+ * - oldPassword 不匹配 → 401「用户名或密码错误」，与 login 一致，
+ *   不区分「用户不存在」和「密码错」，避免变成账号枚举接口
+ *
+ * @returns {Promise<null>} 固定返回 null，成功响应体里 data 为 null
+ */
+export async function changePassword({ userId, oldPassword, newPassword }) {
+  const user = await prisma.user.findFirst({
+    where: whereNotDeleted({ id: userId }),
+    select: {
+      id: true,
+      password: true,
+    },
+  });
+
+  if (!user) {
+    throw httpError(404, CODE.NOT_FOUND, '用户不存在');
+  }
+
+  const matched = comparePassword(oldPassword, user.password);
+
+  if (!matched) {
+    throw httpError(401, CODE.UNAUTHORIZED, '用户名或密码错误');
+  }
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password: hashPassword(newPassword),
+    },
+  });
+
+  return null;
+}

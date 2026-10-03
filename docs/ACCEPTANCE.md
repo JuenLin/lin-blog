@@ -236,11 +236,18 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-card-visual.mjs [截图目录]` | ④ 卡片视觉丰富：元数据 chip 化（作者/时间/阅读时长）、卡片按 summary 估算时长且值算对、summary 为空不渲染时长 chip、详情页按 content 算精确值、chip 令牌生效（胶囊圆角/非透明底/无白底白字）、暗色下 chip 底与字成对翻转（4 场景共 14 项） |
 | `node scripts/acceptance/probe-entries.mjs [截图目录]` | 第六批 入口：`UserDropdown` 我的主页（在退出登录上方 / 跳转 id 正确 / 保留退出登录）、卡片作者可点且**不误触发**进详情、点标题仍进详情、AuthorCard 整卡可点、评论者可点、UserProfile 标题为「XXX 的主页」且无编辑资料/关注按钮（16 项） |
 | `node scripts/acceptance/probe-search.mjs [报告目录]` | 第二步 搜索 `GET /api/articles?keyword=`：命中标题 / 命中正文 / 搜不到 / 不匹配作者昵称、空串与纯空白不 400、超 50 字符 400（边界 50 通过）、搜索下分页两页不重叠 / asc-desc 反序 / sortBy 白名单仍生效 / 不传 keyword 行为不变、软删除搜不到、重复传值 400、首尾空格 trim（**纯 API，不启 Chrome**，共 16 项） |
+| `node scripts/acceptance/probe-password.mjs [报告目录]` | 第二步 修改密码 `PUT /api/auth/password`：成功返回 200/code 0/message「密码已修改」/data 为 null、改完后新密码能登录、旧密码登录 401、**旧 token 仍可用且仍具备写权限**（「旧 token 语义」）、未登录 401、oldPassword 错 401（message 与登录接口一致）、newPassword 与旧密码相同 400、5 字符 400、101 字符 400、25 个汉字（75 字节）400、**24 个汉字（72 字节）边界通过**、禁传 userId/id/username 各 400 且**未误改密码**、还原前前提检查、改回初始值、还原后重新登录（**纯 API，不启Chrome，共 19 项**） |
 | `node scripts/acceptance/probe-search-ui.mjs [截图目录]` | 第七批 前端搜索框：未登录时搜索框渲染在 AppHeader 内、回车触发且 URL 带 keyword、真实请求带 keyword（抓 Network）、页面结果与后端命中 id 集合逐一对齐、刷新后搜索态保留、切 Tab 仍带 keyword、第 2 页状态下搜索 page 重置为 1、搜不到时独立文案 + 清空搜索按钮且不误显示「还没有文章」、点清空恢复全量、详情页/个人主页搜索框可见且回车跳回首页带 keyword、卡片与详情页两处阅读时长 chip 悬停出「预计阅读时长」（含暗色，共 20 项） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 
 探针会**按住列表请求**（`Fetch.enable` + 暂不 `continueRequest`）来定格骨架屏/刷新态，再用 `fulfillRequest` 造假响应 —— 全程不动真实数据。
+
+> **涉及密码 /登录态的探针必须自建一次性账号，绝不能用 admin 或 demo。** `lib/session.mjs` 的 `mintToken` 是直接用 `JWT_SECRET` 签名，**不经过密码校验**，所以它验不了「密码改了还能不能登录」这类语义 —— 那类探针必须走真实 `POST /auth/login`，就必然需要一个已知密码的账号。正确做法：注册一个 `pwprobe<时间戳>` 账号，只动它自己，跑完用 `lib/tmp-account.mjs` 的 `cleanupProbeAccounts` 按用户名精确硬删。
+>
+> `cleanupProbeAccounts` **只删 `pwprobe` 前缀的用户名**，传错参数直接 throw 而非误删；用户不存在 `DELETE /api/users`（API.md 登记为未实现），所以走 Prisma 直连，**不手写SQL**（契约 §11）。
+>
+> 这类探针还要注意**「当前生效密码」会随用例漂移**：改了密码后，后续用例的 `oldPassword` 必须跟着变，否则整片用例会连环崩在「登录拿不到 token」上（`probe-password` 首轮就踩了这个：72 字节边界用例把密码改成 24 个汉字后，`currentPassword`被错设回初始值，导致还原步骤中断）。已改为先断言登录成功再取值，不做裸链式取值。
 
 > **用 `Fetch` 造假响应时必须单独处理 OPTIONS 预检。** `src/api/request.js` 给所有请求（含 GET）都设了 `Content-Type: application/json`，这不是 CORS 安全值，所以跨源列表请求**一定**会先发一次 OPTIONS 预检。若把 OPTIONS 也 `fulfillRequest` 成列表体、且不返回 `Access-Control-Allow-Methods` / `Access-Control-Allow-Headers`，浏览器会直接拦掉随后的真实 GET —— 页面表现为「Network Error + 卡片 0 张」，看起来像前端坏了，实际是探针自己的问题。
 > 正确写法：先按 `request.method === 'OPTIONS'` 分支回 `204` + 三个 CORS 头并 `return`，其余请求再走原来的 fulfill/continue 逻辑。`probe-card-visual` / `probe-author-others` / `probe-prevnext` / `probe-profile` 都踩过这个坑（2026-10-03 修）。
