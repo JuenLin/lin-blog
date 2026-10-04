@@ -2,17 +2,17 @@
 // 与 probe-password.mjs 同构：只打后端 API、不依赖 Chrome —— 纯 fetch + 一次性账号 + 精确回收。
 //
 // 覆盖 docs/API.md「PUT /api/users/me」：
-//   A. 三态语义（本接口的核心，4 条）
+//   A. 三态语义（本接口的核心，3 条 —— 外链下线后 avatar 只剩「清空」有实际用途）
 //      1. 字段不出现 = 不改
 //      2. avatar: null = 清空
-//      3. avatar: "https://..." = 设置
+//      3. avatar: "/uploads/..." = 设置（形态仍放行，前端已不暴露这条路）
 //      4. bio: "" 空串 = 清空（转 NULL 存储）
 //   B. 校验规则（5 条）
 //      5. 空 body {} → 40000
 //      6. 禁传 username / id / userId / password 各→ 40000
-//      7. avatar 必须是 http(s) 外链**或** /uploads/ 站内路径（第十一批放宽；
-//         javascript: / data: / ftp:// / 其它相对路径仍→ 40000）
-//      7b. /uploads/ 开头的站内路径放行（第十一批新增）
+//      7. avatar **只接受 /uploads/ 站内路径**（外链下线后收紧：
+//         https:// 外链 / javascript: / data: / ftp:// / 其它相对路径 一律→ 40000）
+//      7b. /uploads/ 开头的站内路径放行
 //      8. avatar 超长（256 字符）→ 40000；边界 255 放行
 //      9. bio 超长（201 字符）→ 40000；边界 200 放行
 //   C. 鉴权与存在性（2 条）
@@ -59,8 +59,16 @@ const ACCOUNT = {
   password: 'Original#2026',
 };
 
-const long255 = 'h'.repeat(255);
-const long256 = 'h'.repeat(256);
+// 长度边界用的样本。
+//
+// ⚠️ **必须用「字符数」算，绝不能拿字符串做减法**：`'h'.repeat(255) - 9` 是 `NaN`，
+// 而 `'a'.repeat(NaN)` 得到**空串**（repeat 把 NaN 当 0）。第九批起这里就踩过这个坑 ——
+// 当时 PE-B4a 实际发出的是 `https://e.com/NaN.png`（21 字符），断言却是 PASS，
+// 于是「255 边界放行」这一条**从来没被测到**，是个探针自己的假通过。
+// 现在改成显式按字符数拼，并把实发长度打进证据（长度不对一眼能看出来）。
+const AVATAR_PREFIX = '/uploads/';
+const avatar255 = `${AVATAR_PREFIX}${'a'.repeat(255 - AVATAR_PREFIX.length)}`;
+const avatar256 = `${AVATAR_PREFIX}${'a'.repeat(256 - AVATAR_PREFIX.length)}`;
 const bio200 = '简'.repeat(200);
 const bio201 = '简'.repeat(201);
 
@@ -144,12 +152,12 @@ try {
     `status=${a1.status} code=${codeOf(a1)} avatar=${JSON.stringify(a1d.avatar)} bio=${JSON.stringify(a1d.bio)}`
   );
 
-  // ---------- A2. 设置 avatar → avatar 变、bio 不动 ----------
-  const a2 = await call(ME_URL, { method: 'PUT', token, body: { avatar: 'https://cdn.example.com/a/1.png' } });
+  // ---------- A2. 设置 avatar（站内路径）→ avatar 变、bio 不动 ----------
+  const a2 = await call(ME_URL, { method: 'PUT', token, body: { avatar: '/uploads/avatars/1/a.png' } });
   const a2d = dataOf(a2) || {};
   log(
-    'PE-A2 设置 avatar：avatar 更新成功且 bio 不被动',
-    a2.status === 200 && codeOf(a2) === 0 && a2d.avatar === 'https://cdn.example.com/a/1.png' && a2d.bio === '第一次改的简介',
+    'PE-A2 设置 avatar（/uploads/ 站内路径）：avatar 更新成功且 bio 不被动',
+    a2.status === 200 && codeOf(a2) === 0 && a2d.avatar === '/uploads/avatars/1/a.png' && a2d.bio === '第一次改的简介',
     `status=${a2.status} avatar=${JSON.stringify(a2d.avatar)} bio=${JSON.stringify(a2d.bio)}`
   );
 
@@ -175,12 +183,12 @@ try {
   const a5 = await call(ME_URL, {
     method: 'PUT',
     token,
-    body: { avatar: 'http://example.org/pic.png', bio: '同时改两项' },
+    body: { avatar: '/uploads/avatars/1/pic.png', bio: '同时改两项' },
   });
   const a5d = dataOf(a5) || {};
   log(
-    'PE-A5 同时传 avatar + bio：两项都写入（http 也放行）',
-    a5.status === 200 && codeOf(a5) === 0 && a5d.avatar === 'http://example.org/pic.png' && a5d.bio === '同时改两项',
+    'PE-A5 同时传 avatar + bio：两项都写入（站内路径）',
+    a5.status === 200 && codeOf(a5) === 0 && a5d.avatar === '/uploads/avatars/1/pic.png' && a5d.bio === '同时改两项',
     `status=${a5.status} avatar=${JSON.stringify(a5d.avatar)} bio=${JSON.stringify(a5d.bio)}`
   );
 
@@ -202,25 +210,38 @@ try {
     );
   }
 
-  // ---------- B3. avatar 伪协议 / 非法前缀必须拦下（防 XSS：前端会渲染成 <img src>）----------
-  // 第十一批放宽后放行两种形态：http(s) 外链 与 /uploads/ 站内路径。
-  // `ftp://` 是非 http 协议；`/local/a.png` 是站内路径之外的相对路径；
-  // `example.com/a.png` 没有协议头 —— 三者都要继续拦住。
-  for (const bad of ['javascript:alert(1)', 'data:image/png;base64,iVBOR', 'ftp://x.com/a.png', '/local/a.png', 'example.com/a.png']) {
+  // ---------- B3. avatar 非法形态必须拦下（防 XSS：前端会渲染成 <img src>）----------
+  // 外链下线后**只放行 /uploads/ 站内路径**，所以下面全都该被拒：
+  //   https:// 与 http://  → 曾经的合法外链，现在也是非法值
+  //   javascript: / data:  → 伪协议（XSS 面）
+  //   ftp://               → 非 http 协议
+  //   /local/a.png         → 站内路径之外的相对路径
+  //   example.com/a.png    → 没有协议头
+  for (const bad of ['https://cdn.example.com/a.png', 'http://example.org/pic.png', 'javascript:alert(1)', 'data:image/png;base64,iVBOR', 'ftp://x.com/a.png', '/local/a.png', 'example.com/a.png']) {
     const r = await call(ME_URL, { method: 'PUT', token, body: { avatar: bad } });
     log(
-      `PE-B3 avatar="${bad}" → 40000（只允许 http(s) 外链或 /uploads/ 站内路径）`,
+      `PE-B3 avatar="${bad}" → 40000（只允许 /uploads/ 站内路径，外链已下线）`,
       r.status === 400 && codeOf(r) === 40000,
       `status=${r.status} code=${codeOf(r)}`
     );
   }
 
   // ---------- B4. 长度边界 ----------
-  const b4ok = await call(ME_URL, { method: 'PUT', token, body: { avatar: `https://e.com/${long255 - 'https://e.com/'.length}.png` } });
-  log('PE-B4a avatar 边界 255 字符放行', b4ok.status === 200 && codeOf(b4ok) === 0, `status=${b4ok.status} code=${codeOf(b4ok)}`);
+  // 样本用 avatar255 / avatar256（见文件顶部），两者都是**合法前缀**，只差长度 ——
+  // 这样 400 只可能是长度规则拦的，不可能被前缀规则「代答」。
+  const b4ok = await call(ME_URL, { method: 'PUT', token, body: { avatar: avatar255 } });
+  log(
+    `PE-B4a avatar 边界 255 字符放行（实发 ${avatar255.length} 字符）`,
+    b4ok.status === 200 && codeOf(b4ok) === 0 && (dataOf(b4ok) || {}).avatar === avatar255,
+    `status=${b4ok.status} code=${codeOf(b4ok)} 实发长度=${avatar255.length}`
+  );
 
-  const b4long = await call(ME_URL, { method: 'PUT', token, body: { avatar: `https://e.com/${long256}.png` } });
-  log('PE-B4b avatar 超长 → 40000', b4long.status === 400 && codeOf(b4long) === 40000, `status=${b4long.status} code=${codeOf(b4long)}`);
+  const b4long = await call(ME_URL, { method: 'PUT', token, body: { avatar: avatar256 } });
+  log(
+    `PE-B4b avatar 超长 256 字符 → 40000（实发 ${avatar256.length} 字符）`,
+    b4long.status === 400 && codeOf(b4long) === 40000,
+    `status=${b4long.status} code=${codeOf(b4long)} 实发长度=${avatar256.length}`
+  );
 
   const b4bio = await call(ME_URL, { method: 'PUT', token, body: { bio: bio200 } });
   log('PE-B4c bio 边界 200 字符放行', b4bio.status === 200 && codeOf(b4bio) === 0, `status=${b4bio.status} code=${codeOf(b4bio)}`);
@@ -228,13 +249,13 @@ try {
   const b4bioLong = await call(ME_URL, { method: 'PUT', token, body: { bio: bio201 } });
   log('PE-B4d bio 超长 201 字符 → 40000', b4bioLong.status === 400 && codeOf(b4bioLong) === 40000, `status=${b4bioLong.status} code=${codeOf(b4bioLong)}`);
 
-  // ---------- B5. 第十一批放宽：/uploads/ 站内路径放行 ----------
+  // ---------- B5. /uploads/ 站内路径放行（外链下线后仅存的合法形态）----------
   // 放在 B4 之后是刻意的：本条会把头像改成站内路径，而「改头像」会触发服务端删旧文件。
   // 放在最后一位，后面就不再有 avatar 写入（D1 只改 bio），也就不会真的去删磁盘上不存在的
   // 这个文件（删不掉只是 warn，但没必要给后端日志添噪音）。
   const b5 = await call(ME_URL, { method: 'PUT', token, body: { avatar: '/uploads/avatars/1/x.png' } });
   log(
-    'PE-B5 avatar="/uploads/avatars/1/x.png" → 放行（第十一批新增的站内路径形态）',
+    'PE-B5 avatar="/uploads/avatars/1/x.png" → 放行（唯一合法形态）',
     b5.status === 200 && codeOf(b5) === 0 && (dataOf(b5) || {}).avatar === '/uploads/avatars/1/x.png',
     `status=${b5.status} code=${codeOf(b5)} avatar=${JSON.stringify((dataOf(b5) || {}).avatar)}`
   );

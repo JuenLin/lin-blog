@@ -20,9 +20,9 @@
 //   D. 旧文件清理（2 条，磁盘核对）
 //     13. 二次上传 → 旧文件删、新文件在
 //     14. PUT /me 传 avatar: null → 清空且旧文件删
-//   E. 放宽后的 avatar 校验（2 条，与 probe-profile-edit.mjs 的 PE-B5 呼应）
-//     15. PUT /me 传 /uploads/ 站内路径 → 放行
-//     16. PUT /me 传 javascript: → 40000（伪协议仍挡）
+//   E. avatar 校验收紧后的复核（2 条，与 probe-profile-edit.mjs 的 PE-B3 / PE-B5 呼应）
+//     15. PUT /me 传 /uploads/ 站内路径 → 放行（唯一合法形态）
+//     16. PUT /me 传一切非 /uploads/ 值（伪协议 / 外链 / 相对路径）→ 全部 40000
 //   F. 回收与基线（2 条）
 //     17. 上传目录已清空
 //     18. users 表条数与跑之前一致（一次性账号已删）
@@ -140,6 +140,15 @@ async function countUsers() {
 
 let accountCreated = false;
 
+// 一次性账号的 id。**必须在 try 之外声明**：目录清理要放进 finally 兜底，
+// 而 finally 拿不到 try 里 `const` 声明的变量。
+//
+// 这条是踩出来的：第一次跑到 UP-C4 时后端恰好重启，fetch 失败 → 中断，
+// 而目录清理（UP-F1）写在 try 里没跑到，于是在 backend/uploads/avatars/ 下
+// **留下了一个孤儿文件**（账号被 finally 删了、文件还在，成了「磁盘有、DB 无」）。
+// 断言归断言，兜底归兜底 —— 清理动作必须放在 finally。
+let probeUserId = null;
+
 try {
   if ((await httpOk(`${CONFIG.api}/articles?page=1&pageSize=1`)) !== 200) {
     throw new Error(`后端 ${CONFIG.api} 探不到。请先起后端 3000。`);
@@ -159,6 +168,7 @@ try {
   if (!token) throw new Error(`登录失败：status=${login.status} body=${JSON.stringify(login.json)}`);
 
   const userId = reg.json.data.id;
+  probeUserId = userId; // 让 finally 也能拿到，账号一注册就纳入兜底范围
   console.log(`一次性账号 ${ACCOUNT.username}（id=${userId}）已就绪\n`);
 
   let firstFile = null;
@@ -232,11 +242,19 @@ try {
 
   // ---------- E1. PUT /me 接受站内路径 ----------
   const e1 = await jsonCall(ME_URL, { method: 'PUT', body: { avatar: secondAvatar }, token });
-  log('UP-E1 PUT /me 传 /uploads/ 站内路径 → 放行（第十一批放宽）', e1.status === 200 && codeOf(e1) === 0, `status=${e1.status} code=${codeOf(e1)} msg=${msgOf(e1)}`);
+  log('UP-E1 PUT /me 传 /uploads/ 站内路径 → 放行（唯一合法形态）', e1.status === 200 && codeOf(e1) === 0, `status=${e1.status} code=${codeOf(e1)} msg=${msgOf(e1)}`);
 
-  // ---------- E2. PUT /me 仍挡伪协议 ----------
-  const e2 = await jsonCall(ME_URL, { method: 'PUT', body: { avatar: 'javascript:alert(1)' }, token });
-  log('UP-E2 PUT /me 传 javascript: → 400/40000（伪协议仍挡）', e2.status === 400 && codeOf(e2) === 40000, `status=${e2.status} code=${codeOf(e2)}`);
+  // ---------- E2. PUT /me 拒绝一切非 /uploads/ 的值（外链下线后收紧）----------
+  // 与 probe-profile-edit.mjs 的 PE-B3 呼应，但这里从「上传接口的视角」再验一遍：
+  // 收紧后**所有**非 /uploads/ 前缀的值都该被拒，不只是伪协议。
+  const badAvatars = ['javascript:alert(1)', 'https://cdn.example.com/a.png', '/local/a.png'];
+  const e2results = [];
+  for (const bad of badAvatars) {
+    const r = await jsonCall(ME_URL, { method: 'PUT', body: { avatar: bad }, token });
+    e2results.push(`${bad}→${r.status}/${codeOf(r)}`);
+  }
+  const e2ok = e2results.every((s) => s.endsWith('→400/40000'));
+  log('UP-E2 PUT /me 传非 /uploads/ 值（伪协议 / 外链 / 相对路径）→ 全部 400/40000', e2ok, e2results.join('；'));
 
   // ---------- D2. avatar: null 清空 + 删文件 ----------
   const d2 = await jsonCall(ME_URL, { method: 'PUT', body: { avatar: null }, token });
@@ -255,6 +273,17 @@ try {
 } catch (e) {
   console.log('\n[执行中断] ' + (e && e.message ? e.message : String(e)));
 } finally {
+  // 兜底清理，**顺序与 UP-F1/F2 一致且必须幂等**（正常跑完时目录已被 UP-F1 删掉，
+  // 这里再查一次是空操作）。放在 finally 是为了覆盖「中途异常退出」的情形 ——
+  // 否则会像第一次那样留下孤儿文件。
+  if (probeUserId !== null) {
+    const leftover = path.join(UPLOAD_ROOT, 'avatars', String(probeUserId));
+    if (fs.existsSync(leftover)) {
+      fs.rmSync(leftover, { recursive: true, force: true });
+      console.log(`[清理] 兜底删除中止前遗留的上传目录：${leftover}`);
+    }
+  }
+
   if (accountCreated) {
     await cleanupProbeAccounts([ACCOUNT.username]);
   }

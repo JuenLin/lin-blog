@@ -51,11 +51,15 @@ function toPublicUser(user) {
  * 空串处理：bio 传 '' 时视为「清空」（docs/API.md 规定），
  * 统一转成 null 存储，不接受「空字符串」这种状态。
  *
- * ## 旧头像文件的清理（第十一批）
+ * ## 旧头像文件的清理（第十一批引入）
  * 若本次改动了 avatar，且**旧值是站内路径**（`/uploads/` 开头），写库成功后把旧文件删掉。
  * 顺序是**先写库、再删文件**：反过来（先删后写）一旦写库失败，用户就彻底没头像了；
  * 前者删失败只留一个垃圾文件（登记在 docs/DB.md「已知限制」第 4 条），不影响正确性。
- * 旧值是外链时不动——文件本来就不在我们的磁盘上。
+ *
+ * 外链下线后，本接口的 avatar **正常只用于清空**（传 null）——设置头像统一走
+ * `POST /api/users/me/avatar`（validate 仍接受 /uploads/ 前缀的字符串，是给探针与运维留的窄口）。
+ * 「旧值不是 /uploads/ 开头就不删」这条判断仍然保留：它是**脏值防御**，
+ * 挡的是手工改库留下的历史值（如第九批的外链），不是「外链分支」。
  *
  * @param {object} params
  * @param {number} params.userId 来自 token
@@ -98,6 +102,7 @@ export async function updateProfile({ userId, body }) {
   });
 
   // 写库成功后才清旧文件；改的是 bio 时 avatar 键没出现，不做任何删除。
+  // 外链下线后这里的 avatar 只会是 null（清空），下面这行负责把旧文件删掉。
   if (hasField(body, 'avatar')) {
     deleteLocalAvatar(user.avatar);
   }
