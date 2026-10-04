@@ -254,3 +254,39 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 > **用 `Fetch` 造假响应时必须单独处理 OPTIONS 预检。** `src/api/request.js` 给所有请求（含 GET）都设了 `Content-Type: application/json`，这不是 CORS 安全值，所以跨源列表请求**一定**会先发一次 OPTIONS 预检。若把 OPTIONS 也 `fulfillRequest` 成列表体、且不返回 `Access-Control-Allow-Methods` / `Access-Control-Allow-Headers`，浏览器会直接拦掉随后的真实 GET —— 页面表现为「Network Error + 卡片 0 张」，看起来像前端坏了，实际是探针自己的问题。
 > 正确写法：先按 `request.method === 'OPTIONS'` 分支回 `204` + 三个 CORS 头并 `return`，其余请求再走原来的 fulfill/continue 逻辑。`probe-card-visual` / `probe-author-others` / `probe-prevnext` / `probe-profile` 都踩过这个坑（2026-10-03 修）。
+
+## 8. 探针审计（低优先级问题）
+
+> 2026-10-04 第 3 批复审计 + 修复。原始编号清单（#21-40）未落盘、会话检索不可得，故本轮按相同类别（label/文案对齐、清理死等待、B2-3 opacity 时序脆弱）对全部 15 个探针的断言重新通读。结论：**只发现 2 类真问题，label/文案对齐全部无误报。** 两处已于当日修复并跑完整批对比基线验证（见 8.3）。
+
+### 8.1 确实是问题的（2 处）
+
+| 文件 | 位置 | 问题 | 改法 |
+| --- | --- | --- | --- |
+| `probe-search-ui.mjs` | `SU-3` 区的 `await waitFor('true', 100)`（约 178 行）与 `SU-9` 区同样写法（约 213 行） | 死等待：等待条件恒为常量 `true`（永远立即满足），返回值 `okReq` 从未被使用，真正同步靠后面的 `sleep(600/700)`。语义上「等了等于没等」，还误导读者以为在等某个真实条件。 | **已修复（2026-10-04）：** 改为 Node 侧轮询真实条件——等到 `listReqs()` 真的捕获到带 `keyword=` 的请求（SU-3）/ 带 `sortBy=likeCount&keyword=` 的请求（SU-9）再继续，超时（~5s）则自然落到后续「实际请求为空」的证据里；删掉无用的 `okReq`。 |
+| `probe-batch2.mjs` | `B2-3`（约 213-227 行） | opacity 时序脆弱：切 Tab 后只 `for(...) sleep(100)` 等到请求被按住就读 `refreshState().opacity`，但 CSS 过渡（1→0.5）还没跑完，采到的是中间态（历史证据 0.61 / 0.68）。断言 `opacity < 1` 侥幸过，但理论上有采到 1.0 的可能 → 偶发 FAIL。 | **已修复（2026-10-04）：** 采样前轮询直到 opacity 落到稳定态（连续两次读 ≤0.52 或达到目标 0.5）再读 `during`。`pointer-events==='none'` 是瞬变属性无需等，保留即时判。 |
+
+### 8.2 复核后无误报（label/文案对齐）
+
+通读全部 15 个探针的断言，逐条比对「标签文字」与「判定条件」，**未发现**以下任何一类问题：
+
+- 标签声称 X、条件验的是 Y（名实不符）；
+- 标签声称「无/不出现」但条件对空集合 `every` 恒真（与第 2 批已修的 S5-1/SU-4/D4 同类，本轮未再出现）；
+- 硬编码 `true`（除 `probe-batch3` 的 `F7 取不到可见文章，跳过` 是刻意的 SKIP 标记，非问题）。
+
+### 8.3 修复验证（2026-10-04）
+
+完整批 15 探针 + `run.mjs` 主验收 **288 项全绿、exit 全 0**，项数与修前基线逐项一致（本轮 2 处全是改写，未增删条目）。关键实证（新逻辑抓到的真实值，不再是死等待 / 中间态）：
+
+- `SU-3` → `请求=http://localhost:3000/api/articles?...&keyword=验收占位` `status=200`（轮询真实捕获，非 sleep 后猜）
+- `SU-9` → `请求=...&sortBy=likeCount&order=desc&keyword=验收占位`（排序与搜索正交，两者真一起带上）
+- `B2-3` → `opacity=0.5 pointer-events=none`（已落稳到目标值，不再是 0.61/0.68 中间态）
+
+跑前跑后库一致（users 3 / 文章 11 / 可见 11 / 评论 1 / likes 1），Chrome 临时 profile 残留 0。**只改了 2 个探针文件，未改功能代码。** 报告与日志：`D:/tools/probe-baseline/audit-b3/`。
+
+覆盖到的探针与重点断言：`probe-search`(S1-S6) / `probe-password`(P1-P14) / `probe-profile-edit`(PE-0,A1-A5,B1-B5,C1-C2,D1-D2,E1-E3) / `probe-like`(B1-B2,C1-C3,D0-D4,E1-E3) / `probe-batch3`(F1-1~F1-4,F2-1~F2-2,F7-1~F7-2,D1-1~D1-2,B2-1~B2-3) / `probe-dark`(D0-1~D0-3,D1-1~D1-3,D2-1~D2-10,D3-1~D3-4,D4-1~D4-2) / `probe-profile`(P1-1~P1-4,P2-1~P2-2) / `probe-prevnext`(N1-1~N4-3) / `probe-author-others`(O1-1~O1-4,O2-1) / `probe-entries`(E1-1,E1-3,E1-4,E5-1~E5-4,E2-1~E2-5,E3-1~E3-2,E4-0~E4-1) / `probe-card-visual`(C1-1~C1-7,C2-1~C2-2,C3-1~C3-3,C4-2) / `probe-styles`(S1-S4) / `run.mjs`(A1-A3,B1-B3,C2-C5) / `probe-search-ui`(其余 SU-*) / `probe-batch2`(其余 B/H 段)。
+
+### 8.3 状态
+
+- 第 3 批**尚未动手改**（本轮只出清单 + 落盘结论）。
+- 第 1 批（高）、第 2 批（中，13 条）已修并分别提交 `94c68d8` / `aa4c80d`。

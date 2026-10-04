@@ -175,10 +175,19 @@ try {
   log('SU-2 回车触发搜索，URL 带 keyword', okUrl && typed, `path=${await curPath()} url=${u1} 搜索前卡片 ${baseTotal} 张`);
 
   // ---------- SU-3 真实请求带 keyword（抓 Network） ----------
-  const okReq = await waitFor(`true`, 100);
-  await sleep(600);
+  // 不再等常量 true（恒真、无意义的死等待），改为轮询真实请求条件：
+  // 等到 listReqs 真的捕获到带 keyword= 的 /api/articles 请求（且响应已回）再继续；
+  // 超时（5s）自然落到「实际请求为空」证据里。
+  let kwReq = null;
+  {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 5000) {
+      kwReq = listReqs().find((r) => r.url.includes('keyword='));
+      if (kwReq && kwReq.status !== undefined) break;
+      await sleep(100);
+    }
+  }
   const reqs = listReqs();
-  const kwReq = reqs.find((r) => r.url.includes('keyword='));
   log('SU-3 请求确实带上 keyword 参数', Boolean(kwReq), kwReq ? kwReq.url : `实际请求=${JSON.stringify(reqs.map((r) => r.url))}`);
   log('SU-3b 该请求 200', Boolean(kwReq && kwReq.status === 200), `status=${kwReq && kwReq.status}`);
 
@@ -210,9 +219,17 @@ try {
     const t = Array.from(document.querySelectorAll('.el-tabs__item')).find(e => (e.innerText||'').trim() === '热门');
     if (t) t.click(); return true;
   })()`);
-  await waitFor(`true`, 100);
-  await sleep(700);
-  const tabReq = listReqs().find((r) => r.url.includes('sortBy=likeCount'));
+  // 同样改轮询真实请求条件：等到 listReqs 捕获到「sortBy=likeCount 且带 keyword=」的请求再继续；
+  // 超时（5s）落到「未捕获」证据里。
+  let tabReq = null;
+  {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 5000) {
+      tabReq = listReqs().find((r) => r.url.includes('sortBy=likeCount') && r.url.includes('keyword='));
+      if (tabReq && tabReq.status !== undefined) break;
+      await sleep(100);
+    }
+  }
   log('SU-9 切 Tab 仍带 keyword（排序与搜索正交）', Boolean(tabReq && tabReq.url.includes('keyword=')), `请求=${tabReq ? tabReq.url : '未捕获'}`);
 
   // ---------- SU-8 在第 2 页状态下搜索 → page 重置为 1 ----------

@@ -210,8 +210,24 @@ try {
 
   // 等切 Tab 触发的那个请求被按住
   for (let i = 0; i < 40 && !paused[0]; i += 1) await sleep(100);
-  const during = await s.evaluate(refreshState);
-  console.log('【B2】刷新中（新请求被按住）: ' + JSON.stringify(during));
+  // 轮询 opacity 到稳定态（CSS 过渡 1→0.5 跑完），避免采到中间态（历史 0.61/0.68）。
+  // pointer-events 是瞬变属性，仍即时判（不轮询）。连续两次 ≤0.52 视为已落稳。
+  let during = await s.evaluate(refreshState);
+  {
+    let stable = 0;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 5000) {
+      during = await s.evaluate(refreshState);
+      if (Number(during.opacity) <= 0.52) {
+        stable += 1;
+        if (stable >= 2) break;
+      } else {
+        stable = 0;
+      }
+      await sleep(80);
+    }
+  }
+  console.log('【B2】刷新中（新请求被按住，opacity 已落稳）: ' + JSON.stringify(during));
   await s.screenshot(`${OUT}/91-home-refreshing.png`);
 
   // 结论必须由实测值算出来，不能写死进日志（原版就是在括号里硬写了「旧列表仍在，只是变淡」）
