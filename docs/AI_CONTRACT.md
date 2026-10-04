@@ -64,20 +64,39 @@
 
 - 禁止擅自更换框架、ORM、数据库。
 - 禁止擅自升级依赖大版本。
-- 禁止擅自引入新依赖。
+- 禁止擅自引入新依赖。**例外见「已批准的例外」第 3 项**。
 - 禁止修改接口契约。
-- 禁止修改数据库 schema。
-  > **已批准例外（2026-10-03，第九批）**：`users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列，属**用户明确批准**的 schema 变更，详见 `docs/DB.md`「第九批新增字段」与 `docs/API.md` 的 `PUT /api/users/me` 章节。
-  >   
-  > **该例外仅限这两列**。除此之外的任何 schema 变更（改列名、改类型、删列、其他表）仍需重新向用户报告并取得批准。
-  >   
-  > **已批准例外（2026-10-03，第十一批）：后端引入 multer ^2.4.0，仅用于头像上传（POST /api/users/me/avatar），属用户明确批准。选用 2.x 而非 1.4.5-lts 线的原因：CVE-2025-47935 与 CVE-2025-47944两个高危 DoS 仅修复于 2.0.0+。该例外仅限这一个包，
-  >   
-  > 除此之外仍禁止引入新依赖。
-  >   
-  > 已批准例外（2026-10-04，分类功能）：`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，枚举值 `技术` / `生活` / `随笔` / `未分类`，由后端枚举白名单校验（不接受自由字符串，非法值返回 `400 / 40000`）；迁移 `NOT NULL DEFAULT '未分类'` 自动回填既有行，零 NULL。属用户明确批准的 schema 变更，**&#x4EC5;限此&#x5217;**，不含其他表结构变更、不含新增 `categories` 表 / 外键 / 索引。决策过程与字段定义见 `docs/DB.md`「category 分类列」与 `docs/API.md` 文章相关接口章节。
-  >   
-  > 该例外是**独立的一次批准\*\*，不援引第九批 / 第十一批的例外；其余任何 schema 变更（含改 `category` 的类型 / 长度、加其他列）仍需重新向用户报告并取得批准。
+- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4 项**。
+
+### 已批准的例外
+
+以下四项均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+**未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
+
+**注意**：第 1、2、4 项是「禁止改 schema」的三条例外（第九批 / 第十批 / 分类功能），  
+第 3 项是「禁止引入新依赖」的例外（第十一批）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
+
+1. **第九批 · schema 变更（2026-10-03 批准）**
+   - **批准内容**：`users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列。
+   - **范围**：仅限这两列。改列名、改类型、删列、其他表的任何变更均不在此列。
+   - **依据**：见 `docs/DB.md`「第九批新增字段」与 `docs/API.md` 的 `PUT /api/users/me` 章节。
+   - **是否援引前例**：无，这是第一次批准。
+2. **第十批 · schema 变更（2026-10-03 批准）**
+   - **批准内容**：新建 `likes` 表一张（`id` / `user_id` / `article_id` / `created_at`），含两条外键与两个索引（`likes_user_id_article_id_key` 唯一约束、`likes_article_id_idx` 普通索引），迁移 `20261003140221_add_user_likes`。
+   - **范围**：**仅限新建 `likes` 一张表**。不含修改 `users` / `articles` / `comments` 任何一列，也不含给已建表补 `deleted_at`（`likes` 刻意不做软删除，见 `docs/DB.md`「为什么没有软删除列」）。
+   - **依据**：见 `docs/DB.md`「likes」小节的「schema 变更已获批准（豁免登记）」，决策过程见 `docs/API.md` 的 `POST /api/articles/:id/like` 章节。
+   - **是否援引前例**：无。第九批的豁免写明「仅限那两列，除此之外的任何 schema 变更仍需重新批准」，因此本项是**独立的一次批准**。
+3. **第十一批 · 新增依赖（2026-10-03 批准）**
+   - **批准内容**：后端引入 `multer ^2.4.0`，仅用于头像上传（`POST /api/users/me/avatar`）。
+   - **依据**：选 2.x 而非 1.4.5-lts 线，是因为 CVE-2025-47935 与 CVE-2025-47944两个高危 DoS 仅修复于 2.0.0+。
+   - **范围**：仅限这一个包；除此之外仍禁止引入新依赖。
+   - **是否援引前例**：无，与第九批是两次独立批准。
+4. **分类功能 · schema 变更（2026-10-04 批准）**
+   - **批准内容**：`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，枚举值 `技术` / `生活` / `随笔` / `未分类`，由后端枚举白名单校验（不接受自由字符串，非法值返回 `400 / 40000`）；迁移用 `NOT NULL DEFAULT '未分类'` 自动回填既有行，零 NULL。
+   - **范围**：**仅限此列**。不含其他表结构变更、不含新增 `categories` 表 / 外键 / 索引，也不含改 `category` 的类型 / 长度。
+   - **依据**：见 `docs/DB.md`「category 分类列」与 `docs/API.md` 文章相关接口章节。
+   - **是否援引前例**：无，与第九批 / 第十批 / 第十一批各自独立。
+
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
 - 禁止把 API Key、数据库密码等敏感信息写进代码。
@@ -98,17 +117,18 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  │  │  ├─ auth.js       	# 认证接口：登录、注册、登出、当前用户
 
-│  │  │  ├─ user.js       	# 用户管理接口：列表、详情、增删改
+│  │  │  ├─ user.js       	# 用户接口：改资料、传头像（列表 / 详情 / 增删未实现）
 
 │  │  │  ├─ article.js              # 文章接口：发布、列表、详情、编辑、删除
 
-│  │  │  └─ comment.js              # 评论接口：发表、文章评论列表
+│  │  │  ├─ comment.js              # 评论接口：发表、文章评论列表
+│  │  │  └─ like.js                 # 点赞接口：点赞、取消点赞（第十批）
 
 │  │  ├─ router/                      # Vue Router 路由配置
 
 │  │  ├─ stores/                      # Pinia 状态仓库，如用户登录状态
 
-│  │  ├─ views/                       # 页面级组件，如登录页、用户列表页
+│  │  ├─ views/                       # 页面级组件，如登录页、文章详情页
 
 │  │  ├─ components/                  # 可复用小组件，如表格、弹窗、表单
 
@@ -139,6 +159,8 @@ project/                              # 项目根目录，所有代码和文档�
 │  │  ├─ validators/                  # 入参校验：zod schema，按模块拆分
 
 │  │  ├─ app.js                       # 创建 Express app，注册中间件和路由
+
+│  │  ├─ uploads/                     # 头像落盘目录（第十一批）：avatars/ 存用户头像，不进 git
 
 │  │  └─ server.js                    # 启动后端服务，监听端口
 
@@ -181,8 +203,6 @@ project/                              # 项目根目录，所有代码和文档�
 └─ README.md                          # 项目总说明：怎么安装、启动、使用
 
 > 说明：`probe-*.mjs` 与 `shot-*.mjs` 按批次持续新增，命名遵循上述模式即可，不在本文件中逐个列举。
-
-
 
 ---
 
@@ -259,7 +279,7 @@ POST   /api/articles/:id/like       点赞
 DELETE /api/articles/:id/like       取消点赞
 ```
 
-> `/api/users` 系列中**仅 `PUT /api/users/me`（改资料）与 `POST /api/users/me/avatar`（上传头像）已实现**，
+> `/api/users` 系列中**仅 `PUT /api/users/me`（改资料）与 `POST /api/users/me/avatar`（上传头像）已实现**，  
 > 清单里标「未实现」的 5 个（列表 / 详情 / 增 / 改他人 / 删）保持未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
@@ -466,6 +486,7 @@ model User {
 - 切换状态存 `localStorage.theme`；`frontend/index.html` 内联一小段脚本，在首帧前读 `localStorage` 给 `<html>` 加 class，防闪白。
 - `html.dark` 必须挂在 `<html>` 上（不是 scoped class），否则 teleport 到 body 的 `ElMessage` / `ElMessageBox` / 下拉浮层吃不到变量。
 
+
 ### 前端验收
 
 - 任何前端改动完成后，必须重跑 `node scripts/acceptance/run.mjs`，保持**全部通过**（当前为 50 条断言，随功能增加而变）。
@@ -491,6 +512,27 @@ model User {
 - 所有需要登录的接口必须经过鉴权中间件。
 - 分页查询必须限制 `pageSize <= 100`。
 - 错误日志至少打印 `message` 和 `stack`。
+## 12. 代码规范
+
+- 缩进：2 空格。
+- 字符串：单引号。
+- 语句结尾：分号。
+- 文件名：
+  - 前端组件（含页面级）：PascalCase，例如 `Home.vue`、`ArticleDetail.vue`、`UserProfile.vue`
+  - 前端 JS：camelCase，例如 `request.js`
+  - 后端路由：`user.routes.js`
+  - 后端控制器：`user.controller.js`
+  - 后端服务：`user.service.js`
+- 函数命名：camelCase。
+- 常量命名：UPPER_SNAKE_CASE。
+- 不要输出省略号，例如 `// ...`。
+- 要求输出完整文件内容。
+- 不要重写无关文件。
+- 不要修改接口契约。
+- 如果必须改契约，先说明原因并等待确认。
+- 页面级组件命名以实际代码为准：`Home.vue` / `ArticleDetail.vue` / `ArticleEditor.vue` / `Login.vue` / `UserProfile.vue` / `ProfileEdit.vue` / `ChangePassword.vue`，**不加 `View` 后缀**（`views/` 目录本身已表明它是页面层）。`docs/CODING_STYLE.md` 的命名约定已与此对齐，两处不再冲突。
+
+---
 
 
 ## 13. AI 行为约束
@@ -517,18 +559,14 @@ model User {
     - **密码、完整连接串、JWT 密钥一律不输出**，需要引用时用「已设置」或长度代替。
     - 禁止用「只认识 DATABASE_URL 和 JWT_SECRET」这种白名单式脱敏：2026-10-02 就是这么把 `SHADOW_DATABASE_URL` 的密码漏进了对话记录。规则应是——**凡名字含 `PASSWORD` / `SECRET` / `TOKEN` / `KEY`，或值是连接串的，一律脱敏**。
     - 排查配置问题的正确做法是让用户自己在本地打开 `.env` 比对，而不是把内容贴出来。
-17. 任务结束前必须停掉自己启动的后台服务（backend node server、vite dev server），释放端口。
-      
+17. 任务结束前必须停掉自己启动的后台服务（backend node server、vite dev server），释放端口。  
     2026-10-02 因遗漏此事，遗留进程占住 3000 与 5175，导致用户侧 `npm run dev` 起不来。
-18. **本机 npm 官方源不可用，`npm install` / `npm ci` / `npm view` 等所有会联网的 npm 命令必须显式加 `--registry=https://registry.npmmirror.com`**。
-      
+18. **本机 npm 官方源不可用，`npm install` / `npm ci` / `npm view` 等所有会联网的 npm 命令必须显式加 `--registry=https://registry.npmmirror.com`**。  
     本机 `https://registry.npmjs.org` 会被解析到一个百度 HTML 页面，npm 报 `FETCH_ERROR ... invalid json response body at https://m.baidu.com/`。不加这个参数，安装必然失败（2026-10-02 实测）。
 19. **未经用户明确同意，不执行 `git push`**。本地 `commit` 可以，但推送必须等指令。用户明确说「不上传」时，只本地存档，不要推送。
-20. **截图产物放带时间戳的子目录**：`D:/tools/acceptance-shots/<批次名>-<YYYYMMDD-HHMM>/`。
-      
+20. **截图产物放带时间戳的子目录**：`D:/tools/acceptance-shots/<批次名>-<YYYYMMDD-HHMM>/`。  
     不带时间戳的目录容易被外部进程清理（2026-10-03 实测：`batch1-before/` 与 `batch1-after/` 被整目录删除，无法恢复）。探针用 UTC 时间戳时，注意本地分钟变化会生成新目录，找产物时用 `ls -d` 通配。
-21. **发现契约 / API / DB 三边冲突时，先停下来列出冲突点，不要自行选一边。**
-      
+21. **发现契约 / API / DB 三边冲突时，先停下来列出冲突点，不要自行选一边。**  
     第 15 条「以 `docs/API.md` 为准」是冲突已明确后的取舍规则；在冲突尚不清楚、或涉及数据库 schema / 接口契约变更时，必须先向用户报告冲突点与影响范围，等待确认后再动手。
 
 ---
@@ -566,22 +604,25 @@ model User {
 
 ---
 
-## 15. 验收清单
+## 15. 验收硬性门槛
 
-一个模块完成后，必须满足：
+任何模块完成前必须满足以下条件。**可执行的细则、断言清单与排错方式见 `docs/ACCEPTANCE.md`**；本节只列门槛，不重复细则；「项目已完成什么」见 `README.md` 的「当前状态」。
 
-- [ ] 前端能启动：`npm run dev`
-- [ ] 后端能启动：`npm run dev`
-- [ ] MySQL 能连接
-- [ ] Prisma 能迁移：`npx prisma migrate dev`
-- [ ] 接口路径符合 `docs/API.md`
-- [ ] 请求/响应字段符合本约束
-- [ ] 登录能拿到 token
-- [ ] 鉴权接口能识别 token
-- [ ] 前端能成功请求后端
-- [ ] 错误返回统一格式
-- [ ] 密码不是明文
-- [ ] 分页参数有边界限制
-- [ ] README 写清楚启动步骤
-- [ ] 前端改动后 `node scripts/acceptance/run.mjs` 全部通过
-- [ ] 新增功能有对应 `probe-*.mjs` 客观证据
+### 契约一致性
+
+- 接口路径、请求/响应字段符合 `docs/API.md`。
+- 错误返回统一 `{ code, message, data }`，业务码取自第 6 节，不用魔法数字。
+- 所有入参经 zod 校验；数据库操作一律走 Prisma，无手拼 SQL、无 `SELECT *`。
+- 需登录的接口经 `auth` 中间件；密码 bcryptjs 加密，不落明文。
+
+### 可运行性
+
+- 前后端能启动。
+- `npx prisma migrate status` 无 pending 迁移。
+- `README.md` 的启动步骤能实际跑通。
+
+### 自动化验收
+
+- 前端改动后 `node scripts/acceptance/run.mjs` 保持全绿。
+- 新增功能有对应 `probe-*.mjs` 提供客观证据（计算样式值、DOM 结构、请求参数），不靠截图判断正确性。
+- 探针跑完自清理，数据库回到跑前基线，不留脏数据、不删用户真实数据。
