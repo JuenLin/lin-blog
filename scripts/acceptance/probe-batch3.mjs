@@ -100,7 +100,10 @@ try {
       return { exists: true, tag: a.tagName, href, focused, tab: a.tabIndex, hasOutline: cs.outlineWidth !== '0px' };
     })()`);
     log('F2-1 卡片是 <a> 且 href 指向 /article/:id', r.exists && r.tag === 'A' && /\/article\/\d+/.test(r.href), JSON.stringify(r));
-    log('F2-2 卡片可键盘聚焦(document.activeElement 命中)', r.focused === true, JSON.stringify(r));
+    // ⚠️ 只判 focused 不够：`a.focus()` 是**脚本聚焦**，即便 tabindex="-1" 也能聚焦成功，
+    // 但键盘用户永远 Tab 不到它。必须同时要求 tabIndex >= 0（原生 <a href> 应为 0），
+    // 代码里已经取到 r.tab 却一直没用上。
+    log('F2-2 卡片可键盘聚焦（activeElement 命中 且 tabIndex >= 0）', r.focused === true && r.tab >= 0, JSON.stringify(r));
   });
 
   // ============================================================

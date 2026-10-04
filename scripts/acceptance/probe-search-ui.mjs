@@ -188,7 +188,9 @@ try {
   const apiRes = await fetchJson(`${CONFIG.api}/articles?page=1&pageSize=10&sortBy=createdAt&order=desc&keyword=${encodeURIComponent(PREFIX)}`);
   const apiIds = (apiRes.data ? apiRes.data.list : []).map((a) => a.id);
   const sameSet = domIds.length === apiIds.length && domIds.every((id) => apiIds.includes(id));
-  log('SU-4 页面结果与后端命中集合一致', sameSet, `DOM=[${domIds.join(',')}] API=[${apiIds.join(',')}]`);
+  // ⚠️ 两端都为空时 0===0 且 [].every() 恒真 —— 必须先证明「确实有结果」，
+  // 否则「搜索一个必然命不中的词」也会通过。
+  log('SU-4 页面结果与后端命中集合一致', domIds.length > 0 && sameSet, `DOM=[${domIds.join(',')}] API=[${apiIds.join(',')}]`);
   const tipInfo = await s.evaluate(`(() => { const el = document.querySelector('.home-search-tip'); return el ? (el.innerText||'').replace(/\\s+/g,' ').trim() : ''; })()`);
   log('SU-4b 顶部有搜索状态提示条', tipInfo.includes('正在搜索') && tipInfo.includes(PREFIX), `text="${tipInfo}"`);
   await s.screenshot(`${OUT}/su4-results.png`);
@@ -319,12 +321,20 @@ try {
   await s.screenshot(`${OUT}/su12a-card-tooltip.png`);
 
   // 卡片正文显示的应是相对时间（不是绝对时间），两者不能混。
+  //
+  // ⚠️ 这里与 probe-card-visual 的 C1-4 口径一致：**刻意不含**绝对日期分支。
+  // formatRelativeTime 对 ≥7 天的文章返回 '2026/10/3' 纯日期兜底，放行它就意味着
+  // 「相对时间逻辑失效」也能通过。前提同样是「首页首卡 createdAt desc 必在 7 天内」，
+  // 若将来库里最新文章超过 7 天，这条会假失败 —— 届时改成读 API 的 createdAt 判断。
   const cardChipText = await s.evaluate(`(() => {
     const el = document.querySelector('.article-chip-time');
     return el ? (el.innerText || '').trim() : '';
   })()`);
-  const isRelative = /^(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前|\d{4}\/\d{1,2}\/\d{1,2})$/.test(cardChipText);
-  log('SU-12a2 卡片 chip 本身显示相对时间（与 tooltip 的绝对时间互补）', isRelative && cardChipText !== cardChip.tip.trim(), `chip="${cardChipText}"`);
+  const isRelative = /^(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前)$/.test(cardChipText);
+  // ⚠️ 补上「tooltip 非空」前置：tip 取不到时是空串，chip 文本非空就恒 != ''，
+  // 于是「tooltip 根本没弹出」也能通过。
+  const tipFilled = cardChip.tip.trim() !== '';
+  log('SU-12a2 卡片 chip 本身显示相对时间（与 tooltip 的绝对时间互补）', isRelative && tipFilled && cardChipText !== cardChip.tip.trim(), `chip="${cardChipText}" tip="${cardChip.tip.trim()}"`);
 
   await s.goto(`${CONFIG.frontend}/article/${target.id}`);
   await waitFor(`document.querySelector('.article-detail-chip')`, 10000);

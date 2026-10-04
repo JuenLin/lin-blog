@@ -211,14 +211,17 @@ async function main() {
 
   /* ---------- B 组：真并发双 POST，恰好 1 成 1 个 409 ---------- */
 
-  // 两个请求同时发出（Promise.all），中间不加 await —— 这才是真并发。
-  // 「先查后写」的实现在这里会两个都成功，只有 DB 唯一约束能拦住第二个。
+  // 两个请求同时发出（Promise.all），中间不加 await —— 客户端侧是并发发出的。
+  //
+  // ⚠️ label 里**不写「真并发」**：终态是 {200, 409} 只能证明「恰好一个成功」，
+  // 串行连续发两个请求同样会得到这个终态，所以它证明不了服务端真正并发处理了。
+  // 「禁止重复点赞」的并发正确性已在 docs/DB.md 用真实并发 INSERT 实测过，这里只做接口层回归。
   const [b1, b2] = await Promise.all([like(targetId, state.token), like(targetId, state.token)]);
   const statuses = [b1.status, b2.status].sort();
 
   check(
     'B1',
-    '真并发双 POST → 恰好 1 个 200、1 个 409',
+    '两个 POST 同时发出 → 恰好 1 个 200、1 个 409（DB 唯一约束兜底）',
     statuses[0] === 200 && statuses[1] === 409,
     `状态码 ${JSON.stringify([b1.status, b2.status])}`
   );
@@ -295,12 +298,15 @@ async function main() {
   );
 
   const listAfter = await api('GET', '/articles?page=1&pageSize=100');
-  const ids = (listAfter.data && listAfter.data.list ? listAfter.data.list : []).map((a) => a.id);
+  // ⚠️ 负向断言必须带「请求成功 + 列表非空」前置：请求失败时 ids 是 []，
+  // `!includes()` 恒真 —— 那样连「列表还能不能查」都没验到。
+  const listOk = listAfter.status === 200 && listAfter.data && Array.isArray(listAfter.data.list);
+  const ids = (listOk ? listAfter.data.list : []).map((a) => a.id);
   check(
     'D4',
     '软删后列表不含该文章',
-    !ids.includes(targetId),
-    `列表 ${ids.length} 条，含 id=${targetId}? ${ids.includes(targetId)}`
+    listOk && ids.length > 0 && !ids.includes(targetId),
+    `HTTP ${listAfter.status} 列表 ${ids.length} 条，含 id=${targetId}? ${ids.includes(targetId)}`
   );
 
   /* ---------- E 组：列表页 likeCount 正确 + 无 N+1（浏览器） ---------- */

@@ -78,7 +78,10 @@ try {
   const lightBody = await s.evaluate(`getComputedStyle(document.body).backgroundColor`);
   log('D0-1 浅色基线：html 无 .dark 类', (await isDarkClass()) === false, 'class=' + (await isDarkClass()));
   log('D0-2 浅色基线：--bg-page = rgb(248, 250, 252)', light['--bg-page'] === 'rgb(248, 250, 252)', light['--bg-page']);
-  log('D0-3 浅色基线：body 背景非深色', lightBody !== 'rgb(11, 17, 32)', lightBody);
+  // ⚠️ 原来只判 body 背景 !== 'rgb(11, 17, 32)'：换成**另一个深色**、或 transparent
+  // 也照样通过，等于没在验「浅色」。改成精确断言浅色令牌值 ——
+  // style.css 里 `body { background: var(--bg-page) }`，而 D0-2 验的正是 --bg-page。
+  log('D0-3 浅色基线：body 背景 = rgb(248, 250, 252)', lightBody === 'rgb(248, 250, 252)', lightBody);
 
   // ---------- 点切换按钮 → 暗色 ----------
   const hasBtn = await s.evaluate(`(() => { const b = document.querySelector('.theme-toggle'); if (!b) return { exists:false }; return { exists:true, aria: b.getAttribute('aria-label'), tag: b.tagName }; })()`);

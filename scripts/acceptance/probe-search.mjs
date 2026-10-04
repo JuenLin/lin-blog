@@ -207,11 +207,14 @@ try {
 
   // ---------- 语义 5：软删除不参与搜索 ----------
   const softKwRes = await get(`?page=1&pageSize=100&keyword=${encodeURIComponent(KW_TITLE)}`);
-  const softIds = softKwRes.json.data.list.map((a) => a.id);
+  // 负向断言必须带「非空前置」：请求失败、或搜索本身返回空列表时 softIds 是 []，
+  // `!includes()` 恒真 —— 那样连「搜索到底能不能工作」都没验到。
+  const softListOk = softKwRes.status === 200 && Array.isArray(softKwRes.json && softKwRes.json.data && softKwRes.json.data.list);
+  const softIds = (softListOk ? softKwRes.json.data.list : []).map((a) => a.id);
   log(
     'S5-1 软删除文章搜不到',
-    !softIds.includes(softHit.id),
-    `软删文章id=${softHit.id} 是否出现在结果=${softIds.includes(softHit.id)} 命中total=${softKwRes.json.data.total}`
+    softListOk && softIds.length > 0 && !softIds.includes(softHit.id),
+    `status=${softKwRes.status} 命中=${softIds.length}条 软删文章id=${softHit.id} 是否出现=${softIds.includes(softHit.id)}`
   );
 
   // ---------- 额外：重复传值 + trim 容错 ----------

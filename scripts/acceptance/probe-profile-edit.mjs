@@ -316,17 +316,37 @@ try {
     e1author && 'bio' in e1author ? 'author 里出现了 bio —— 与 API.md 约定不符' : '确认无 bio 键'
   );
 
-  if (e1list[0]) {
-    const e3 = await call(`${ARTICLES_URL}/${e1list[0].id}/comments?page=1&pageSize=1`, { token: adminToken });
-    const e3list = (dataOf(e3) || {}).list || [];
-    const e3author = e3list[0] && e3list[0].author;
-    if (e3author) {
-      log('PE-E3 评论列表的 author 同样含 avatar 键', 'avatar' in e3author, `author 字段=${Object.keys(e3author).join(',')}`);
-    } else {
-      log('PE-E3 评论列表的 author 同样含 avatar 键', true, '该文章暂无评论，跳过（无数据可验）');
+  // PE-E3：原来只读「列表第一篇」的评论。库里唯一的评论挂在文章 7 上，
+  // 而 pageSize=1 取到的第一篇并没有评论 —— 于是这条每次都走「跳过并通过」的分支，等于没验到。
+  //
+  // 改成并发查前 20 篇的评论，找到有评论的就**真验**；一篇都没有才退化为 SKIP。
+  // 为什么不自己造一条评论：评论没有删除接口，探针造了就删不掉，会污染用户数据。
+  // 所以 SKIP 兜底必须保留，但当前库里文章 7 有评论，这条会真的验到。
+  const e3Pool = await call(`${ARTICLES_URL}?page=1&pageSize=20`, { token: adminToken });
+  const e3Articles = (dataOf(e3Pool) || {}).list || [];
+  const e3Lists = await Promise.all(
+    e3Articles.map((a) => call(`${ARTICLES_URL}/${a.id}/comments?page=1&pageSize=5`, { token: adminToken }))
+  );
+  let e3Hit = null;
+  for (let i = 0; i < e3Lists.length; i += 1) {
+    const first = ((dataOf(e3Lists[i]) || {}).list || [])[0];
+    if (first && first.author) {
+      e3Hit = { articleId: e3Articles[i].id, author: first.author };
+      break;
     }
+  }
+  if (e3Hit) {
+    log(
+      'PE-E3 评论列表的 author 同样含 avatar 键',
+      'avatar' in e3Hit.author,
+      `文章${e3Hit.articleId} 评论 author 字段=${Object.keys(e3Hit.author).join(',')}`
+    );
   } else {
-    log('PE-E3 评论列表的 author 同样含 avatar 键', true, '列表为空，跳过（无数据可验）');
+    log(
+      'PE-E3 评论列表的 author 同样含 avatar 键',
+      true,
+      `前 ${e3Articles.length} 篇文章均无评论，跳过（无数据可验）`
+    );
   }
 
   console.log(`\n截图目录：${OUT}`);

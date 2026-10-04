@@ -210,16 +210,22 @@ try {
     `status=${tooShort.status} message=${JSON.stringify(tooShort.json.message)}`
   );
 
-  // ---------- 9. newPassword 过长（101 字符） ----------
+  // ---------- 9. newPassword 超 72 字节（73 个 ASCII 字符 = 73 字节） ----------
+  //
+  // ⚠️ 原来用 'a'.repeat(101)：它**同时**违反「≤100 字符」与「≤72 字节」两条规则，
+  // 于是根本证明不了拦住它的是哪一条。更关键的是 byteLength ≤ 72 ⟹ length ≤ 72，
+  // 「≤100 字符」这条 refine 实际上**永远不可达**（被字节规则完全覆盖）。
+  // 改用 73 个字符：字节数 73 超限、字符数 73 仍在 100 以内 → 确证命中的是字节规则。
+  // （P10-1 用 25 个汉字 = 75 字节验多字节计数，P10-2 用 24 个汉字 = 72 字节验界内放行，三条互补。）
   const tooLong = await call(PASSWORD_URL, {
     method: 'PUT',
     token,
-    body: { oldPassword: currentPassword, newPassword: 'a'.repeat(101) },
+    body: { oldPassword: currentPassword, newPassword: 'a'.repeat(73) },
   });
   log(
-    'P9-1 newPassword 101 字符（上界+1） → 400 / 40000',
+    'P9-1 newPassword 73 字符（73 字节 > bcrypt 上限 72，字符数未超 100） → 400 / 40000',
     tooLong.status === 400 && tooLong.json.code === 40000,
-    `status=${tooLong.status} message=${JSON.stringify(tooLong.json.message)}`
+    `status=${tooLong.status} 字符数=${'a'.repeat(73).length} 字节数=${Buffer.byteLength('a'.repeat(73), 'utf8')} message=${JSON.stringify(tooLong.json.message)}`
   );
 
   // ---------- 10. newPassword 超 72 字节（25 个汉字 = 75 字节） ----------

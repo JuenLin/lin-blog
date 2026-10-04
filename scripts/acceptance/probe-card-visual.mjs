@@ -68,10 +68,22 @@ function readCard() {
         borderColor: cs.borderTopColor,
       };
     });
+    // 作者 chip 的**内部结构**：按类名精确定位后，再看它自身有没有头像、有没有名字。
+    // 原来的 C1-2 用「卡片级 hasAvatar + 任意一枚 chip 有文本」两个独立条件拼起来，
+    // 两者可以分别成立却与作者 chip 无关（例如头像跑到别处、名字落在时间 chip 上）。
+    const authorChipEl = card.querySelector('.article-chip-author');
+    const authorChip = authorChipEl
+      ? {
+          hasAvatar: Boolean(authorChipEl.querySelector('.article-avatar, .article-avatar-img')),
+          name: (authorChipEl.querySelector('.article-author') || {}).innerText || '',
+        }
+      : null;
     return {
       present: true,
       chipCount: chips.length,
       chips,
+      authorChip,
+      hasTimeChip: Boolean(card.querySelector('.article-chip-time')),
       title: (card.querySelector('.article-title') || {}).innerText || '',
       hasAvatar: Boolean(card.querySelector('.article-avatar')),
       headWrap: head ? getComputedStyle(head).flexWrap : '',
@@ -163,8 +175,16 @@ try {
   const c1 = await readCard();
   await s.screenshot(`${OUT}/card-chips-light.png`);
 
-  log('C1-1 元数据已 chip 化（作者 / 时间 两枚）', c1.chipCount >= 2, `chipCount=${c1.chipCount}`);
-  log('C1-2 作者 chip 内含头像 + 名字', c1.hasAvatar && c1.chips.some((c) => c.text), `avatar=${c1.hasAvatar}`);
+  log(
+    'C1-1 元数据已 chip 化（作者 / 时间 各一枚，按类名确认）',
+    Boolean(c1.authorChip) && c1.hasTimeChip,
+    `作者chip=${Boolean(c1.authorChip)} 时间chip=${c1.hasTimeChip} chipCount=${c1.chipCount}`
+  );
+  log(
+    'C1-2 作者 chip 内含头像 + 名字',
+    Boolean(c1.authorChip && c1.authorChip.hasAvatar && c1.authorChip.name),
+    `hasAvatar=${Boolean(c1.authorChip && c1.authorChip.hasAvatar)} name="${((c1.authorChip || {}).name || '').trim()}"`
+  );
 
   // 方案 D：卡片不再显示阅读时长 chip（列表只有 summary，是估算值，且三枚 chip 窄屏会换行）。
   // 改成**反向断言**：卡片上不应再出现 accent 样式的 chip（accent 原本专供阅读时长）。
@@ -176,19 +196,27 @@ try {
     !accentChip,
     `accent="${accentChip ? accentChip.text : '(无)'}"`
   );
-  // 相对时间格式：刚刚 / X 分钟前 / X 小时前 / X 天前 / YYYY/M/D
-  const RELATIVE_RE = /^(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前|\d{4}\/\d{1,2}\/\d{1,2})$/;
+  // 相对时间格式：刚刚 / X 分钟前 / X 小时前 / X 天前。
+  //
+  // ⚠️ 这里**刻意不含**绝对日期分支。formatRelativeTime 对 ≥7 天的文章会返回 '2026/10/3'
+  // （纯日期兜底），放行它就意味着「相对时间逻辑失效、退化成纯日期」也能通过 ——
+  // 而这条断言的用意正是「相对时间在工作」。
+  // 前提：首页首卡按 createdAt desc 永远是最新那篇，必然在 7 天内。
+  // 若将来库里的最新文章真的超过 7 天，这条会假失败 —— 届时改成读 API 的 createdAt
+  // 按实际差值决定「必须相对」还是「允许兜底」。
+  const RELATIVE_RE = /^(刚刚|\d+ 分钟前|\d+ 小时前|\d+ 天前)$/;
   log(
-    'C1-4 时间 chip 显示相对时间（非绝对时间）',
+    'C1-4 时间 chip 显示相对时间（不得是绝对日期）',
     Boolean(timeChip) && RELATIVE_RE.test(timeChip.text),
     `chip="${timeChip ? timeChip.text : '(无)'}"`
   );
-  const radiusOk = c1.chips.every((c) => c.radius === '999px');
-  log('C1-5 chip 为胶囊形（border-radius=999px）', radiusOk, `radii=${[...new Set(c1.chips.map((c) => c.radius))].join('/')}`);
-  const bgOk = c1.chips.every((c) => c.bg && c.bg !== 'rgba(0, 0, 0, 0)' && c.bg !== 'transparent');
-  log('C1-6 chip 底色非透明（令牌生效）', bgOk, `bg=${[...new Set(c1.chips.map((c) => c.bg))].join(' | ')}`);
-  const contrastOk = c1.chips.every((c) => c.color && c.color !== c.bg);
-  log('C1-7 chip 字色与底色不同（无白底白字）', contrastOk, `color=${[...new Set(c1.chips.map((c) => c.color))].join(' | ')}`);
+  // ⚠️ chips 为空时 every() 恒真 —— 三条都要先证明「chip 确实渲染了」，否则 chip 整个没渲染也全过。
+  const radiusOk = c1.chips.length >= 2 && c1.chips.every((c) => c.radius === '999px');
+  log('C1-5 chip 为胶囊形（border-radius=999px）', radiusOk, `chips=${c1.chips.length} radii=${[...new Set(c1.chips.map((c) => c.radius))].join('/')}`);
+  const bgOk = c1.chips.length >= 2 && c1.chips.every((c) => c.bg && c.bg !== 'rgba(0, 0, 0, 0)' && c.bg !== 'transparent');
+  log('C1-6 chip 底色非透明（令牌生效）', bgOk, `chips=${c1.chips.length} bg=${[...new Set(c1.chips.map((c) => c.bg))].join(' | ')}`);
+  const contrastOk = c1.chips.length >= 2 && c1.chips.every((c) => c.color && c.color !== c.bg);
+  log('C1-7 chip 字色与底色不同（无白底白字）', contrastOk, `chips=${c1.chips.length} color=${[...new Set(c1.chips.map((c) => c.color))].join(' | ')}`);
 
   // ---------- 场景 2：summary 为空 → 卡片 chip 构成不变（方案 D 后卡片已无阅读时长 chip，
   // 原「空 summary → 无阅读时长 chip」的前提已不复存在；这里改为验「summary 空/纯空白不影响 chip」）----------

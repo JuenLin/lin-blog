@@ -113,6 +113,8 @@ try {
 
   // 统一拦截 pageSize=100 列表请求：craftedBody 非空时造假响应，否则放行真实请求。
   let craftedBody = null;
+  // 造假响应的**实际交付次数**：O2-1 要靠它确认「窗口请求确实被换掉了」再读 DOM。
+  let fulfilled = 0;
   const fetchHandler = (m) => {
     if (m.method !== 'Fetch.requestPaused') return;
     // 跨域预检要单独回 204 + CORS 头，否则真实请求会被浏览器挡掉（docs/ACCEPTANCE.md 记过这个坑）。
@@ -138,7 +140,11 @@ try {
           { name: 'Access-Control-Allow-Origin', value: CONFIG.frontend },
         ],
         body: Buffer.from(craftedBody, 'utf8').toString('base64'),
-      }).catch(() => {});
+      })
+        .then(() => {
+          fulfilled += 1;
+        })
+        .catch(() => {});
     } else {
       s.send('Fetch.continueRequest', { requestId: m.params.requestId }).catch(() => {});
     }
@@ -183,9 +189,26 @@ try {
   // 用唯一 URL 强制整页重载（避免与场景 1 同 URL 被浏览器优化为不重载 / 命中缓存）。
   await s.goto(targetUrl + '?p=2');
   await waitFor(`document.querySelector('.article-detail-title')`, 10000);
+  // ⚠️ 原来到这里就直接读 DOM：邻居窗口的响应可能**还没回来**，此刻 present === false
+  // 只能证明「这一刻没有」，证明不了「窗口内该作者仅当前篇时整块不渲染」。
+  // 先等造假响应确实交付过（fulfilled >= 1），再留一点时间让 Vue 渲染落定。
+  const waitNode = async (fn, timeout = 8000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      if (fn()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const gotCraft = await waitNode(() => fulfilled >= 1, 8000);
+  await sleep(400);
   const o2 = await readOthers();
   await s.screenshotFull(`${OUT}/author-others-empty.png`);
-  log('O2-1 窗口内该作者仅当前篇时整块不渲染', o2.present === false, `present=${o2.present} count=${o2.count}`);
+  log(
+    'O2-1 窗口内该作者仅当前篇时整块不渲染',
+    gotCraft && fulfilled > 0 && o2.present === false,
+    `造假响应交付=${fulfilled}次（已确认=${gotCraft}） present=${o2.present} count=${o2.count}`
+  );
 
   // 关闭拦截
   await s.send('Fetch.disable');
