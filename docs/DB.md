@@ -77,7 +77,7 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 > 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
 > 批准范围：**仅限 `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列**，
 > 不含任何其他表结构变更、不含改列名/类型、不含删列、不含新增 `categories` 表 / 外键。
-> 批准依据与决策过程见 `docs/API.md` 文章相关接口章节与 `docs/AI_CONTRACT.md` 第 2 节「已批准例外（2026-10-04，分类功能）」。
+> 批准依据与决策过程见 `docs/API.md` 文章相关接口章节与 `docs/AI_CONTRACT.md` §2「已批准的例外」第 4 项。
 >
 > 注意：第九批、本次均是**独立的一次批准，不是援引既有例外**；其余 schema 变更仍需重新批准。
 
