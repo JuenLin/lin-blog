@@ -69,6 +69,36 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 | createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
+| category | category | VARCHAR(20) | 否 | '未分类' | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单校验，非法值返回 400/40000；老文章由迁移 `NOT NULL DEFAULT '未分类'` 自动回填，零 NULL |
+
+### `category` 分类列（分类功能，经用户批准新增）
+
+> **本节是一次「禁止修改数据库 schema」例外的书面登记。**
+> 契约第 5 节「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 批准范围：**仅限 `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列**，
+> 不含任何其他表结构变更、不含改列名/类型、不含删列、不含新增 `categories` 表 / 外键。
+> 批准依据与决策过程见 `docs/API.md` 文章相关接口章节与 `docs/AI_CONTRACT.md` 第 2 节「已批准例外（2026-10-04，分类功能）」。
+>
+> 注意：第九批、本次均是**独立的一次批准，不是援引既有例外**；其余 schema 变更仍需重新批准。
+
+**设计选择：枚举白名单，不建 `categories` 表、不加外键**（闭合固定单值分类，贴合 avatar/bio 先例）：
+
+| 理由 | 说明 |
+|---|---|
+| 分类是闭合固定集合 | 只有 技术/生活/随笔/未分类 四个值，不会由用户自由增删，不需要一张表来「存」分类本身 |
+| 一致性靠后端白名单 | 拒绝自由字符串，非法值直接 400/40000，库里永远不会出现拼写不一致的值 |
+| 不加外键 | 单列枚举无需引用另一张表；避免引入 categories 表 + 外键 + 级联的额外复杂度，也避免「删分类」这类本期不做的管理能力 |
+| `VARCHAR(20)` 足够 | 4 个枚举值中最长「未分类」仅 3 字符，20 字符余量充足；与 `VarChar(50)` 的 nickname 等保持一致的字符串列风格 |
+
+**为什么 `NOT NULL DEFAULT '未分类'` 而非 nullable + 读时归一**（本次拍板结论）：
+
+- 迁移 `ALTER TABLE ... ADD COLUMN category VARCHAR(20) NOT NULL DEFAULT '未分类'` 在 MySQL 8 下走 **INSTANT 算法**（仅改元数据、不重写数据），对已有 11 行**自动回填**为 `未分类`，**零 NULL、零回填脚本**。
+- 相比 nullable + 读时归一：`NOT NULL` 让「未分类」是一个真实的、可参与筛选的值（例如「只看未分类文章」这类未来需求可直接 `WHERE category='未分类'`），且省掉应用层每次读都做的 `?? '未分类'` 归一逻辑。
+- 前端枚举写死这 4 个字符串（不在前端抽常量文件），与后端白名单保持字面一致。
+
+**迁移兼容性**：`ALTER TABLE` 是纯 `ADD COLUMN`，不含任何数据回填语句（默认值由 MySQL 在 INSTANT 阶段直接写入）。与第九批 `avatar`/`bio` 的 nullable 新增不同，本次是 `NOT NULL` + 默认，因此**必须带 `DEFAULT`**（否则 INSTANT 仍可用，但既有行需要填值；带 DEFAULT 是标准做法且零风险）。
+
+> **不按 `category` 建索引，是刻意的**：分类是**低基数列**（只有 4 个值），B-tree 索引在这种列上选择性极低，过滤后再回表几乎等价于全表扫描；且 MVP 数据量（两位数文章）下按 `WHERE category = ?` 全表扫描完全无感。`GET /api/articles?category=技术` 的筛选在 service 层拼 `where.category = x` 即可，不引入索引。若将来分类成为高频筛选维度且数据量大，再评估（单列索引价值仍有限，更可能是「category + 其他维度」的复合索引，届时按第 6 节迁移流程登记）。
 
 ### `content` 为什么是 MEDIUMTEXT
 
@@ -97,6 +127,7 @@ CREATE TABLE `articles` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `title` VARCHAR(100) NOT NULL,
     `content` MEDIUMTEXT NOT NULL,
+    `category` VARCHAR(20) NOT NULL DEFAULT '未分类',
     `author_id` INTEGER NOT NULL,
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
@@ -610,12 +641,13 @@ const summary = [...content].slice(0, 100).join('');
 | `20260929145244_comments_idx_article_created` | `comments` 索引由 `(article_id, deleted_at, created_at)` 调整为 `(article_id, created_at)`；因外键依赖该索引，迁移内先 DROP 再 ADD 外键 | 已应用 |
 | `20261003080727_add_user_avatar_bio` | `users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列，均 nullable、无默认、不需回填 | 已应用 |
 | `20261003140221_add_user_likes` | 新建 `likes` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键 + `likes_user_id_article_id_key` 唯一约束 + `likes_article_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，理由见「likes」小节） | **已应用** |
+| `20261004145107_add_article_category` | `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列（枚举 技术/生活/随笔/未分类）；INSTANT 算法自动回填既有 11 行，零 NULL、零回填脚本；**不含新增表 / 外键 / 索引**（MVP 阶段不按 category 建索引，理由见对应小节） | **已应用** |
 
 > 第十批（点赞）迁移**已于 2026-10-03 执行完成**，迁移名 `20261003140221_add_user_likes`。
 > 已用 `SHOW CREATE TABLE likes`、`information_schema.COLUMNS` 与 `SHOW INDEX FROM likes` 核对：
 > 4 列齐全（**确认无 `deleted_at` / `updated_at`**）、两条外键均为 `ON DELETE RESTRICT ON UPDATE CASCADE`、
 > **`user_id` 未被 MySQL 额外补单列索引**（唯一索引左前缀已承担）。实际 DDL 与迁移 SQL 已回填到「likes」小节。
-> `_prisma_migrations` 共 **5 条**全部 `finished=Y / rolled_back=N`。
+> `_prisma_migrations` 共 **6 条**全部 `finished=Y / rolled_back=N`。
 > 唯一约束与外键已用**真实插入**实测通过：重复插入报 `1062`、不存在的文章报 `1452`，测试数据已回收（`likes` 行数 0）。
 > 基线未受影响：可见文章=11、评论=1、users=2。
 
@@ -623,7 +655,7 @@ const summary = [...content].slice(0, 100).join('');
 > `EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'`。
 > 根因是**当时有 node 进程占着这个 DLL**（本机 3000 端口的后端 dev server，PID 15136），Windows 不允许替换正在被加载的文件。
 > **影响**：`node_modules/.prisma/client/` 下的引擎 DLL 仍是旧文件；但 Prisma 6 的引擎 DLL **不内嵌 schema**
-> （schema 在生成的 JS 里），实测 `prisma.like` 的 `count` / `create` / `delete` 均正常，故功能不受影响。
+> （schema 在生成的 JS 里），本次实测 `prisma.article` 的 typed `findMany({ select: { category: true } })` 与 `$queryRawUnsafe` 读 `category` 均正常返回，故功能不受影响。
 > **收尾动作**：后续让 3000 端口的后端进程释放后，重跑一次 `npx prisma generate` 即可补齐（`npm run prisma:generate`）。
 
 > 第十一批（头像上传）**不涉及表结构变更，没有迁移**：`avatar` 列不动、`VARCHAR(255)` 长度对站内路径够用（论证见「users」小节的「第十一批：头像文件存储」）。文件落在 `backend/uploads/`，不进数据库，故本表不新增行。
@@ -648,8 +680,30 @@ prisma/migrations/
 │  └─ migration.sql
 ├─ 20261003140221_add_user_likes/
 │  └─ migration.sql
+├─ 20261004145107_add_article_category/
+│  └─ migration.sql
 └─ migration_lock.toml
 ```
+
+### 分类功能的迁移 SQL（实际生成，已执行 `20261004145107_add_article_category`）
+
+> 下方为**实际生成并已应用**的 `migration.sql` 内容。`SHOW CREATE TABLE articles` 已核对：含 `category varchar(20) NOT NULL DEFAULT '未分类'`，与「建表 SQL」小节一致。
+
+```sql
+-- AlterTable
+ALTER TABLE `articles` ADD COLUMN `category` VARCHAR(20) NOT NULL DEFAULT '未分类';
+```
+
+**迁移是纯 `ADD COLUMN` + `DEFAULT`**：MySQL 8 对在**表尾追加 NOT NULL 且带 DEFAULT 的列**走 INSTANT 算法（仅改元数据、不重写既有行），11 行既有文章在元数据层直接获得 `未分类` 默认值，无需任何回填语句。
+
+**执行后核对结果（2026-10-04 实测）**：
+
+| 核对项 | 实际 |
+|---|---|
+| `SHOW CREATE TABLE articles` 含 `category varchar(20) NOT NULL DEFAULT '未分类'` | ✅ 已核对，与建表 SQL 小节一致 |
+| 既有 11 行 `category` 值 | 全部为 `未分类`（INSTANT 自动回填，零 NULL） |
+| `_prisma_migrations` 新增一行 `finished=Y` | ✅ `migrate status` 显示 6 个迁移全部 applied |
+| `prisma generate` 是否成功 | ⚠️ 引擎 DLL 被 3000 端口后端进程占用报 EPERM；但实测 `prisma.article.findMany({ select: { category: true } })` 已能正常返回 category，DMMF 已更新、功能不受影响，generate 可暂缓至后端释放后补跑 |
 
 ### 常用命令
 

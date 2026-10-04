@@ -217,6 +217,8 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 `node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-03，第三批 F1/F2/F7/D1 + B2 进度条之后，结论不变；第四步 ⑤ 暗色模式叠加后仍是 50/50 全绿）。
 
+分类功能（2026-10-04 新增）另加 `node scripts/acceptance/probe-category.mjs` → **13/13 全绿**；含它的完整批共 **301 项断言全绿、exit 全 0**（原 288 + 分类 13）。
+
 历史上一共出现过 2 条 FAIL，**都是脚本自己的断言写错，不是产品问题**，已修复：
 
 1. 把评论接口断言成 `/api/articles/:id/comments`，实际是顶层资源 `/api/comments`（`docs/API.md` 就是这么定的）。
@@ -241,6 +243,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-like.mjs [--shots <dir>]` | 第十批 点赞 `POST` / `DELETE /api/articles/:id/like`：创建文章 201 带 `likeCount:0`、首次点赞 200 且 `liked=true`+`likeCount=1`、**重复点赞 409/40900**、点赞后 `GET /articles/:id` 的 `likeCount` 同步、取消 200 且回落 0、**取消没赞过的 404/40400**、**真并发双 POST 恰好 1 个 200 + 1 个 409**（证明靠 DB 唯一约束兜底，不是「先查后写」）、并发后 `likeCount` 恰为 1、未登录点赞 / 未登录取消 / 非法 token 各 401、**软删文章点赞 / 取消 / 详情全 404**、列表页只发 1 次 `GET /api/articles`（**无 N+1**）、每张卡片 `likeCount` 与接口逐一对齐、卡片点赞按钮 **`.prevent.stop` 生效（计数 +1 且不跳详情页）**、点后进入 `is-liked` 态、再点回到原值（**启 Chrome 验列表交互，共 23 项**） |
 | `node scripts/acceptance/probe-upload.mjs [报告目录]` | 第十一批 头像上传 `POST /api/users/me/avatar`：真传 PNG → 201 且 avatar 形状为 `/uploads/avatars/{userId}/{ts}-{16hex}.{ext}`、**originalname 不参与命名**（故意传 `../../evil.html`）、落盘字节数一致、静态可访问且 `content-type: image/*`、目录列表已关 / 点文件被拒、非 multipart / 无文件 / 字段名错 / `image/gif` / 超 2MB / 未登录 各自 40000 或 40100、**二次上传旧文件被删（磁盘核对）**、`PUT /me` 传站内路径放行 + 传非 `/uploads/` 值（伪协议/外链/相对路径）全 40000、`avatar:null` 清空且旧文件删、回收后 users 条数复原（**纯 API + 直读磁盘，不启 Chrome，共 19 项**） |
 | `node scripts/acceptance/probe-search-ui.mjs [截图目录]` | 第七批 前端搜索框：未登录时搜索框渲染在 AppHeader 内、回车触发且 URL 带 keyword、真实请求带 keyword（抓 Network）、页面结果与后端命中 id 集合逐一对齐、刷新后搜索态保留、切 Tab 仍带 keyword、第 2 页状态下搜索 page 重置为 1、搜不到时独立文案 + 清空搜索按钮且不误显示「还没有文章」、点清空恢复全量、详情页/个人主页搜索框可见且回车跳回首页带 keyword、**卡片时间 chip 悬停出绝对时间且 chip 本身显示相对时间**（两者互补）、详情页阅读时长 chip 悬停出「预计阅读时长」（含暗色，共 21 项） |
+| `node scripts/acceptance/probe-category.mjs [报告目录]` | 分类功能 `POST` / `GET` / `PUT` + 卡片 chip：POST 带/不带 category（默认未分类）、`GET ?category=技术` 只返回技术子集、`GET ?category=xx` → 400/40000、`GET ?category=技术&keyword=xx` 两条件 AND、PUT 不传保留原值、PUT 非法 → 400、列表/详情响应含 category、卡片渲染分类 chip 且复用 `.article-chip` 基类（含暗色成对翻转，**启 Chrome，共 13 项**） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 
@@ -285,6 +288,26 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 跑前跑后库一致（users 3 / 文章 11 / 可见 11 / 评论 1 / likes 1），Chrome 临时 profile 残留 0。**只改了 2 个探针文件，未改功能代码。** 报告与日志：`D:/tools/probe-baseline/audit-b3/`。
 
 覆盖到的探针与重点断言：`probe-search`(S1-S6) / `probe-password`(P1-P14) / `probe-profile-edit`(PE-0,A1-A5,B1-B5,C1-C2,D1-D2,E1-E3) / `probe-like`(B1-B2,C1-C3,D0-D4,E1-E3) / `probe-batch3`(F1-1~F1-4,F2-1~F2-2,F7-1~F7-2,D1-1~D1-2,B2-1~B2-3) / `probe-dark`(D0-1~D0-3,D1-1~D1-3,D2-1~D2-10,D3-1~D3-4,D4-1~D4-2) / `probe-profile`(P1-1~P1-4,P2-1~P2-2) / `probe-prevnext`(N1-1~N4-3) / `probe-author-others`(O1-1~O1-4,O2-1) / `probe-entries`(E1-1,E1-3,E1-4,E5-1~E5-4,E2-1~E2-5,E3-1~E3-2,E4-0~E4-1) / `probe-card-visual`(C1-1~C1-7,C2-1~C2-2,C3-1~C3-3,C4-2) / `probe-styles`(S1-S4) / `run.mjs`(A1-A3,B1-B3,C2-C5) / `probe-search-ui`(其余 SU-*) / `probe-batch2`(其余 B/H 段)。
+
+### 8.4 分类功能探针（2026-10-04）
+
+> 随分类功能一起新增 `probe-category.mjs`，覆盖 docs/API.md「category 语义」全部可度量点。前半段纯后端 API（不启 Chrome），后半段启 Chrome 验卡片分类 chip 走 `.article-chip` 基类。
+
+| 编号 | 覆盖点 | 结论 |
+| --- | --- | --- |
+| CAT-1 | POST 不带 category → 默认 `未分类` | PASS |
+| CAT-2 | POST 带 `category=技术` → 写入成功 | PASS |
+| CAT-3 | `GET ?category=技术` 只返回技术子集（total=技术总数且全部为技术） | PASS |
+| CAT-8a | 列表项响应含 `category` 字段（字符串） | PASS |
+| CAT-4 | `GET ?category=非法值` → 400 / 40000 | PASS |
+| CAT-5a/5b | `keyword` 单独命中两篇（含未分类）；叠加 `category=技术` 后只剩技术一篇 → 证明 AND | PASS |
+| CAT-6 | PUT 不传 category → 保留原值 | PASS |
+| CAT-7 | PUT 非法 category → 400 / 40000 | PASS |
+| CAT-8b | `GET /:id` 详情响应含 `category` | PASS |
+| CAT-D1/D1b | 卡片渲染分类 chip 且复用 `.article-chip` 基类、底色非透明（令牌生效） | PASS |
+| CAT-D2 | 暗色下分类 chip 令牌成对翻转（底色变、仍非透明） | PASS |
+
+执行：`node scripts/acceptance/probe-category.mjs` → **13/13 全绿、exit 0**。靶子文章创建后由 `cleanupFixtures` 精确回收，跑前跑后库一致（users 3 / 文章 11 / 可见 11 / 评论 1 / likes 1），Chrome 临时 profile 残留 0。报告与日志：`D:/tools/acceptance-shots/category-<时间戳>/report.md`。
 
 ### 8.3 状态
 

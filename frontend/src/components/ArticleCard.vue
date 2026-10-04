@@ -51,6 +51,11 @@
       >
         <span class="article-chip article-chip-time">{{ relativeTime }}</span>
       </el-tooltip>
+
+      <!-- 分类 chip：复用 .article-chip 基础样式（C1-5/6/7 探针依赖），
+           仅叠加 .article-chip-category 配色变体；无交互（整卡可点进详情）。
+           后端保证返回 category（未分类时即 '未分类'），这里再兜底一次空值。 -->
+      <span class="article-chip article-chip-category">{{ article.category || '未分类' }}</span>
     </div>
 
     <h2 class="article-title">{{ article.title }}</h2>
@@ -326,6 +331,14 @@ async function toggleLike() {
   background: var(--chip-bg-accent);
   border-color: var(--chip-border-accent);
   color: var(--chip-text-accent);
+}
+
+/* 分类 chip：琥珀色系，与作者/时间（靛蓝）、阅读时长（青）都不撞色，一眼区分。
+   仅覆盖底/边/字三色，形状仍由 .article-chip 提供；浅色 / 暗色令牌成对切换（见 style.css）。 */
+.article-chip-category {
+  background: var(--chip-bg-category);
+  border-color: var(--chip-border-category);
+  color: var(--chip-text-category);
 }
 
 /* 时间 chip 带 tooltip（方案 D），补一条 cursor 让它看起来可解释。

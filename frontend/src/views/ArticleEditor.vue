@@ -55,6 +55,12 @@
             />
           </el-form-item>
 
+          <el-form-item label="分类">
+            <el-select v-model="form.category" placeholder="请选择分类">
+              <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
+            </el-select>
+          </el-form-item>
+
           <!-- 本期正文按纯文本展示（white-space: pre-wrap），不做 Markdown 渲染，所以也没有预览区。 -->
           <el-form-item>
             <el-button type="primary" :loading="submitting" @click="handleSubmit">
@@ -87,9 +93,13 @@ const loading = ref(false);
 const notAllowed = ref(false);
 const submitting = ref(false);
 
+// 分类写死 4 个字符串（与后端 ARTICLE_CATEGORIES 一致，按用户拍板前端不抽常量文件）。
+const CATEGORIES = ['技术', '生活', '随笔', '未分类'];
+
 const form = reactive({
   title: '',
   content: '',
+  category: '未分类',
 });
 
 // 同一个组件服务两条路由：/editor 新建，/editor/:id 编辑（契约锁定 4 个页面，不拆组件）。
@@ -115,6 +125,8 @@ async function load() {
 
     form.title = data.title;
     form.content = data.content;
+    // 后端未返回 category（理论不会）时兜底成「未分类」，避免 el-select 出现空白选中项。
+    form.category = data.category || '未分类';
   } catch (error) {
     ElMessage.error(error.message);
     notAllowed.value = true;
@@ -162,6 +174,8 @@ async function handleSubmit() {
       title: form.title.trim(),
       // 正文不 trim：首尾空格是用户内容的一部分，后端也只对长度做校验。
       content: form.content,
+      // 分类：el-select 默认已选「未分类」，省略时后端也会兜底，这里显式带上。
+      category: form.category,
     };
 
     if (isEdit.value) {

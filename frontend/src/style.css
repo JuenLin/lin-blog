@@ -61,6 +61,12 @@
   --chip-radius: 999px; /* 胶囊形 */
   --chip-gap: 6px;
 
+  /* 分类 chip（分类功能）：琥珀色系，与作者/时间（靛蓝）、阅读时长（青）互不撞色；
+     浅色 / 暗色各一套，与上方 chip 令牌成对。 */
+  --chip-bg-category: rgba(245, 158, 11, 0.1);
+  --chip-border-category: rgba(245, 158, 11, 0.24);
+  --chip-text-category: #b45309;
+
   /* ---------- 点赞（第十批） ----------
    * 点赞态用暖红，和品牌靛蓝、阅读时长的青色三者互不撞色，一眼能区分。
    * 未点赞用弱化灰（--text-muted），点赞后才点亮成红色。 */
@@ -167,6 +173,11 @@ html.dark {
   --chip-text-accent: #67e8f9;
   --chip-radius: 999px;
   --chip-gap: 6px;
+
+  /* 分类 chip（分类功能，浅色镜像：深底上琥珀提亮才不糊） */
+  --chip-bg-category: rgba(251, 191, 36, 0.14);
+  --chip-border-category: rgba(251, 191, 36, 0.3);
+  --chip-text-category: #fcd34d;
 
   /* ---------- 点赞（第十批，与浅色成对：深底上红色要提亮才不糊） ---------- */
   --like-bg: rgba(251, 113, 133, 0.12);

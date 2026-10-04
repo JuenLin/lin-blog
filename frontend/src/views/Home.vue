@@ -4,10 +4,25 @@
       <div class="home-head">
         <h1 class="home-title">博客广场</h1>
 
-        <el-tabs v-model="activeTab" class="home-tabs" @tab-change="handleTabChange">
-          <el-tab-pane label="最新" name="createdAt" />
-          <el-tab-pane label="热门" name="likeCount" />
-        </el-tabs>
+        <div class="home-head-right">
+          <!-- 分类筛选：唯一数据源是 URL 上的 ?category=，与 keyword 正交可叠加。
+               选项「全部分类」对应空值（删掉 query.category）；选中具体分类写入 query。
+               切分类回第 1 页（与 search tip 同一理由：筛选变窄后原页码可能越界）。 -->
+          <el-select
+            :model-value="category"
+            class="home-category-select"
+            placeholder="全部分类"
+            @change="handleCategoryChange"
+          >
+            <el-option label="全部分类" value="" />
+            <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
+          </el-select>
+
+          <el-tabs v-model="activeTab" class="home-tabs" @tab-change="handleTabChange">
+            <el-tab-pane label="最新" name="createdAt" />
+            <el-tab-pane label="热门" name="likeCount" />
+          </el-tabs>
+        </div>
       </div>
 
       <!-- ⑦ 搜索状态提示条：有搜索词时明确告诉用户「正在看筛选结果」并给一个清空入口。
@@ -98,6 +113,9 @@ import Pagination from '../components/Pagination.vue';
 // （pageSize 可能是 10 / 20，照它画会把首屏撑得很长）。
 const SKELETON_COUNT = 5;
 
+// 分类写死 4 个字符串（与后端 ARTICLE_CATEGORIES 一致，按用户拍板前端不抽常量文件）。
+const CATEGORIES = ['技术', '生活', '随笔', '未分类'];
+
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
@@ -110,6 +128,14 @@ const keyword = computed(() => {
   const value = route.query.keyword;
   const raw = Array.isArray(value) ? value[0] : value;
   return typeof raw === 'string' ? raw.trim() : '';
+});
+
+// 分类筛选：与 keyword 同源（都从 URL 读），但独立存储、互不清除。
+// 非法 / 空值归一为 ''（不过滤）。「全部分类」选项的 value 是 ''，选中即删 query。
+const category = computed(() => {
+  const value = route.query.category;
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' && CATEGORIES.includes(raw) ? raw : '';
 });
 
 // B2：区分「首次加载」和「刷新」。首次才用骨架屏，之后一律保留旧列表。
@@ -133,6 +159,8 @@ async function load() {
       // ⑦ 无搜索词时传 undefined，axios 会直接不带这个参数（而不是 keyword= 空串），
       // 对应后端「空串视为不传」的语义。
       keyword: keyword.value || undefined,
+      // 分类筛选：与 keyword 正交，可叠加。空串（「全部分类」）等同不过滤。
+      category: category.value || undefined,
     });
 
     list.value = data.list;
@@ -175,11 +203,31 @@ function clearKeyword() {
   router.push({ name: 'home', query });
 }
 
+// 分类下拉变化：只动 category，保留 keyword（与 keyword 正交），并回到第 1 页。
+// 用 :model-value + @change 双向绑定到 URL，而不是本地 ref —— 与 keyword 同一套路，
+// 刷新 / 前进后退行为一致。选中「全部分类」（value 为 ''）则删掉 query.category。
+function handleCategoryChange(val) {
+  const query = { ...route.query };
+  if (val) {
+    query.category = val;
+  } else {
+    delete query.category;
+  }
+  router.push({ name: 'home', query });
+}
+
 onMounted(load);
 
 // ⑦ 搜索词变化（含浏览器前进后退）→ 回到第 1 页重新拉。
 // 刻意不复用 handleTabChange：那会把 activeTab 一起重置，而搜索时 Tab 排序是要保留的。
 watch(keyword, () => {
+  page.value = 1;
+  load();
+});
+
+// 分类变化（含浏览器前进后退）→ 回到第 1 页重新拉。刻意不与 keyword watch 合并，
+// 两者独立保留对方的筛选条件（正交）。
+watch(category, () => {
   page.value = 1;
   load();
 });
@@ -206,6 +254,18 @@ watch(keyword, () => {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 20px;
+}
+
+/* 标题左、分类下拉 + Tab 右的一组容器 */
+.home-head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.home-category-select {
+  width: 132px;
 }
 
 .home-tabs {

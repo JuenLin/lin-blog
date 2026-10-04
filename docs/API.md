@@ -265,6 +265,7 @@ Authorization: Bearer <token>
 - **排序一律在数据库层完成**（SQL 的 `ORDER BY` + `LIMIT/OFFSET`），不是拉全量再在应用层排。`likeCount` 是计算字段（不是 `articles` 的列），它的排序由 Prisma 的关联计数排序表达，同样编译进单条 SQL（「热门」Tab 引入，详见 `GET /api/articles` 的 `sortBy` 说明与 `docs/DB.md`「按点赞数排序」）。
 - 排序值并列时**自动追加次级排序 `id`**（同 `order` 方向），保证分页稳定 —— 否则同一批数据在相邻两页可能重复出现或整行丢失（见 `backend/src/utils/query.js` 的 `DEFAULT_SECONDARY_SORT`）。
 - 文章列表支持 `keyword` 模糊搜索，命中范围为**标题 + 正文**（不含作者昵称），详见 `GET /api/articles`。
+- 文章列表支持 `category` 分类筛选（枚举 `技术` / `生活` / `随笔` / `未分类`），详见 `GET /api/articles`。`category` 与 `keyword` **正交、可叠加**：切分类保留当前 keyword，切 keyword 保留当前 category；非法 `category` 返回 `400 / 40000`。
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
 - **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。它同时也是 `sortBy` 的合法值（「热门」Tab 按它倒序），语义见 `GET /api/articles`。
@@ -302,15 +303,19 @@ Authorization: Bearer <token>
 | ------- | ------ | -- | -------------------- |
 | title   | string | 是  | 1–100 字符，trim，不能为纯空格 |
 | content | string | 是  | 1–20000 字符           |
+| category | string | 否 | 枚举 `技术` / `生活` / `随笔` / `未分类`；**省略时默认 `未分类`**；非法值返回 `400 / 40000` |
 
 > 备注：`content` 的数据库类型（`TEXT` 还是 `MEDIUMTEXT`）在 DB 阶段确定，见 `docs/DB.md`，不影响本接口契约。
 
 ```json
 {
   "title": "我的第一篇博客",
-  "content": "正文……"
+  "content": "正文……",
+  "category": "技术"
 }
 ```
+
+> `category` 省略时后端填入默认值 `未分类`；`"category": "未分类"` 与省略等价。
 
 成功：HTTP 201
 
@@ -322,6 +327,7 @@ Authorization: Bearer <token>
     "id": 1,
     "title": "我的第一篇博客",
     "content": "正文……",
+    "category": "技术",
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
     "likeCount": 0,
     "createdAt": "2026-09-29T14:00:00.000Z",
@@ -355,6 +361,7 @@ Authorization: Bearer <token>
 | sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt` |
 | order    | string | 否  | `asc` 或 `desc`，默认 `desc`                            |
 | keyword  | string | 否  | 标题 + 正文模糊搜索；trim 后最长 50 字符，**空串或纯空白视为不搜索（等价于不传）**，返回全量列表       |
+| category | string | 否  | 分类筛选，枚举 `技术` / `生活` / `随笔` / `未分类`；非法值返回 `400 / 40000`；**不传或传空串视为不过滤（返回全部分类）** |
 
 `sortBy` 语义：
 
@@ -372,6 +379,15 @@ Authorization: Bearer <token>
 - 与 `page` / `pageSize` / `sortBy` / `order` **正交**：搜索结果同样参与分页与排序，`total` 是命中总数而非全库总数。
 - 已软删除的文章不参与搜索（与列表、详情口径一致）。
 
+`category` 语义（与 `keyword` 正交、可叠加）：
+
+- **筛选范围**：对 `articles.category` 做精确相等匹配（`WHERE category = ?`），命中即返回该分类下的文章。**不做模糊匹配**——分类是固定枚举，模糊匹配无意义。
+- **空串或纯空白 / 不传视为不过滤**：`category=`、`category=%20%20`、或不传，三种情况等价，都返回全部分类（含 `未分类`）的文章，而非报错。前端清空筛选器时会发空串，不做容错会 400。
+- **与 `keyword` 正交、可叠加**：`?keyword=Vue&category=技术` 同时生效（`title/content LIKE '%Vue%'` **且** `category='技术'`）。前端交互要求——**切分类保留当前 keyword，切 keyword 保留当前 category**，两者互不清掉对方。
+- **与分页 / 排序正交**：分类筛选结果同样参与分页与排序，`total` 是「该分类 + 该 keyword」的命中总数。
+- **非法值**：不在枚举内（如 `category=美食`、`category=tech`）返回 `400 / 40000`，message 形如 `category 不合法，可选值：技术, 生活, 随笔, 未分类`。**大小写敏感**（`技术` 是全角中文，不存在大小写问题；但若日后扩展英文枚举需注意）。
+- **不建索引**：`category` 是低基数列，MVP 数据量下全表扫描无感，筛选在 service 层拼 `where.category = x`，不引入索引（理由见 `docs/DB.md`「category 分类列」小节）。
+
 成功：HTTP 200
 
 ```json
@@ -384,6 +400,7 @@ Authorization: Bearer <token>
         "id": 1,
         "title": "我的第一篇博客",
         "summary": "正文前 100 字……",
+        "category": "技术",
         "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
         "likeCount": 3,
         "createdAt": "2026-09-29T14:00:00.000Z",
@@ -401,6 +418,7 @@ Authorization: Bearer <token>
 | 字段               | 类型     | 说明                                 |
 | ---------------- | ------ | ---------------------------------- |
 | list[].summary   | string | 后端截取 `content` 前 100 字符，列表不返回全文    |
+| list[].category  | string | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单保证一定在这 4 个值内 |
 | list[].author    | object | 作者 `id` / `username` / `nickname`  |
 | list[].likeCount | number | 该文章的点赞数（第十批新增），实时 `COUNT(*)`；不含 `liked` |
 
@@ -409,7 +427,7 @@ Authorization: Bearer <token>
 
 `summary` 为原始 `content` 截取，可能包含 Markdown 标记，前端负责渲染时清理。
 
-失败：400 / 40000（分页参数非法，或 `keyword` 超长 / 格式非法）。
+失败：400 / 40000（分页参数非法，或 `keyword` 超长 / 格式非法，或 `category` 非法值）。
 
 ---
 
@@ -429,6 +447,7 @@ Authorization: Bearer <token>
     "id": 1,
     "title": "我的第一篇博客",
     "content": "正文……",
+    "category": "技术",
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
     "likeCount": 3,
     "createdAt": "2026-09-29T14:00:00.000Z",
@@ -437,7 +456,7 @@ Authorization: Bearer <token>
 }
 ```
 
-`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`**。
+`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`**。`category` 为文章的分类枚举值。
 
 失败：
 
@@ -452,7 +471,18 @@ Authorization: Bearer <token>
 
 编辑文章。**需要登录，且必须是作者本人**。全量更新，`title` 与 `content` 都必填。
 
-路径参数：`id`，正整数。请求体同 `POST /api/articles`。
+路径参数：`id`，正整数。请求体同 `POST /api/articles`（含可选 `category`）。
+
+**`category` 在 PUT 下的三态语义**（与 `PUT /api/users/me` 的 `avatar`/`bio` 区分「不传 / 传非法值 / 传合法值」逻辑一致，但语义更简单）：
+
+| 请求体写法 | 含义 | 存储结果 |
+|---|---|---|
+| 字段**不出现** | **保留原值** | 文章 `category` 保持库中原值不变（用户只想改标题/正文时分类不动） |
+| `"category": "技术"`（合法枚举） | **设置** | 写入该分类 |
+| `"category": "美食"`（非法值） | 报错 | 返回 `400 / 40000`，不更新任何字段（与 title/content 校验同一口径） |
+
+> 与 `POST` 的「省略默认 `未分类`」不同：`PUT` 的省略是**保留原值**（因为文章已经有分类了，不该因没传就被改回 `未分类`）。实现上：`category` 用 zod `.optional()` —— 缺失时得到 `undefined`，**跳过该字段**；传入时再按枚举白名单校验。
+> 成功响应（`data` 结构同「文章详情」）会带更新后的 `category`。
 
 成功：HTTP 200，`data` 结构同「文章详情」（更新后的内容）。
 
@@ -997,6 +1027,8 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 > 说明 2：**搜索已实现**（`GET /api/articles` 的 `keyword` 参数，命中标题 + 正文），已从上表移出。搜索**不含作者昵称**，也不做标签 / 分类聚合搜索。
 >
 > 说明 3：**头像上传已实现**（第十一批，`POST /api/users/me/avatar`，文件落 `backend/uploads/`），已从上表移出。**图片外链已下线** —— `PUT /api/users/me` 的 `avatar` 不再接受 `http(s)://`，只接受 `/uploads/` 站内路径（正常只用于传 `null` 清空），**上传成为设置头像的唯一入口**。遗留项：不做图片压缩 / 缩略图、不做孤儿文件定时对账、不校验 magic bytes，均登记在 `docs/DB.md`。
+>
+> 说明 4：**文章分类已实现**（分类功能，`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，经用户明确批准；豁免登记见 `docs/AI_CONTRACT.md` 第 2 节）。`POST` / `PUT` 文章可传可选 `category`（枚举 技术/生活/随笔/未分类），`GET /api/articles` 新增可选 `category` 筛选参数（与 `keyword` 正交、可叠加）。**未新增 `GET /api/categories` 接口**——前端枚举写死这 4 个字符串，无需后端枚举接口。遗留项：暂不为 `category` 建索引（低基数列，MVP 数据量下无需），理由见 `docs/DB.md`。
 
 ---
 
