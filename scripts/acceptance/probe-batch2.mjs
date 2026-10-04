@@ -264,7 +264,15 @@ try {
   // 基线：先加载首页，记下**首屏本来就加载了哪些模块**。
   // 只有「目标模块不在基线里、却在进入目标路由时出现」才算按需加载；
   // 原版只检查「进入该路由时出现过该模块」——eager import 同样满足，等于没验。
+  //
+  // ⚠️ 采集基线前先清掉可能残留的登录态：本段有两条断言依赖「未登录初态」
+  // （/login 会加载 Login.vue、/editor 会被守卫 redirect 到 /login）。Chrome profile
+  // 现在每次启动都是全新的（见 lib/chrome.mjs），但**本探针自己**在最后一条用例里
+  // 写了 admin token —— 不清的话，同一 profile 下的任何重跑都会开局即登录态、这两条必挂。
   chunks.length = 0;
+  await s.goto(CONFIG.frontend + '/');
+  // removeItem 必须先有 origin 才能调，所以先 goto 一次拿到 origin，清完再重载让页面按未登录态重算。
+  await s.evaluate(`try { localStorage.removeItem('token'); } catch (e) {}`);
   await s.goto(CONFIG.frontend + '/');
   await sleep(2500);
   const baselineChunks = new Set(chunkNames(chunks));
@@ -327,6 +335,15 @@ try {
   );
   s.offEvent(onResp);
 } finally {
+  // 用完把 token 擦掉：不给下一次运行留状态（同一条理由 —— 探针之间必须互相独立）。
+  // 页面可能已经不可用，所以整个操作用 try 兜住，失败不影响收尾。
+  if (s) {
+    try {
+      await s.evaluate(`try { localStorage.removeItem('token'); } catch (e) {}`);
+    } catch {
+      /* noop */
+    }
+  }
   if (s) s.close();
   if (chrome) await stopChrome(chrome.child);
 }
