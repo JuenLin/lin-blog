@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG, PREFIX, TMP, BACKEND, BACKEND_MODULES, requireCjs } from './config.mjs';
+import { mintToken } from './session.mjs';
 
 const apiBase = () => CONFIG.api;
 
@@ -37,9 +38,10 @@ export async function getArticle(token, id) {
 
 /**
  * 保证验收集据量够用，返回夹具清单。
- * - need = max(pageSize+1 - 现有可见数, 2)：既要凑出第 2 页，也要保证「最新 / 最近更新」两 Tab 结果不同。
+ * - need = max(pageSize+1 - 现有可见数, 2)：凑出第 2 页（验分页），并保证有 ≥2 篇夹具文章
+ *   （给「热门」靶子点赞后，它能排到「热门」首位）。
  * - 额外造两篇专用：一篇给「编辑后保存」，一篇给「删除流程」。
- * - 更新动作放最后做，保证被改的那篇 updatedAt 一定是全场最新。
+ * - 给 batch 最后一篇点 2 个赞（demo + admin），让「热门」Tab 有确定的排序差异可验。
  */
 export async function ensureFixtures(token, adminId) {
   const current = await listArticles(token);
@@ -47,6 +49,7 @@ export async function ensureFixtures(token, adminId) {
   const need = Math.max(CONFIG.pageSize + 1 - visibleTotal, 2);
 
   const batch = [];
+  const batchTitles = new Map();
   for (let i = 1; i <= need; i += 1) {
     const n = String(i).padStart(2, '0');
     const r = await api('POST', '/articles', token, {
@@ -58,22 +61,50 @@ export async function ensureFixtures(token, adminId) {
     if (!r.json || r.json.code !== 0) {
       throw new Error(`造数据失败：${JSON.stringify(r.json)}`);
     }
+    // 记下服务端返回的真实标题（不靠「按序号拼字符串」推断），供断言直接比对。
     batch.push(r.json.data.id);
+    batchTitles.set(r.json.data.id, r.json.data.title);
+  }
+
+  // 「热门」Tab 的靶子：给 batch 里的最后一篇点 2 个赞，让它成为**点赞最多**的文章，
+  // A2 才能验出「按 likeCount 排序」而不是碰巧和「最新」结果一样。
+  //
+  // 为什么必须造点赞：库里默认只有用户自己的历史点赞（且可能没有）。若夹具文章全是 0 赞，
+  // 「热门」与「最新」的首条可能相同，那条断言就成了「碰巧通过」。
+  //
+  // 为什么是 2 个赞：likes 有 (user_id, article_id) 唯一约束，同一个用户对同一篇只能赞一次，
+  // 所以要 2 个账号各点一次。选 demo(1) + admin(2) 是因为二者都有稳定的 CONFIG 常量
+  // （run.mjs 本来就依赖它们）；admin 虽是夹具文章作者，但接口**不禁止自赞**（无此限制），
+  // 且这些点赞全部由 cleanupFixtures 精确回收，不会污染任何人的数据。
+  const hotId = batch[batch.length - 1];
+  const hotTitle = batchTitles.get(hotId) || '';
+  const likeUsers = [CONFIG.demoId, CONFIG.adminId];
+  const seededLikes = [];
+  for (const uid of likeUsers) {
+    const { token: likeToken } = mintToken(uid, `user${uid}`);
+    const r = await api('POST', `/articles/${hotId}/like`, likeToken);
+    // 409 = 已赞过，对新造的文章不该出现；真出现也不算错误，按已生效处理。
+    if (!r.json || (r.json.code !== 0 && r.json.code !== 40900)) {
+      throw new Error(`造点赞失败：article=${hotId} user=${uid} ${JSON.stringify(r.json)}`);
+    }
+    seededLikes.push({ userId: uid, articleId: hotId });
   }
 
   const mk = async (title, content) => {
     const r = await api('POST', '/articles', token, { title, content });
     if (!r.json || r.json.code !== 0) throw new Error(`造数据失败：${JSON.stringify(r.json)}`);
-    return r.json.data.id;
+    return r.json.data;
   };
-  const editId = await mk(`${PREFIX} 编辑改名专用`, '原始正文：改名后应该在详情页看到新标题。');
-  const deleteId = await mk(`${PREFIX} 删除流程专用`, '这篇专门用来跑删除流程，删它不动用户数据。');
+  const editArticle = await mk(`${PREFIX} 编辑改名专用`, '原始正文：改名后应该在详情页看到新标题。');
+  const editId = editArticle.id;
+  const deleteArticle = await mk(`${PREFIX} 删除流程专用`, '这篇专门用来跑删除流程，删它不动用户数据。');
+  const deleteId = deleteArticle.id;
 
   // 最后再改：保证它是 updatedAt 最新的一篇
   const updatedId = batch[0];
   await api('PUT', '/articles/' + updatedId, token, {
     title: `${PREFIX} 01（已更新）`,
-    content: '正文被改过，updatedAt 应当让它排到「最近更新」首位。',
+    content: '正文被改过，updatedAt 应当是全库最新（D 区的编辑流程用它的回填做靶子）。',
   });
 
   const all = [...batch, editId, deleteId];
@@ -91,6 +122,12 @@ export async function ensureFixtures(token, adminId) {
     deleteId,
     updatedId,
     all,
+    // 「热门」Tab 的靶子：hotId 上有 seededLikes 条点赞，A2 断言它排在「热门」首位。
+    hotId,
+    hotTitle,
+    seededLikes,
+    // 「最新」首条（按 createdAt desc）是最后创建的 deleteId —— A2-4 用它做精确比对。
+    deleteTitle: deleteArticle.title,
     targetId: owned ? owned.id : editId,
     targetTitle: owned ? owned.title : `${PREFIX} 编辑改名专用`,
     visibleTotalBefore: visibleTotal,
@@ -117,12 +154,16 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
     return { ok: false, reason: '无法加载 Prisma 客户端：' + e.message, ids: list };
   }
 
+  let likes = 0;
   let comments = 0;
   let articles = 0;
   let marked = 0;
   try {
     if (list.length) {
-      // 外键顺序：先评论后文章（RESTRICT）
+      // 外键顺序：先点赞 → 再评论 → 最后文章（三条外键都是 RESTRICT）。
+      // ⚠️ likes 必须最先删：夹具会给「热门」靶子文章造点赞，漏了这一步
+      // `article.deleteMany` 会因 RESTRICT 报 P2003，整个清理失败、留下脏数据。
+      likes = (await prisma.like.deleteMany({ where: { articleId: { in: list } } })).count;
       comments = (await prisma.comment.deleteMany({ where: { articleId: { in: list } } })).count;
       articles = (await prisma.article.deleteMany({ where: { id: { in: list } } })).count;
     }
@@ -137,8 +178,10 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
     const totalArticles = await prisma.article.count();
     const visibleArticles = await prisma.article.count({ where: { deletedAt: null } });
     const totalComments = await prisma.comment.count();
+    const totalLikes = await prisma.like.count();
     return {
       ok: true,
+      likes,
       comments,
       articles,
       marked,
@@ -147,6 +190,7 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
         totalArticles,
         visibleArticles,
         totalComments,
+        totalLikes,
       },
     };
   } finally {

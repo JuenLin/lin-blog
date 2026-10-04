@@ -4,8 +4,21 @@ import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
 import { parseKeyword } from '../validators/article.validator.js';
 import { CODE, httpError } from '../utils/response.js';
 
-// docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id，默认 createdAt desc。
-export const ARTICLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'id'];
+// docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id / likeCount，默认 createdAt desc。
+// 「热门」Tab 用 likeCount（按点赞数倒序），updatedAt 保留 —— 前端不再暴露该 Tab，
+// 但接口不缩水（probe-search 的 S4-4 仍在用它验白名单）。
+export const ARTICLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'id', 'likeCount'];
+
+// likeCount 是**计算字段**（响应层由 `_count.likes` 折算），articles 表里没有这一列，
+// 所以不能把它直接透传给 Prisma（会报 Unknown argument 'likeCount'）。
+// 这里给出它在 Prisma 里的等价写法：关联计数排序。
+// 实测（Prisma 6.19.3 + MySQL 8）会编成**单条 SQL** 的 SQL 层 ORDER BY，不是拉全量再排：
+//   LEFT JOIN (SELECT article_id, COUNT(*) FROM likes GROUP BY article_id) ON articles.id = ...
+//   ORDER BY COALESCE(..., 0) DESC, articles.id DESC
+// 代价与取舍见 docs/DB.md「按点赞数排序」小节。
+const ARTICLE_SORT_MAP = {
+  likeCount: (order) => ({ likes: { _count: order } }),
+};
 
 // 列表的 summary 取正文前 100 个字符。
 const SUMMARY_LENGTH = 100;
@@ -143,7 +156,9 @@ export async function listArticles(query) {
     prisma.article.findMany({
       where,
       select: ARTICLE_DETAIL_SELECT,
-      orderBy: buildOrderBy(pagination),
+      // sortBy=likeCount 时由 ARTICLE_SORT_MAP 翻成关联计数排序；排序与 skip/take
+      // 全在 SQL 层完成（不是拉全量再在 JS 里排），并且次级排序 id 自动生效。
+      orderBy: buildOrderBy(pagination, { map: ARTICLE_SORT_MAP }),
       skip: pagination.skip,
       take: pagination.take,
     }),

@@ -208,34 +208,52 @@ if (s) try {
     ? pass('A1-3', '分页条显示总数', `共 ${totalAfter} 条`)
     : fail('A1-3', '分页条显示总数', `未找到「共 ${totalAfter} 条」`);
 
-  // Tab
+  // Tab：最新（createdAt）/ 热门（likeCount）
   if (fx) {
+    // 「热门」= 按点赞数倒序。夹具已给 fx.hotId 点上 2 个赞（demo + admin），
+    // 它应当排在首位 —— 这是「按 likeCount 排序」的确定性证据，不是碰巧。
     net = [];
-    await clickText('[role="tab"], .el-tabs__item', '最近更新');
-    const ok1 = await waitReq((n) => n.url.includes('sortBy=updatedAt'), 8000);
+    await clickText('[role="tab"], .el-tabs__item', '热门');
+    const ok1 = await waitReq((n) => n.url.includes('sortBy=likeCount'), 8000);
     // B2 之后切 Tab 不再整块换成骨架屏，而是保留旧列表并打上 .is-refreshing，
     // 所以「卡片数 > 0」已经不能代表刷新完成（旧列表本来就在），必须等刷新标记消失。
     await waitFor(`!document.querySelector('.home-list.is-refreshing')`, 8000);
-    await shot('02-tab-updated');
-    ok1 ? pass('A2-1', '切「最近更新」发出 sortBy=updatedAt', '已捕获请求') : fail('A2-1', '切「最近更新」发出 sortBy=updatedAt', '8 秒内未捕获');
+    await shot('02-tab-hot');
+    ok1
+      ? pass('A2-1', '切「热门」发出 sortBy=likeCount', '已捕获请求')
+      : fail('A2-1', '切「热门」发出 sortBy=likeCount', '8 秒内未捕获');
+
     const ft1 = await firstTitle();
-    ft1.includes('（已更新）')
-      ? pass('A2-2', '「最近更新」首条是被改过的那篇', ft1)
-      : fail('A2-2', '「最近更新」首条是被改过的那篇', `首条=${ft1}`);
+    ft1 === fx.hotTitle
+      ? pass('A2-2', '「热门」首条是点赞最多的那篇', ft1)
+      : fail('A2-2', '「热门」首条是点赞最多的那篇', `首条=${ft1 || '（空）'} 期望=${fx.hotTitle}`);
+
+    // 光「首条对」还不够：如果实现其实是按 id 排而 hotId 恰好 id 最大，也会蒙对。
+    // 所以逐张读卡片上的点赞数，断言**非递增**（这才是「按点赞数排序」本身）。
+    const hotCounts = await s.evaluate(
+      `Array.from(document.querySelectorAll('.article-card')).map((c) => {
+        const el = c.querySelector('.article-like-count');
+        return el ? Number((el.innerText || '').trim()) : NaN;
+      })`
+    );
+    const hotDesc = hotCounts.length > 1 && hotCounts.every((v, i) => i === 0 || hotCounts[i - 1] >= v);
+    hotDesc
+      ? pass('A2-3', '「热门」卡片点赞数非递增', `[${hotCounts.join(', ')}]`)
+      : fail('A2-3', '「热门」卡片点赞数非递增', `[${hotCounts.join(', ')}]（期望从大到小）`);
 
     net = [];
     await clickText('[role="tab"], .el-tabs__item', '最新', true);
     const ok2 = await waitReq((n) => n.url.includes('sortBy=createdAt'), 8000);
     await waitFor(`!document.querySelector('.home-list.is-refreshing')`, 8000);
-    ok2 ? pass('A2-3', '切回「最新」发出 sortBy=createdAt', '已捕获请求') : fail('A2-3', '切回「最新」发出 sortBy=createdAt', '8 秒内未捕获');
     const ft2 = await firstTitle();
-    const newestExpected = `${PREFIX} ${String(fx.batch.length).padStart(2, '0')}`;
-    ft2 === newestExpected || !ft2.includes('（已更新）')
-      ? pass('A2-4', '「最新」首条回到最新创建的那篇', ft2)
-      : fail('A2-4', '「最新」首条回到最新创建的那篇', `首条=${ft2}`);
+    ok2 && ft2 === fx.deleteTitle
+      ? pass('A2-4', '切回「最新」首条是最后创建的那篇', ft2)
+      : fail('A2-4', '切回「最新」首条是最后创建的那篇', `请求=${ok2 ? 'ok' : '未捕获'} 首条=${ft2 || '（空）'} 期望=${fx.deleteTitle}`);
   } else {
-    skip('A2-1', 'Tab 切换发出正确 sortBy', '--no-seed：数据不足');
-    skip('A2-2', 'Tab 排序结果不同', '--no-seed：数据不足');
+    skip('A2-1', '切「热门」发出 sortBy=likeCount', '--no-seed：数据不足');
+    skip('A2-2', '「热门」首条是点赞最多的那篇', '--no-seed：数据不足');
+    skip('A2-3', '「热门」卡片点赞数非递增', '--no-seed：数据不足');
+    skip('A2-4', '切回「最新」首条是最后创建的那篇', '--no-seed：数据不足');
   }
 
   // 分页
@@ -543,7 +561,7 @@ if (OPT.cleanup && idsToClean.length) {
   const r = await cleanupFixtures(idsToClean, [MARKERS.comment]);
   if (r.ok) {
     console.log(
-      `已清理自己造的数据：文章 ${r.articles} 篇 / 评论 ${r.comments + r.marked} 条；当前库：users=${r.final.users} 文章(总/可见)=${r.final.totalArticles}/${r.final.visibleArticles} 评论=${r.final.totalComments}`
+      `已清理自己造的数据：文章 ${r.articles} 篇 / 评论 ${r.comments + r.marked} 条 / 点赞 ${r.likes} 条；当前库：users=${r.final.users} 文章(总/可见)=${r.final.totalArticles}/${r.final.visibleArticles} 评论=${r.final.totalComments} likes=${r.final.totalLikes}`
     );
     for (const f of ['fixtures.json', 'ui-created.json']) {
       try {

@@ -221,7 +221,7 @@ try {
     await sleep(1500);
 
     paused.length = 0;
-    await s.evaluate(`(() => { const t = Array.from(document.querySelectorAll('.el-tabs__item')).find((t) => t.innerText.includes('最近更新')); if (t) t.click(); return true; })()`);
+    await s.evaluate(`(() => { const t = Array.from(document.querySelectorAll('.el-tabs__item')).find((t) => t.innerText.includes('热门')); if (t) t.click(); return true; })()`);
     const req2 = await waitPaused();
     // 等 200ms 过渡动画落定再采样，否则会抓到 opacity 中间态（实测 0.775 / 0.612）。
     await sleep(450);

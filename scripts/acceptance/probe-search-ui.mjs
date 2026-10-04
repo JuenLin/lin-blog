@@ -205,12 +205,12 @@ try {
   // ---------- SU-9 切 Tab 仍保留 keyword ----------
   net = [];
   await s.evaluate(`(() => {
-    const t = Array.from(document.querySelectorAll('.el-tabs__item')).find(e => (e.innerText||'').trim() === '最近更新');
+    const t = Array.from(document.querySelectorAll('.el-tabs__item')).find(e => (e.innerText||'').trim() === '热门');
     if (t) t.click(); return true;
   })()`);
   await waitFor(`true`, 100);
   await sleep(700);
-  const tabReq = listReqs().find((r) => r.url.includes('sortBy=updatedAt'));
+  const tabReq = listReqs().find((r) => r.url.includes('sortBy=likeCount'));
   log('SU-9 切 Tab 仍带 keyword（排序与搜索正交）', Boolean(tabReq && tabReq.url.includes('keyword=')), `请求=${tabReq ? tabReq.url : '未捕获'}`);
 
   // ---------- SU-8 在第 2 页状态下搜索 → page 重置为 1 ----------
