@@ -35,6 +35,9 @@ model Article {
   id        Int       @id @default(autoincrement())
   title     String    @db.VarChar(100)
   content   String    @db.MediumText
+  // 2026-10-04（用户批准）：分类列。枚举白名单（技术/生活/随笔/未分类）由后端校验，
+  // 不建 categories 表、不加外键。NOT NULL + 默认 '未分类'，INSTANT 算法自动回填既有行。
+  category  String    @default("未分类") @db.VarChar(20)
   authorId  Int       @map("author_id")
   author    User      @relation(fields: [authorId], references: [id])
   createdAt DateTime  @default(now()) @map("created_at")

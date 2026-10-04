@@ -1,7 +1,7 @@
 import prisma from '../utils/prisma.js';
 import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
-import { parseKeyword } from '../validators/article.validator.js';
+import { parseKeyword, parseCategory } from '../validators/article.validator.js';
 import { CODE, httpError } from '../utils/response.js';
 
 // docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id / likeCount，默认 createdAt desc。
@@ -41,6 +41,7 @@ const ARTICLE_DETAIL_SELECT = {
   id: true,
   title: true,
   content: true,
+  category: true,
   createdAt: true,
   updatedAt: true,
   author: {
@@ -85,6 +86,7 @@ function toArticleDetail(article) {
     id: article.id,
     title: article.title,
     content: article.content,
+    category: article.category,
     author: toAuthor(article.author),
     likeCount: article._count ? article._count.likes : 0,
     createdAt: article.createdAt,
@@ -97,6 +99,7 @@ function toArticleListItem(article) {
     id: article.id,
     title: article.title,
     summary: buildSummary(article.content),
+    category: article.category,
     author: toAuthor(article.author),
     // 与详情口径一致：实时 COUNT(*)。_count 缺失时降级为 0 而不是 undefined，
     // 这样「接口没返回」和「确实是 0」对前端是同一个值（docs/API.md 的约定）。
@@ -117,6 +120,7 @@ export async function createArticle(payload, authorId) {
     data: {
       title: payload.title,
       content: payload.content,
+      category: payload.category ?? '未分类',
       authorId,
     },
     select: ARTICLE_DETAIL_SELECT,
@@ -147,9 +151,15 @@ export async function listArticles(query) {
       }
     : {};
 
+  // 分类筛选：与 keyword 正交，作为 AND 条件叠加（切分类保留 keyword、切 keyword 保留分类）。
+  // parseCategory 对非法值直接抛 400 / 40000（与 sortBy 风格一致）。
+  const category = parseCategory(query);
+  const categoryWhere = category ? { category } : {};
+
   // whereNotDeleted 内部是 { ...where, deletedAt: null }，
   // 所以 OR 条件与软删除过滤是 AND 关系：软删除的文章搜不到（docs/API.md 语义第 5 条）。
-  const where = whereNotDeleted(searchWhere);
+  // searchWhere(OR...) 与 categoryWhere 平铺合并 → 二者也是 AND 关系，实现「正交可叠加」。
+  const where = whereNotDeleted({ ...searchWhere, ...categoryWhere });
 
   // 列表要生成 summary，必须取 content。pageSize 上限 100，100 条 MEDIUMTEXT 对 MVP 可接受。
   const [rows, total] = await Promise.all([
@@ -227,12 +237,18 @@ export async function updateArticle(id, payload, userId) {
 
   assertAuthor(article, userId);
 
+  // category 三态：不传（undefined）→ 保留原值（不写该字段）；传了合法值 → 更新。
+  const data = {
+    title: payload.title,
+    content: payload.content,
+  };
+  if (payload.category !== undefined) {
+    data.category = payload.category;
+  }
+
   const updated = await prisma.article.update({
     where: { id },
-    data: {
-      title: payload.title,
-      content: payload.content,
-    },
+    data,
     select: ARTICLE_DETAIL_SELECT,
   });
 

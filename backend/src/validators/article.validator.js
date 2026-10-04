@@ -16,15 +16,23 @@ const contentSchema = z
   .min(1, '不能为空')
   .max(20000, '不能超过 20000 个字符');
 
+// 分类白名单（与 docs/API.md / DB.md 一致）。后端唯一真相；前端写死同样 4 个字符串，不做常量共享。
+// 枚举保证库里永远不会出现拼写不一致的值（非法值直接 400 / 40000）。
+export const ARTICLE_CATEGORIES = ['技术', '生活', '随笔', '未分类'];
+
 export const createArticleSchema = z.object({
   title: titleSchema,
   content: contentSchema,
+  // 可选；省略时由 .default 补成 '未分类'（与 DB 默认值一致）。
+  category: z.enum(ARTICLE_CATEGORIES).optional().default('未分类'),
 });
 
 // PUT 是全量更新，title 与 content 都必填，校验规则与创建一致。
 export const updateArticleSchema = z.object({
   title: titleSchema,
   content: contentSchema,
+  // 可选且**无 default**：不传 = 保留库中原有值（service 层据此跳过该字段）。
+  category: z.enum(ARTICLE_CATEGORIES).optional(),
 });
 
 // 路径参数在 Express 里是字符串，统一 coerce 成正整数。
@@ -84,6 +92,47 @@ export function parseKeyword(query) {
 
   if (trimmed.length > KEYWORD_MAX_LENGTH) {
     throw httpError(400, CODE.PARAM_ERROR, `keyword 最多 ${KEYWORD_MAX_LENGTH} 个字符`);
+  }
+
+  return trimmed;
+}
+
+/* ---------- 列表 category（分类筛选） ---------- */
+
+// 与 parseKeyword 同源同层：由 service 层的 listArticles 调用，不引入第二种查询参数解析风格。
+// 语义（与 docs/API.md 一致）：
+// - 不传 / 空串 / 纯空白 = 视为不传，返回 null（不过滤）。
+// - 重复传值 / 非字符串 / 非法枚举值 = 抛 400 / 40000（与 sortBy 报错风格一致）。
+// - 合法枚举值（技术 / 生活 / 随笔 / 未分类）= 精确相等筛选。
+// - 与 keyword 正交：调用方把结果作为 AND 条件叠加到关键词 OR 条件上。
+//
+// @param {object} query Express 的 req.query
+// @returns {string|null} 规范化后的 category，未传或为空则 null
+// @throws {Error} 400 / 40000（重复传值 / 非法值）
+export function parseCategory(query) {
+  const source = query && typeof query === 'object' ? query : {};
+  const value = source.category;
+
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    throw httpError(400, CODE.PARAM_ERROR, 'category 不允许重复传值');
+  }
+
+  if (typeof value !== 'string') {
+    throw httpError(400, CODE.PARAM_ERROR, 'category 必须是字符串');
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed === '') {
+    return null;
+  }
+
+  if (!ARTICLE_CATEGORIES.includes(trimmed)) {
+    throw httpError(400, CODE.PARAM_ERROR, `category 只能是 ${ARTICLE_CATEGORIES.join(' / ')} 之一`);
   }
 
   return trimmed;
