@@ -121,7 +121,7 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  │  │  ├─ article.js              # 文章接口：发布、列表、详情、编辑、删除
 
-│  │  │  ├─ comment.js              # 评论接口：发表、文章评论列表
+│  │  │  ├─ comment.js              # 评论接口：发表、文章评论列表  
 │  │  │  └─ like.js                 # 点赞接口：点赞、取消点赞（第十批）
 
 │  │  ├─ router/                      # Vue Router 路由配置
@@ -512,6 +512,7 @@ model User {
 - 所有需要登录的接口必须经过鉴权中间件。
 - 分页查询必须限制 `pageSize <= 100`。
 - 错误日志至少打印 `message` 和 `stack`。
+
 ## 12. 代码规范
 
 - 缩进：2 空格。
@@ -533,7 +534,6 @@ model User {
 - 页面级组件命名以实际代码为准：`Home.vue` / `ArticleDetail.vue` / `ArticleEditor.vue` / `Login.vue` / `UserProfile.vue` / `ProfileEdit.vue` / `ChangePassword.vue`，**不加 `View` 后缀**（`views/` 目录本身已表明它是页面层）。`docs/CODING_STYLE.md` 的命名约定已与此对齐，两处不再冲突。
 
 ---
-
 
 ## 13. AI 行为约束
 
