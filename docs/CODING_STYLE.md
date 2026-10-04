@@ -17,7 +17,7 @@
 
 - 一律使用 `<script setup>`，不用 Options API。
 - 样式一律 `<style scoped>`，避免污染全局。
-- 页面放 `src/views`，命名 `XxxView.vue`（例如 `HomeView.vue`）。
+- 页面放 `src/views`，命名 `PascalCase.vue`、**不加 `View` 后缀**（例如 `Home.vue`、`ArticleDetail.vue`）。这是本项目的实际做法，`views/` 目录本身已经表明了它是页面层，文件名再加 `View` 是冗余。
 - 可复用组件放 `src/components`，命名 `PascalCase.vue`。
 - 不要直接操作 DOM，除非确实没有 Vue 方案。
 - 模板里不要写复杂表达式，抽成 `computed` 或函数。
@@ -86,7 +86,7 @@ utils       通用工具（统一响应、Prisma 单例等）
 
 | 场景 | 规则 | 示例 |
 |---|---|---|
-| 组件文件 | PascalCase.vue | `UserList.vue` |
+| 组件文件 | PascalCase.vue | `Home.vue`（页面也是 PascalCase，不加 `View` 后缀） |
 | 前端 JS | camelCase.js | `request.js` |
 | 路由文件 | xxx.routes.js | `user.routes.js` |
 | 控制器 | xxx.controller.js | `user.controller.js` |
@@ -102,7 +102,7 @@ utils       通用工具（统一响应、Prisma 单例等）
 本次未启用 ESLint / Prettier（按约定不引入契约外依赖），以下由人工与审查保证：
 
 - 2 空格缩进、单引号、分号 —— 全项目统一。
-- Node.js 24.20.0，后端 ESM（`"type": "module"`）。
+- Node.js ≥ 22（实测基线 v22.22.2；低于 22 时验收脚本会因缺少内置 WebSocket 而失败），后端 ESM（`"type": "module"`）。
 - 前端 Vite 8 + Vue 3.5，组件用 `.vue` 单文件形式。
 - 后端 Express 5，注意其路由与 Express 4 的差异。
 - Prisma 6.19.3，schema 中保留 `url = env("DATABASE_URL")` 的经典写法。

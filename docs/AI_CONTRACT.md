@@ -68,11 +68,16 @@
 - 禁止修改接口契约。
 - 禁止修改数据库 schema。
   > **已批准例外（2026-10-03，第九批）**：`users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列，属**用户明确批准**的 schema 变更，详见 `docs/DB.md`「第九批新增字段」与 `docs/API.md` 的 `PUT /api/users/me` 章节。
+  >   
   > **该例外仅限这两列**。除此之外的任何 schema 变更（改列名、改类型、删列、其他表）仍需重新向用户报告并取得批准。
+  >   
   > **已批准例外（2026-10-03，第十一批）：后端引入 multer ^2.4.0，仅用于头像上传（POST /api/users/me/avatar），属用户明确批准。选用 2.x 而非 1.4.5-lts 线的原因：CVE-2025-47935 与 CVE-2025-47944两个高危 DoS 仅修复于 2.0.0+。该例外仅限这一个包，
-除此之外仍禁止引入新依赖。
-  > **已批准例外（2026-10-04，分类功能）**：`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，枚举值 `技术` / `生活` / `随笔` / `未分类`，由后端枚举白名单校验（不接受自由字符串，非法值返回 `400 / 40000`）；迁移 `NOT NULL DEFAULT '未分类'` 自动回填既有行，零 NULL。属用户明确批准的 schema 变更，**仅限此列**，不含其他表结构变更、不含新增 `categories` 表 / 外键 / 索引。决策过程与字段定义见 `docs/DB.md`「category 分类列」与 `docs/API.md` 文章相关接口章节。
-  > 该例外是**独立的一次批准**，不援引第九批 / 第十一批的例外；其余任何 schema 变更（含改 `category` 的类型 / 长度、加其他列）仍需重新向用户报告并取得批准。
+  >   
+  > 除此之外仍禁止引入新依赖。
+  >   
+  > 已批准例外（2026-10-04，分类功能）：`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，枚举值 `技术` / `生活` / `随笔` / `未分类`，由后端枚举白名单校验（不接受自由字符串，非法值返回 `400 / 40000`）；迁移 `NOT NULL DEFAULT '未分类'` 自动回填既有行，零 NULL。属用户明确批准的 schema 变更，**&#x4EC5;限此&#x5217;**，不含其他表结构变更、不含新增 `categories` 表 / 外键 / 索引。决策过程与字段定义见 `docs/DB.md`「category 分类列」与 `docs/API.md` 文章相关接口章节。
+  >   
+  > 该例外是**独立的一次批准\*\*，不援引第九批 / 第十一批的例外；其余任何 schema 变更（含改 `category` 的类型 / 长度、加其他列）仍需重新向用户报告并取得批准。
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
 - 禁止把 API Key、数据库密码等敏感信息写进代码。
@@ -177,6 +182,8 @@ project/                              # 项目根目录，所有代码和文档�
 
 > 说明：`probe-*.mjs` 与 `shot-*.mjs` 按批次持续新增，命名遵循上述模式即可，不在本文件中逐个列举。
 
+
+
 ---
 
 ## 4. 端口与环境变量
@@ -233,11 +240,14 @@ GET    /api/health             健康检查
 POST   /api/auth/register      注册
 POST   /api/auth/login         登录
 GET    /api/auth/me            当前用户
-GET    /api/users              用户列表
-GET    /api/users/:id          用户详情
-POST   /api/users              新增用户
-PUT    /api/users/:id          更新用户
-DELETE /api/users/:id          删除用户
+PUT    /api/auth/password      修改密码
+PUT    /api/users/me           修改当前用户资料
+POST   /api/users/me/avatar    上传头像
+GET    /api/users              用户列表（未实现）
+GET    /api/users/:id          用户详情（未实现）
+POST   /api/users              新增用户（未实现）
+PUT    /api/users/:id          更新用户（未实现）
+DELETE /api/users/:id          删除用户（未实现）
 POST   /api/articles           发布文章
 GET    /api/articles           博客广场列表
 GET    /api/articles/:id       文章详情
@@ -245,9 +255,13 @@ PUT    /api/articles/:id       编辑文章（仅作者）
 DELETE /api/articles/:id       删除文章（仅作者，软删除）
 POST   /api/comments           发表评论
 GET    /api/articles/:id/comments   文章评论列表
+POST   /api/articles/:id/like       点赞
+DELETE /api/articles/:id/like       取消点赞
 ```
 
-> 用户类接口（`/api/users`）MVP 阶段未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
+> `/api/users` 系列中**仅 `PUT /api/users/me`（改资料）与 `POST /api/users/me/avatar`（上传头像）已实现**，
+> 清单里标「未实现」的 5 个（列表 / 详情 / 增 / 改他人 / 删）保持未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
+>
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 
 ---
@@ -478,29 +492,6 @@ model User {
 - 分页查询必须限制 `pageSize <= 100`。
 - 错误日志至少打印 `message` 和 `stack`。
 
----
-
-## 12. 代码规范
-
-- 缩进：2 空格。
-- 字符串：单引号。
-- 语句结尾：分号。
-- 文件名：
-  - 前端组件（含页面级）：PascalCase，例如 `UserList.vue`、`Home.vue`、`ArticleDetail.vue`
-  - 前端 JS：camelCase，例如 `request.js`
-  - 后端路由：`user.routes.js`
-  - 后端控制器：`user.controller.js`
-  - 后端服务：`user.service.js`
-- 函数命名：camelCase。
-- 常量命名：UPPER_SNAKE_CASE。
-- 不要输出省略号，例如 `// ...`。
-- 要求输出完整文件内容。
-- 不要重写无关文件。
-- 不要修改接口契约。
-- 如果必须改契约，先说明原因并等待确认。
-- 页面级组件命名以实际代码为准（Home.vue / ArticleDetail.vue / ArticleEditor.vue / Login.vue / UserProfile.vue）。若 docs/CODING_STYLE.md 与本条冲突，以本节为准；CODING_STYLE.md 的统一留到后续单独处理。
-
----
 
 ## 13. AI 行为约束
 
@@ -527,13 +518,17 @@ model User {
     - 禁止用「只认识 DATABASE_URL 和 JWT_SECRET」这种白名单式脱敏：2026-10-02 就是这么把 `SHADOW_DATABASE_URL` 的密码漏进了对话记录。规则应是——**凡名字含 `PASSWORD` / `SECRET` / `TOKEN` / `KEY`，或值是连接串的，一律脱敏**。
     - 排查配置问题的正确做法是让用户自己在本地打开 `.env` 比对，而不是把内容贴出来。
 17. 任务结束前必须停掉自己启动的后台服务（backend node server、vite dev server），释放端口。
+      
     2026-10-02 因遗漏此事，遗留进程占住 3000 与 5175，导致用户侧 `npm run dev` 起不来。
 18. **本机 npm 官方源不可用，`npm install` / `npm ci` / `npm view` 等所有会联网的 npm 命令必须显式加 `--registry=https://registry.npmmirror.com`**。
+      
     本机 `https://registry.npmjs.org` 会被解析到一个百度 HTML 页面，npm 报 `FETCH_ERROR ... invalid json response body at https://m.baidu.com/`。不加这个参数，安装必然失败（2026-10-02 实测）。
 19. **未经用户明确同意，不执行 `git push`**。本地 `commit` 可以，但推送必须等指令。用户明确说「不上传」时，只本地存档，不要推送。
 20. **截图产物放带时间戳的子目录**：`D:/tools/acceptance-shots/<批次名>-<YYYYMMDD-HHMM>/`。
+      
     不带时间戳的目录容易被外部进程清理（2026-10-03 实测：`batch1-before/` 与 `batch1-after/` 被整目录删除，无法恢复）。探针用 UTC 时间戳时，注意本地分钟变化会生成新目录，找产物时用 `ls -d` 通配。
 21. **发现契约 / API / DB 三边冲突时，先停下来列出冲突点，不要自行选一边。**
+      
     第 15 条「以 `docs/API.md` 为准」是冲突已明确后的取舍规则；在冲突尚不清楚、或涉及数据库 schema / 接口契约变更时，必须先向用户报告冲突点与影响范围，等待确认后再动手。
 
 ---

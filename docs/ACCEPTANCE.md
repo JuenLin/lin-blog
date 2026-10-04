@@ -1,7 +1,7 @@
 # 前端验收清单（可执行版）
 
 > 目的：**改完前端直接重跑**，不用每次手写脚本、不用自己点浏览器。
-> 覆盖范围：4 个页面 × 5 个区，共 **50 条断言**，全程真实浏览器交互 + 真实后端接口。
+> 覆盖 4 类交互区、7 个页面中的主路径，共 **50 条断言**，全程真实浏览器交互 + 真实后端接口。
 > 依赖：只用 Node 内置能力，零新增依赖（契约 §13-3）。
 
 ---
@@ -56,12 +56,17 @@ SKIP | A3-1 | 分页翻页 | 总条数 1 ≤ 每页 10，无第 2 页
 scripts/acceptance/
 ├── run.mjs              # 主脚本：前置检查 → 造数据 → 起浏览器 → 跑 50 条 → 清理 → 出报告
 ├── cleanup.mjs          # 单独清理临时数据（脚本被中断时用它兜底）
+├── probe-*.mjs          # 各批次的量化探针（16 个：search / search-ui / password / profile /
+│                        #   profile-edit / like / upload / dark / styles / batch2 / batch3 /
+│                        #   card-visual / prevnext / author-others / entries / category）
+├── shot-*.mjs           # 截图辅助脚本（3 个：hover / before / detail-title，不改源码，仅 CDP 注入）
 └── lib/
     ├── config.mjs       # 路径与配置，全部相对脚本位置推算，和 cwd 无关
     ├── cdp.mjs          # 极简 CDP 客户端（Node 内置 fetch + WebSocket）
     ├── chrome.mjs       # 找 chrome.exe + 拉起 headless + 关闭
     ├── session.mjs      # 用 JWT_SECRET 签会话 token（不用密码）
-    └── fixtures.mjs     # 临时数据夹具 + 精确清理 + 自愈回收
+    ├── fixtures.mjs     # 临时数据夹具 + 精确清理 + 自愈回收
+    └── tmp-account.mjs  # 一次性账号清理（只删 pwprobe 前缀用户名，传错参数直接 throw）
 ```
 
 ---
@@ -185,7 +190,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 ---
 
-## 5. 三个「看着像 bug，其实不是」
+## 5. 四个「看着像 bug，其实不是」
 
 1. **Tab 切换看不到排序差异**：「热门」按点赞数排序，需要**有点赞数据**才能验（夹具会给某篇夹具文章点上赞）。库里完全没有点赞时，「热门」和「最新」的首条可能碰巧相同，看起来像没生效 —— 这时看 Network 里有没有 `sortBy=likeCount` 才算数（A2-1 就是这么判的）。另外「最新」按 `createdAt`、「热门」按 `likeCount`，**两者排序结果的差异要靠点赞数区分**，不是靠更新时间。
 2. **长度校验触发不了**：输入框写了 `maxlength="100"`，手工输入到不了 101 字。脚本是用 JS 绕过 `maxlength` 强行赋值的。
@@ -207,7 +212,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 排错：
 
-- **「前端探不到」**：确认 dev server 是 5173；**它只监听 IPv6 `[::1]:5173`**，用 `127.0.0.1:5173` 探会失败；手工用 curl 探本机要加 `--noproxy '*'`（本机 curl 默认走代理 `127.0.0.1:51332`，否则看到的是代理返回的 502）。
+- **「前端探不到」**：确认 dev server 是 5173；**它只监听 IPv6 `[::1]:5173`**，用 `127.0.0.1:5173` 探会失败；手工用 curl 探本机要加 `--noproxy '*'`（本机 curl 默认走代理，端口号每次会话可能变，否则看到的是代理返回的 502）。
 - **「找不到 chrome.exe」**：设 `CHROME_PATH`，或先跑一次 `agent-browser install` 下载。
 - **「需要 Node ≥ 22」**：CDP 客户端用了 Node 内置的全局 `WebSocket`。
 
@@ -215,7 +220,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 ## 7. 最近一次结果
 
-`node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-03，第三批 F1/F2/F7/D1 + B2 进度条之后，结论不变；第四步 ⑤ 暗色模式叠加后仍是 50/50 全绿）。
+`node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-04，第三批 F1/F2/F7/D1 + B2 进度条之后，结论不变；第四步 ⑤ 暗色模式叠加后仍是 50/50 全绿）。
 
 分类功能（2026-10-04 新增）另加 `node scripts/acceptance/probe-category.mjs` → **13/13 全绿**；含它的完整批共 **301 项断言全绿、exit 全 0**（原 288 + 分类 13）。
 
@@ -246,6 +251,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-category.mjs [报告目录]` | 分类功能 `POST` / `GET` / `PUT` + 卡片 chip：POST 带/不带 category（默认未分类）、`GET ?category=技术` 只返回技术子集、`GET ?category=xx` → 400/40000、`GET ?category=技术&keyword=xx` 两条件 AND、PUT 不传保留原值、PUT 非法 → 400、列表/详情响应含 category、卡片渲染分类 chip 且复用 `.article-chip` 基类（含暗色成对翻转，**启 Chrome，共 13 项**） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
+| `node scripts/acceptance/shot-detail-title.mjs` | 详情页标题随文章变 + 复原 |
 
 探针会**按住列表请求**（`Fetch.enable` + 暂不 `continueRequest`）来定格骨架屏/刷新态，再用 `fulfillRequest` 造假响应 —— 全程不动真实数据。
 
@@ -258,9 +264,9 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 > **用 `Fetch` 造假响应时必须单独处理 OPTIONS 预检。** `src/api/request.js` 给所有请求（含 GET）都设了 `Content-Type: application/json`，这不是 CORS 安全值，所以跨源列表请求**一定**会先发一次 OPTIONS 预检。若把 OPTIONS 也 `fulfillRequest` 成列表体、且不返回 `Access-Control-Allow-Methods` / `Access-Control-Allow-Headers`，浏览器会直接拦掉随后的真实 GET —— 页面表现为「Network Error + 卡片 0 张」，看起来像前端坏了，实际是探针自己的问题。
 > 正确写法：先按 `request.method === 'OPTIONS'` 分支回 `204` + 三个 CORS 头并 `return`，其余请求再走原来的 fulfill/continue 逻辑。`probe-card-visual` / `probe-author-others` / `probe-prevnext` / `probe-profile` 都踩过这个坑（2026-10-03 修）。
 
-## 8. 探针审计（低优先级问题）
+## 8. 探针审计记录
 
-> 2026-10-04 第 3 批复审计 + 修复。原始编号清单（#21-40）未落盘、会话检索不可得，故本轮按相同类别（label/文案对齐、清理死等待、B2-3 opacity 时序脆弱）对全部 15 个探针的断言重新通读。结论：**只发现 2 类真问题，label/文案对齐全部无误报。** 两处已于当日修复并跑完整批对比基线验证（见 8.3）。
+> 2026-10-04 第 3 批复审计 + 修复。原始编号清单（#21-40）未落盘、会话检索不可得，故本轮按相同类别（label/文案对齐、清理死等待、B2-3 opacity 时序脆弱）对当时全部 15 个探针的断言重新通读（`probe-category.mjs` 于本批之后新增，见 8.4）。结论：**只发现 2 类真问题，label/文案对齐全部无误报。** 两处已于当日修复并跑完整批对比基线验证（见 8.3）。
 
 ### 8.1 确实是问题的（2 处）
 
@@ -309,7 +315,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 执行：`node scripts/acceptance/probe-category.mjs` → **13/13 全绿、exit 0**。靶子文章创建后由 `cleanupFixtures` 精确回收，跑前跑后库一致（users 3 / 文章 11 / 可见 11 / 评论 1 / likes 1），Chrome 临时 profile 残留 0。报告与日志：`D:/tools/acceptance-shots/category-<时间戳>/report.md`。
 
-### 8.3 状态
+### 8.5 状态
 
-- 第 3 批**尚未动手改**（本轮只出清单 + 落盘结论）。
+- 第 3 批**已修复并提交** `c6b5b33`（2026-10-04，当日跑完整批 288 项全绿验证，见 8.3）。
 - 第 1 批（高）、第 2 批（中，13 条）已修并分别提交 `94c68d8` / `aa4c80d`。

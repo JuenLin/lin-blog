@@ -260,12 +260,22 @@ watch(category, () => {
 .home-head-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 18px;
   flex: 0 0 auto;
 }
 
 .home-category-select {
   width: 132px;
+  height: 40px;
+  /* 相对 Tab 整体下移 2px，视觉上不与 Tab 顶部齐平 */
+  margin-top: 2px;
+}
+
+/* 让下拉内壳与 Tab 标题栏同高（实测 el-tabs__nav 为 40px）。
+ * scoped 样式需 :deep() 穿透命中 el-select 内部元素；先 unset 默认 min-height(32px) 才能覆写 height。 */
+.home-category-select :deep(.el-select__wrapper) {
+  min-height: unset;
+  height: 40px;
 }
 
 .home-tabs {

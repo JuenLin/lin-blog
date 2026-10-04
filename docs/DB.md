@@ -29,7 +29,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | 表名 | 说明 | 状态 |
 |---|---|---|
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`） |
-| `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
+| `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
@@ -74,7 +74,7 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 ### `category` 分类列（分类功能，经用户批准新增）
 
 > **本节是一次「禁止修改数据库 schema」例外的书面登记。**
-> 契约第 5 节「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
 > 批准范围：**仅限 `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列**，
 > 不含任何其他表结构变更、不含改列名/类型、不含删列、不含新增 `categories` 表 / 外键。
 > 批准依据与决策过程见 `docs/API.md` 文章相关接口章节与 `docs/AI_CONTRACT.md` 第 2 节「已批准例外（2026-10-04，分类功能）」。
@@ -127,11 +127,11 @@ CREATE TABLE `articles` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `title` VARCHAR(100) NOT NULL,
     `content` MEDIUMTEXT NOT NULL,
-    `category` VARCHAR(20) NOT NULL DEFAULT '未分类',
     `author_id` INTEGER NOT NULL,
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
     `deleted_at` DATETIME(3) NULL,
+    `category` VARCHAR(20) NOT NULL DEFAULT '未分类',
 
     INDEX `articles_deleted_at_created_at_idx`(`deleted_at`, `created_at`),
     INDEX `articles_deleted_at_updated_at_idx`(`deleted_at`, `updated_at`),
@@ -212,12 +212,12 @@ Prisma 模型名 `User`，`@@map("users")`。
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
 
-`User` 模型上的 `articles Article[]` / `comments Comment[]` 是**反向关系字段，Prisma 虚拟字段，不产生任何列**，因此加它们不会ALTER `users` 表（已实测确认）。
+`User` 模型上的 `articles Article[]` / `comments Comment[]` 是**反向关系字段，Prisma 虚拟字段，不产生任何列**，因此加它们不会 ALTER `users` 表（已实测确认）。
 
 ### 第九批新增字段（avatar / bio）—— schema 变更已获批准，**迁移已执行**
 
 > **本节是一次「禁止修改数据库 schema」例外的书面登记。**
-> 契约第 5 节「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
 > 批准范围：**仅限本次新增 `users.avatar` 与 `users.bio` 两列**，
 > 不含任何其他表结构变更、不含改列名/类型、不含删列。
 > 批准依据与决策过程见 `docs/API.md` 的 `PUT /api/users/me` 章节。
@@ -231,9 +231,12 @@ Prisma 模型名 `User`，`@@map("users")`。
 | 长度不足 | `nickname` 是 `VARCHAR(50)`，而头像 URL 典型长度 100~200 字符，50 字符放不下 |
 | 探针冲突 | `probe-search.mjs` 有一条「昵称不应被 keyword 搜到」的泄漏断言，往`nickname` 塞 URL 会让昵称变得像搜索关键词，污染该断言的语义 |
 
-**为什么选`VARCHAR` 而不是 `TEXT`**：MySQL `VARCHAR` 长度受行大小限制但索引友好、`avatar` 未来可能加唯一性或排序需求；255 与 200 都在utf8mb4 下远低于行大小上限。排除 `TEXT` 的理由是 `TEXT` 上限按**字节**计（65535 字节），头像 URL 场景用不上却要付出 off-page 存储代价。
+**为什么选 `VARCHAR` 而不是 `TEXT`**：MySQL `VARCHAR` 长度受行大小限制但索引友好、`avatar` 未来可能加唯一性或排序需求；255 与 200 都在 utf8mb4 下远低于行大小上限。排除 `TEXT` 的理由是 `TEXT` 上限按**字节**计（65535 字节），头像 URL 场景用不上却要付出 off-page 存储代价。
 
-**头像为什么只存URL 而不上传文件**：本项目**不引入任何新依赖**（契约第 5 节「禁止擅自引入新依赖」），文件上传需要 `multer` 之类的中间件，且要配套对象存储。零依赖方案下用户自己把图片传到图床，把链接填进来。代价是**服务端不保证图片真实存在**，因此 API 层只做「必须以 `http://` 或 `https://` 开头」的格式校验（挡掉 `javascript:` / `data:` 这类会构成 XSS 的伪协议），**不发起任何网络请求校验可达性**——否则每次改资料都要等外部 HTTP 响应，接口会变得不可控。
+> ⚠️ **以下为第九批的历史设计，已被第十一批推翻，不可据此实现。**
+> 现状：头像支持**站内上传**（`POST /api/users/me/avatar`，multer ^2.4.0），且**外链已下线** —— `avatar` 只接受 `/uploads/` 站内路径。详见下方「第十一批：头像文件存储」与 `docs/API.md`。
+
+**【历史 · 第九批】头像为什么只存URL 而不上传文件**：本项目**不引入任何新依赖**（契约 §2「禁止擅自引入新依赖」），文件上传需要 `multer` 之类的中间件，且要配套对象存储。零依赖方案下用户自己把图片传到图床，把链接填进来。代价是**服务端不保证图片真实存在**，因此 API 层只做「必须以 `http://` 或 `https://` 开头」的格式校验（挡掉 `javascript:` / `data:` 这类会构成 XSS 的伪协议），**不发起任何网络请求校验可达性**——否则每次改资料都要等外部 HTTP 响应，接口会变得不可控。
 
 **`avatar` / `bio` 均 nullable 的影响**：现有用户（`demo` / `admin`）迁移后这两个字段为 `NULL`，**无需回填数据**。前端渲染头像时 `NULL` 必须回退到基于昵称生成的头像首字（现有 `getAvatarText` 逻辑），不能直接渲染 `<img src="null">`。
 
@@ -317,6 +320,8 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ```
 
+> ⚠️ 这里的 `AUTO_INCREMENT=11` 是 **2026-10-03 核对时的快照值，不代表当前行数**（自增值只增不回，迁移过程与历史注册都会推高它）。看真实行数请用 `SELECT COUNT(*) FROM users`，不要拿这个数字当基线。
+
 ### 第九批的迁移 SQL（实际生成）
 
 ```sql
@@ -348,20 +353,20 @@ Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移已执行
 ### schema 变更已获批准（豁免登记）
 
 > **本节是一次「禁止修改数据库 schema」例外的书面登记。**
-> 契约第 5 节「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
 > 批准范围：**仅限新建`likes` 一张表**（含其两条外键与两个索引），
 > **不含修改 `users` / `articles` / `comments` 任何一列**。
 > 批准依据与决策过程见 `docs/API.md` 的 `POST /api/articles/:id/like` 章节。
 >
 > 注意：第九批的豁免明确写了「仅限那两列，除此之外的任何 schema 变更仍需重新批准」，
 > 因此**本次是独立的一次批准，不是援引第九批的例外**。
-> 契约 `AI_CONTRACT.md` 第 69 行的例外说明**本批不修改**（按用户要求，豁免只登记在本书）。
+> 契约 `AI_CONTRACT.md` 第 2 节「禁止事项」里的 schema 禁令**本批不修改**（按用户要求，豁免只登记在本书）。
 
 ### 为什么必须有独立表（不能复用现有表加列）
 
 | 理由 | 说明 |
 |---|---|
-| 多对多 | 一篇文章被N 个用户点赞，一个用户点赞 M 篇文章，是标准的多对多关系，`users` / `articles` 两张表都放不下 |
+| 多对多 | 一篇文章被 N 个用户点赞，一个用户点赞 M 篇文章，是标准的多对多关系，`users` / `articles` 两张表都放不下 |
 | 不能在 `articles` 加冗余列存 id 列表 | 用 `VARCHAR` 存逗号分隔的 user_id 列表，无法索引、无法保证原子性、并发下必然错乱 |
 | 不能靠 `comments.content` 标记 | 语义完全不同（点赞不是评论），且会让「评论数」统计掺入点赞 |
 
@@ -369,7 +374,7 @@ Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移已执行
 
 `@@unique([userId, articleId])`（`likes_user_id_article_id_key`）。
 
-应用层「先查 `findUnique` 再 `create`」**存在竞态窗口**：两个并发请求都在对方写入前查到「未赞过」，然后都执行 INSERT，产生两条重复记录。只有 DB 唯一约束能真正防住—— service 层捕获 Prisma 的 `P2002` 转成`409 /40900`（「已点赞过这篇文章」）。
+应用层「先查 `findUnique` 再 `create`」**存在竞态窗口**：两个并发请求都在对方写入前查到「未赞过」，然后都执行 INSERT，产生两条重复记录。只有 DB 唯一约束能真正防住 —— service 层捕获 Prisma 的 `P2002` 转成 `409 / 40900`（「已点赞过这篇文章」）。
 
 **这意味着实现层不允许「先查后写」当作正确性保障**，它只能用来给出更友好的提示；真正的拦截靠唯一约束。
 
@@ -401,7 +406,7 @@ Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移已执行
 | 用户软删 | 该用户的 `likes` 行保留。**注意：仍会计入 `likeCount`** —— 计数只按 `article_id` 过滤，不过滤点赞者。当前 MVP 无用户删除功能故不触发，已登记在「已知限制」第 3 条 |
 | 将来物理清理（硬删除） | 顺序必须是 `likes → comments → articles → users`，`likes` 是最上游 |
 
-**这与评论的现有处理完全一致**（`deleteArticle` 的注释原文：「只 UPDATE deleted_at，物理行保留，因此不触发外键」）。点赞行残留**不是bug**，与评论行残留是同一个设计取舍。
+**这与评论的现有处理完全一致**（`deleteArticle` 的注释原文：「只 UPDATE deleted_at，物理行保留，因此不触发外键」）。点赞行残留**不是 bug**，与评论行残留是同一个设计取舍。
 
 ### 建表 SQL
 
@@ -468,14 +473,23 @@ ALTER TABLE `likes` ADD CONSTRAINT `likes_article_id_fkey` FOREIGN KEY (`article
 > 这证明了「DB 唯一约束是唯一真相」这条设计**在数据库层面确实成立**。
 > 后续后端代码要做的只是把这份 `1062`（Prisma 侧即 `P2002`）翻译成 `409 / 40900`。
 
-### Prisma Client 生成状态（待知会用户）
+### Prisma Client 生成历史（已解决）
 
-> ⚠️ **本次 `migrate dev` 建表成功，但末尾的 `prisma generate` 失败（EPERM）**。
-> 详见迁移记录小节末尾的说明，**不影响本步结论**（表结构已确认正确）。DLL
-
-```text
-EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'
-```
+> ⚠️ **以下为当时的过程记录，根因已查明、问题已解决，此节仅作归档。**
+>
+> 当时的 `migrate dev` 建表成功，但末尾的 `prisma generate` 失败（EPERM）。
+> **根因**：跑着 `npm run dev` 的后端进程（`node --watch`）占用了引擎 DLL，
+> Windows 不允许替换正在被加载的文件。**停掉后端再跑即成功**（实测 v6.19.3）。
+> 当时的说法「可能是杀软实时扫描」是误判，已在 `README.md`「已知问题」里更正。
+>
+> 以下为当时的报错原文，仅为归档：
+>
+> ```text
+> EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'
+> ```
+>
+> 当时的收尾动作（已完成）：让 3000 端口的后端进程释放后重跑 `npx prisma generate`，
+> 残留的 `query_engine-windows.dll.node.tmp*` 已清理，`npx prisma migrate status` 显示 6 个迁移全部 applied。
 
 ### 按点赞数排序（「热门」Tab，本次引入）
 
@@ -587,7 +601,7 @@ const summary = [...content].slice(0, 100).join('');
 
 ## 已知限制
 
-以下四条是本阶段刻意不处理的，登记在此，将来不用重新论证。
+以下五条是本阶段刻意不处理的，登记在此，将来不用重新论证。
 
 1. **更新 / 删除的并发缺口**：`updateArticle` / `deleteArticle` 的写入语句是 `prisma.article.update({ where: { id } })`，where 只按主键。「校验文章存在且是作者」与「写入」分两步，不是原子操作，极端时序下会出现 last-write-wins（覆盖掉另一条并发请求刚写入的内容，或对已被软删的文章再次软删）。
    - MVP 阶段不处理。触发条件：出现真实的竞态 bug，或将来出现多人协作编辑同一篇文章的需求。
@@ -643,28 +657,28 @@ const summary = [...content].slice(0, 100).join('');
 | `20261003140221_add_user_likes` | 新建 `likes` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键 + `likes_user_id_article_id_key` 唯一约束 + `likes_article_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，理由见「likes」小节） | **已应用** |
 | `20261004145107_add_article_category` | `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列（枚举 技术/生活/随笔/未分类）；INSTANT 算法自动回填既有 11 行，零 NULL、零回填脚本；**不含新增表 / 外键 / 索引**（MVP 阶段不按 category 建索引，理由见对应小节） | **已应用** |
 
+> 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
+> 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
+> `PRIMARY KEY (id)` 与 `UNIQUE KEY users_username_key (username)` 未受影响，
+> `demo` / `admin` 两行新列均为 `NULL`。实际 DDL 与迁移 SQL 已回填到「users」小节。
+> `AUTO_INCREMENT=11` 说明迁移过程未插入任何新行（纯 `ADD COLUMN`，无回填）。
+
 > 第十批（点赞）迁移**已于 2026-10-03 执行完成**，迁移名 `20261003140221_add_user_likes`。
 > 已用 `SHOW CREATE TABLE likes`、`information_schema.COLUMNS` 与 `SHOW INDEX FROM likes` 核对：
 > 4 列齐全（**确认无 `deleted_at` / `updated_at`**）、两条外键均为 `ON DELETE RESTRICT ON UPDATE CASCADE`、
 > **`user_id` 未被 MySQL 额外补单列索引**（唯一索引左前缀已承担）。实际 DDL 与迁移 SQL 已回填到「likes」小节。
 > `_prisma_migrations` 共 **6 条**全部 `finished=Y / rolled_back=N`。
 > 唯一约束与外键已用**真实插入**实测通过：重复插入报 `1062`、不存在的文章报 `1452`，测试数据已回收（`likes` 行数 0）。
-> 基线未受影响：可见文章=11、评论=1、users=2。
-
-> ⚠️ **本次 `migrate dev` 的建表成功，但末尾的 `prisma generate` 失败**：
+> 基线未受影响：可见文章=11、评论=1、users=3。
+>
+> ⚠️ **第十批这次 `migrate dev` 建表成功，但末尾的 `prisma generate` 失败**：
 > `EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'`。
 > 根因是**当时有 node 进程占着这个 DLL**（本机 3000 端口的后端 dev server，PID 15136），Windows 不允许替换正在被加载的文件。
 > **影响**：`node_modules/.prisma/client/` 下的引擎 DLL 仍是旧文件；但 Prisma 6 的引擎 DLL **不内嵌 schema**
 > （schema 在生成的 JS 里），本次实测 `prisma.article` 的 typed `findMany({ select: { category: true } })` 与 `$queryRawUnsafe` 读 `category` 均正常返回，故功能不受影响。
-> **收尾动作**：后续让 3000 端口的后端进程释放后，重跑一次 `npx prisma generate` 即可补齐（`npm run prisma:generate`）。
+> **收尾动作（已完成）**：已让 3000 端口的后端进程释放并重跑 `npx prisma generate`，残留的 `.tmp*` 已清理。
 
 > 第十一批（头像上传）**不涉及表结构变更，没有迁移**：`avatar` 列不动、`VARCHAR(255)` 长度对站内路径够用（论证见「users」小节的「第十一批：头像文件存储」）。文件落在 `backend/uploads/`，不进数据库，故本表不新增行。
->
-> 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
-> 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
-> `PRIMARY KEY (id)` 与 `UNIQUE KEY users_username_key (username)` 未受影响，
-> `demo` / `admin` 两行新列均为 `NULL`。实际 DDL 与迁移 SQL 已回填到「users」小节。
-> `AUTO_INCREMENT=11` 说明迁移过程未插入任何新行（纯 `ADD COLUMN`，无回填）。
 
 迁移文件位于 `backend/prisma/migrations/`：
 
@@ -688,6 +702,8 @@ prisma/migrations/
 ### 分类功能的迁移 SQL（实际生成，已执行 `20261004145107_add_article_category`）
 
 > 下方为**实际生成并已应用**的 `migration.sql` 内容。`SHOW CREATE TABLE articles` 已核对：含 `category varchar(20) NOT NULL DEFAULT '未分类'`，与「建表 SQL」小节一致。
+>
+> 注：`category` 在真实表中的**物理列序在最后**（`deleted_at` 之后）——因为它是后续用 `ALTER TABLE ADD COLUMN` 追加的，`information_schema` 实际列序为 `id, title, content, author_id, created_at, updated_at, deleted_at, category`。上方「建表 SQL」小节已按实际列序书写。
 
 ```sql
 -- AlterTable

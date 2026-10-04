@@ -1,13 +1,13 @@
 # workbuddy
 
-Vue 3 + Express + Prisma + MySQL 的全栈项目骨架。当前已完成通用骨架（前端 `/login` 登录注册页与鉴权后的首页，后端 `/api/health` 健康检查与 `/api/auth/*` 认证接口）与博客 MVP 的后端部分：`users` / `articles` / `comments` 三张表已由迁移创建，文章与评论共 7 个业务接口已实现并冒烟通过。博客 MVP 的前端页面尚未开始。
+Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` 四张表由 6 个迁移创建，16 个接口已实现并通过自动化验收；前端 7 个页面（登录、首页广场、文章详情、发布/编辑、评论、修改密码、编辑资料）已可运行。已完成到哪一步见下方「当前状态」。
 
 协作约束见 [`docs/AI_CONTRACT.md`](./docs/AI_CONTRACT.md)，接口以 [`docs/API.md`](./docs/API.md) 为准，表结构以 [`docs/DB.md`](./docs/DB.md) 为准。
 
 ## 环境要求
 
-- Node.js 24.20.0
-- npm 11+
+- Node.js ≥ 22（本项目在 v22.22.2 上开发与验收；验收脚本依赖 Node 内置 WebSocket，低于 22 会失败）
+- npm 10+
 - MySQL 8.0.46（端口 3306，数据库 `workbuddy_dev`，字符集 utf8mb4 / utf8mb4_unicode_ci）
 
 ## 目录结构
@@ -15,9 +15,13 @@ Vue 3 + Express + Prisma + MySQL 的全栈项目骨架。当前已完成通用�
 ```text
 frontend/   Vue 3 + Vite，开发端口 5173
 backend/    Node.js + Express + Prisma，开发端口 3000
-docs/       共享契约：AI_CONTRACT.md / API.md / DB.md
-database/   初始化 SQL 与迁移说明
+  ├─ prisma/migrations/   6 个迁移文件，schema 与库的唯一真相
+  └─ uploads/             头像落盘目录，运行时数据，不进 git
+docs/       共享契约：AI_CONTRACT.md / API.md / DB.md / CODING_STYLE.md / ACCEPTANCE.md
+scripts/acceptance/       自动化验收脚本（零新增依赖）
 ```
+
+数据库迁移不在 `database/` 里维护：`backend/prisma/migrations/` 是唯一真相，新建库只需 `npm run prisma:migrate`，无需手工执行任何 SQL 初始化脚本。
 
 ## 启动步骤
 
@@ -118,7 +122,7 @@ export PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma   # 
 
 ## 已知问题
 
-### `npx prisma generate` 偶发 EPERM（不影响当前开发）
+### `npx prisma generate` 报 EPERM（根因：后端进程占用引擎 DLL）
 
 现象：迁移或生成 Client 时报错
 
@@ -127,27 +131,51 @@ EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_en
        -> '...\query_engine-windows.dll.node'
 ```
 
-排查结论（已实测，非持久句柄占用）：
+**根因：跑着 `npm run dev` 的后端进程（`node --watch`）占用了引擎 DLL。**
+停掉后端再跑 `npx prisma generate` 即成功（实测 v6.19.3，61ms）。
 
-- 源 tmp 文件可以 `mv`，目标 dll 也可以被覆盖 —— **两边都没有进程持有锁**。
-- 无 node 进程在跑。
-- 因此是「写完 21MB 引擎文件后立刻 rename」这一瞬间的占用，高度疑似杀软 / Windows Search 的实时扫描。
+判定依据：
 
-影响与处理：
+- 停后端 → generate 成功；起后端 → 复现。**开关后端是唯一变量**。
+- `@prisma/client` 启动时把 `query_engine-windows.dll.node` 载入为进程映像
+  （见 `node_modules/.prisma/client/index.js` 里 `path.join(__dirname, "query_engine-windows.dll.node")`），
+  Windows 上进程映像在进程存活期间不能被替换，Prisma 的 rename 因此报 `EPERM`。
 
-- JS 与类型产物其实**已经更新成功**，引擎 dll 在同版本下不会被替换也不影响运行；失败后目录会残留 `query_engine-windows.dll.node.tmp*` 文件。
-- **重跑一次 `npx prisma generate` 即可**（实测第二次成功），残留的 `.tmp*` 手工删除。
-- 若频繁复现：把 `backend/node_modules` 加进杀软排除目录。
-- **升级 Prisma 版本前必须解决**：那时引擎 dll 必须真正被替换，写不进去会导致 Client 与引擎版本不匹配。
+> 早期这里归因为「杀软 / Windows Search 实时扫描」，**该结论不成立**。
+> 当时只观察到「源 tmp 可 `mv`、目标 dll 可被覆盖」，就推断是扫描类占用 ——
+> 这是不充分的证据：Git Bash 的 `mv` 与 Node 的 `rename(..., REPLACE_EXISTING)`
+> 不是同一条 Windows API，**前者成功不能证明文件没被占用**。
+
+处理：
+
+- **遇到就停掉后端（`Ctrl+C`），跑完 generate 再起**。这是确定有效的做法。
+- 失败留下的 `query_engine-windows.dll.node.tmp*` 不会被下次 generate 自动清理，
+  可在确认无进程占用后直接删（同目录下真正的 `query_engine-windows.dll.node` 不要动）。
+- 失败时 JS 与类型产物其实**已经更新成功**，同版本下引擎 dll 不被替换也不影响运行，
+  所以「先停后端再 generate」不会打断工作流。
+- **升级 Prisma 版本前必须先停后端**：那时引擎 dll 必须真正被替换，
+  写不进去会导致 Client 与引擎版本不匹配。
 
 ## 当前状态
 
 - [x] 前端能启动：`npm run dev`
 - [x] 后端能启动：`npm run dev`
 - [x] MySQL 能连接（`workbuddy_dev`，8.0.46，utf8mb4_unicode_ci）
-- [x] Prisma 迁移已应用：`20260929123151_init`（users）、`20260929144738_blog_articles_comments`（articles / comments）、`20260929145244_comments_idx_article_created`（评论索引调整）
+- [x] Prisma 迁移已应用，共 6 个：`20260929123151_init`（users）、`20260929144738_blog_articles_comments`（articles / comments）、`20260929145244_comments_idx_article_created`（评论索引调整）、`20261003080727_add_user_avatar_bio`（users.avatar / bio）、`20261003140221_add_user_likes`（likes 表）、`20261004145107_add_article_category`（articles.category）
 - [x] 注册 / 登录 / `/api/auth/me` 跑通，拿到 token 且鉴权生效
-- [x] `docs/API.md`：auth + health 通用接口 + 文章 / 评论业务接口
-- [x] `docs/DB.md`：users / articles / comments 三表说明、外键命名规则、新增业务表流程
-- [x] 后端业务接口：文章 5 个 + 评论 2 个，含 400 / 401 / 403 / 404 异常路径冒烟
-- [ ] 博客 MVP 前端页面（广场列表、文章详情、发布 / 编辑、评论）
+- [x] `docs/API.md`：auth + health 通用接口 + 文章 / 评论 / 点赞 / 用户业务接口，含未实现接口的显式登记
+- [x] `docs/DB.md`：users / articles / comments / likes 四表说明、外键命名规则、新增业务表流程、头像文件存储（第十一批）、category 分类列
+- [x] 后端接口共 16 个：文章 5（列表 / 详情 / 发布 / 编辑 / 删除）+ 评论 2（发表 / 列表）+ 点赞 2（点赞 / 取消）+ 用户 2（改资料 / 传头像）+ health 1 + auth 4（注册 / 登录 / me / 改密码）
+- [x] 前端 7 个页面：`Login` / `Home`（广场列表 + 最新/热门 Tab + 分类筛选）/ `ArticleDetail` / `ArticleEditor`（发布与编辑共用）/ `UserProfile` / `ProfileEdit` / `ChangePassword`
+- [x] 文章分类：列表按 `category` 筛选（枚举 `技术` / `生活` / `随笔` / `未分类`），发布与编辑可设分类
+- [x] 自动化验收：`node scripts/acceptance/run.mjs` 全绿（16 个探针脚本 + 3 个截图脚本，执行细则见 `docs/ACCEPTANCE.md`）
+
+## 明确不做
+
+以下项已评估并决定不实现，不要在后续批次里补：
+
+- 评论删除
+- 用户管理接口（`/api/users` 系列，仅 `me` 与 `me/avatar` 已实现）
+- `/settings` 页与用户管理后台
+- 关注功能
+- 列表 / 详情返回 `liked`（当前用户是否已赞）——需给 `auth` 加可选认证模式，影响所有接口，待单独排批
