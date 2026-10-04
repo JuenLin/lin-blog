@@ -65,7 +65,7 @@ export function getAvatarColor(name) {
   return AVATAR_COLORS[sum % AVATAR_COLORS.length];
 }
 
-/* ---------- 头像渲染分支（第九批，第十一批扩展） ---------- */
+/* ---------- 头像渲染分支（第九批引入，外链下线后定型） ---------- */
 
 // 静态资源的 origin。
 //
@@ -78,12 +78,23 @@ export function getAvatarColor(name) {
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
 const ASSET_ORIGIN = API_BASE.replace(/\/api\/?$/, '');
 
+// 站内头像路径前缀，与后端 utils/upload.js 的 AVATAR_URL_PREFIX 同值。
+// 后端存进 users.avatar 的就是可直接拼进 <img src> 的相对 URL。
+const AVATAR_URL_PREFIX = '/uploads/';
+
 /**
  * 把 `avatar` 字段的值变成可直接塞进 `<img src>` 的 URL。
  *
- * 第十一批起 `users.avatar` 有**两种取值形态**：
- *   - 外链：`https://cdn.example.com/a/1.png` → 原样返回
- *   - 站内相对路径：`/uploads/avatars/1/xxx.png` → 前面补上后端 origin
+ * 外链下线后，`users.avatar` 只有**一种合法形态**：站内相对路径
+ * `/uploads/avatars/{userId}/xxx.png`，要补上后端 origin。
+ *
+ * ## 非 `/uploads/` 的值为什么「原样返回」而不是「硬拼 origin」
+ * 库里理论上不会再有别的值，但历史脏值（第九批可能留下的外链）与手工改库都可能
+ * 造出例外。两种处理方式的失败模式差别很大：
+ *   - **原样返回**：最坏是破图，而破图有 `<img @error>` 回退文字头像兜底 → 优雅降级
+ *   - **硬拼 origin**：会得到 `http://localhost:3000https://cdn.example.com/a.png`
+ *     这种谁都不认识的 URL，比破图**更难排查**（看 URL 完全想不出是哪一层拼错的）
+ * 选前者。
  *
  * 只在这个函数里补一次 origin，其它地方一律不重复拼——
  * 「在哪补」这个问题如果有第二个答案，迟早会出现补两次的 `http://.../uploads/uploads/...`。
@@ -96,33 +107,30 @@ export function resolveAvatarUrl(src) {
     return '';
   }
 
-  // 外链原样返回：http(s)://
-  if (/^https?:\/\//i.test(src)) {
+  // 非站内路径（历史脏值）：原样返回，交给 <img @error> 兜底
+  if (!src.startsWith(AVATAR_URL_PREFIX)) {
     return src;
   }
 
-  // 站内路径：补 origin。src 理论上以 /uploads/ 开头（服务端保证），
-  // 这里只保证「少一个斜杠不会拼出 3000uploads 这种怪东西」。
-  return `${ASSET_ORIGIN}${src.startsWith('/') ? '' : '/'}${src}`;
+  return `${ASSET_ORIGIN}${src}`;
 }
 
 /**
  * 解析一个用户对象应该怎么渲染头像。
  *
  * ## 为什么要这个 helper
- * 第九批给users 加了 `avatar` 字段（外链 URL）之后，头像有两种形态：
- * 有 URL 渲染 `<img>`，没有则回退到「色块 + 首字」。**两种形态必须二选一**，
- * 不能只写一个分支——否则 `avatar` 为 `null`（用户没设头像）时会渲染出破图。
+ * `avatar` 有两种**状态**（注意不是「形态」）：有值渲染 `<img>`，没值回退到
+ * 「色块 + 首字」。**两种状态必须二选一**，不能只写一个分支——否则 `avatar` 为
+ * `null`（用户没设头像）时会渲染出破图。
  *
  * 更麻烦的是 `avatar` **可能连键都没有**：验收探针造出来的 author 对象
  * （见 scripts/acceptance 下的 probe-batch2 / batch3 / probe-author-others）
  * 只有 `{ id, username, nickname }`，根本没有 avatar 这个键。所以判断条件
  * 必须是 **truthy 检查**（`if (avatar)`），`null` 和 `undefined` 会被一并处理。
  *
- * ## 第十一批：外链与站内路径并存
- * `avatar` 现在可能是 `/uploads/avatars/{userId}/xxx.png` 这种**相对路径**，
- * 直接塞进 `<img src>` 会被浏览器解析成前端自己的域（localhost:5173）而 404。
- * 所以 image 分支统一过一遍 `resolveAvatarUrl()` 补 origin。
+ * ## 为什么 image 分支要过一遍 resolveAvatarUrl
+ * `avatar` 是 `/uploads/avatars/{userId}/xxx.png` 这种**相对路径**，直接塞进
+ * `<img src>` 会被浏览器解析成前端自己的域（localhost:5173）而 404。
  *
  * ## 为什么不能直接写 `<img :src="user.avatar">`
  * 那样 null / undefined 会渲染成破图；`<el-avatar :src="user.avatar">` 同理
@@ -130,9 +138,9 @@ export function resolveAvatarUrl(src) {
  * **必须用 v-if 先分出分支。**
  *
  * ## 注意
- * `src` 返回的 URL **不做可达性保证**——服务端只校验「以 http/https 开头」，
- * 不发请求验证图片是否真的存在。所以调用方应给 `<img>` 绑 `@error` 回退到
- * 文字头像（本项目各处均已实现，见 ProfileEdit.vue 的 previewImage）。
+ * `src` 返回的 URL **不做存在性保证**——服务端只校验「是不是 `/uploads/` 前缀」，
+ * 不读磁盘、不验证文件真的在。所以调用方应给 `<img>` 绑 `@error` 回退到
+ * 文字头像（本项目各处均已实现，见 ProfileEdit.vue 的 previewBroken）。
  *
  * @param {object} user 含 avatar 字段的用户/作者对象（也可为 null）
  * @param {string} name 用于生成文字头像与颜色的显示名（昵称或用户名）

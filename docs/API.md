@@ -267,7 +267,8 @@ Authorization: Bearer <token>
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
 - **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。
-- **`avatar` 有两种形态**（第十一批起）：① **外链 URL**（`http://` / `https://` 开头，第九批起的既有形态）；② **站内相对路径**（`/uploads/avatars/{userId}/{filename}`，`POST /api/users/me/avatar` 上传产生）。两者都可能出现在 `author` 内嵌对象里。**前端渲染时必须对形态 ② 补上后端 origin**，规则见文末「前端调用约定」。
+- **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
+  - 演变史（三批）：第九批引入 `avatar` 时是「用户自填的外链 URL」；第十一批加上传能力，**两种并存**；**本次把外链下线**，只留站内上传。`avatar` 的**列定义**（`VARCHAR(255) NULL`）与 `null`（未设头像）语义**三批都没变过**。
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
 
 ### 接口清单
@@ -275,7 +276,7 @@ Authorization: Bearer <token>
 | 方法     | 路径                         | 说明                         | 登录 |
 | ------ | -------------------------- | -------------------------- | -- |
 | PUT    | /api/auth/password         | 修改当前用户密码（详见通用接口一节）         | 是  |
-| PUT    | /api/users/me              | 修改当前用户资料（头像 / 简介，详见业务接口一节） | 是  |
+| PUT    | /api/users/me              | 修改当前用户资料（简介；`avatar` 只能传 `null` 清空，**设置头像走上传接口**） | 是  |
 | POST   | /api/users/me/avatar       | 上传头像（multipart，详见业务接口一节）      | 是  |
 | POST   | /api/articles              | 发布文章                       | 是  |
 | GET    | /api/articles              | 博客广场列表                     | 否  |
@@ -693,14 +694,14 @@ Authorization: Bearer <token>
 
 | 字段 | 类型 | 必填 | 校验 |
 |---|---|---|---|
-| avatar | string \| null | 否 | 1–255 字符；**必须以 `http://` / `https://` 开头（外链），或以 `/uploads/` 开头（第十一批上传的站内路径）**。不校验可达性 |
+| avatar | string \| null | 否 | 1–255 字符；**必须以 `/uploads/` 开头**（`POST /api/users/me/avatar` 上传产生的站内路径）。**外链已被拒**（外链下线）。不校验文件是否真的存在 |
 | bio | string \| null | 否 | 空串视为「清空」并转成 `null` 存储；非空时 1–200 字符 |
 
 两个字段**都是可选的**，但**至少要传一个**（见下方「三态语义」与校验规则）。
 
 ```json
 {
-  "avatar": "https://cdn.example.com/a/1.png",
+  "avatar": "/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png",
   "bio": "写点自我介绍"
 }
 ```
@@ -729,7 +730,7 @@ Authorization: Bearer <token>
 |---|---|---|
 | 字段**不出现**（`{ "bio": "x" }`） | **不改**这个字段 | 保持库中原值不变 |
 | `"avatar": null` / `"bio": null` | **清空** | 该列写成 `NULL` |
-| `"avatar": "https://..."` / `"bio": "x"` | **设置** | 写入该字符串 |
+| `"avatar": "/uploads/..."` / `"bio": "x"` | **设置** | 写入该字符串（`avatar` 只接受 `/uploads/` 前缀，见校验规则） |
 | `"bio": ""`（空串） | 等价于清空 | 转成 `NULL` 存储（不接受「空字符串」这种状态） |
 
 **为什么必须区分「不传」与「传 null」**：这是PATCH 语义的核心。如果只有一种写法，用户就没法「只改简介而保留头像」——而这恰恰是最常见的操作。前端表单提交时**只放用户实际改动过的字段**，否则会把未改动的项清掉。
@@ -745,10 +746,12 @@ Authorization: Bearer <token>
 | 禁传 `id` / `userId` / `username` / `password` | 40000 | 身份只能来自 token。携带即报错，**不做静默忽略**（沿用 `PUT /api/auth/password` 的口径） |
 | 至少有一个键出现 | 40000 | **即使值是 `null` 也算有效操作**。见下方说明 |
 | `avatar` 长度 1–255 | 40000 | 与 `VARCHAR(255)` 对齐 |
-| `avatar` 必须是外链或站内路径 | 40000 | **安全要求**：`http://` / `https://` 开头，或 `/uploads/` 开头。其余一律拒绝，见下方说明 |
+| `avatar` 必须是以 `/uploads/` 开头的站内路径 | 40000 | **形态要求**（外链下线后收紧）：只接受本站上传产生的路径，**外链与伪协议一律拒绝**。见下方说明 |
 | `bio` 长度 1–200 | 40000 | 空串已在入口转 `null`，不参与长度校验 |
 
-**`avatar` 为什么只放行这两种前缀**：前端会把它直接渲染进 `<img src>` / `background-image`。如果允许 `javascript:` 或 `data:`，就等于把 XSS 的执行权交给用户输入。限定「`http` / `https` 外链」+「`/uploads/` 站内路径」两种，即可挡住伪协议，同时不影响正常用法。
+**`avatar` 为什么只放行 `/uploads/` 前缀**：前端会把它直接渲染进 `<img src>` / `background-image`，所以取值必须是**服务端能担保来源的**。`/uploads/` 路径由上传接口生成，来源可信；而 `javascript:` / `data:` 这类伪协议等于把 XSS 的执行权交给用户输入。
+
+**外链为什么也被拒**：外链本身不构成 XSS，但**已无必要** —— 第十一批起头像可以直传，再留一条「用户自填 URL」的旁路，只会让「头像从哪来」有两个答案，并且这两条路的清理逻辑、渲染逻辑、验收断言都得各写一套。下线后**收紧规则反而更简单：不区分伪协议与正常外链，只认一个前缀**。
 
 **为什么 `/uploads/` 站内路径同样安全**：它不是用户能自由填写的任意路径 ——
 
@@ -761,7 +764,7 @@ Authorization: Bearer <token>
 
 也就是说，用户能控制的只有「哪张图」，控制不了「写到哪、叫什么、什么类型」。
 
-> ⚠️ 校验规则放宽后，**验收探针 `probe-profile-edit.mjs` 里若有「avatar 必须 http(s) 开头」的断言要同步改成「http(s) 或 `/uploads/` 前缀」**，否则会误报。
+> ⚠️ 外链下线后，**验收探针 `probe-profile-edit.mjs` 的 PE-A2 / PE-A5 / PE-B4a 已从「用外链」改成「用 `/uploads/` 路径」，PE-B3 的非法值列表新增了 `https://` 外链**（外链现在也是非法值）。这条与上方「校验规则」必须同时成立，改任一边都要同步另一边。
 
 **「至少有一个键出现」的确切含义**：判断依据是**请求体对象的自有键数量**（`Object.keys(body).length > 0`），**不是「有没有非 null 的值」**。
 
@@ -770,13 +773,13 @@ Authorization: Bearer <token>
 | `{}` | ❌ 40000 | 一个键都没有，等价于空操作 |
 | `{ "avatar": null }` | ✅ **有效** | 键出现了，值是 `null` → **清空头像**，这是一次真实操作 |
 | `{ "bio": "" }` | ✅ **有效** | 键出现了，空串按「清空简介」处理 |
-| `{ "avatar": "https://..." }` | ✅ 有效 | 设置头像 |
+| `{ "avatar": "/uploads/avatars/1/x.png" }` | ✅ 有效 | 设置头像（必须是 `/uploads/` 前缀） |
 
 > ⚠️ **实现时不要写成「至少有一个非 null 的值」**。那样 `{ "avatar": null }` 会被判为空操作而报 400，**用户将无法清空自己的头像**——清空是本接口必须支持的正常操作（头像 URL 会失效、用户换图想清掉旧的，都需要它）。
 >
 > 正确实现：先判断键是否存在（`Object.prototype.hasOwnProperty.call(body, 'avatar')` / `'bio'`），**再按三态语义决定写什么**，不要用「值是否为 null」来推断「用户是否想改这个字段」。
 
-**为什么不校验 URL 可达性**：校验可达性需要发起外部 HTTP 请求，会让这个接口的耗时不可控（外部站点超时、慢速、挂掉都会拖住我们的接口），也违背「零依赖、不发额外网络请求」的约束。**代价是服务端不保证图片真实存在**，请调用方知悉：填一个不存在的 URL 时，接口会正常返回成功，但前端头像会加载失败（前端按 `img` 的 `error` 事件回退文字头像，见前端约定）。
+**为什么不校验「文件在磁盘上真的存在」**：本接口只校验**形态**（是不是 `/uploads/` 前缀），不读磁盘、不查库。代价是可能出现「DB 有路径、磁盘没文件」的悬空引用（例如手工删了文件），前端头像会加载失败 —— 前端按 `img` 的 `error` 事件回退文字头像，不会崩。这个取舍登记在 `docs/DB.md` 的「已知限制」。
 
 #### 成功响应
 
@@ -790,7 +793,7 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
     "id": 1,
     "username": "demo",
     "nickname": "Demo",
-    "avatar": "https://cdn.example.com/a/1.png",
+    "avatar": "/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png",
     "bio": "写点自我介绍",
     "createdAt": "2026-09-29T12:49:05.911Z"
   }
@@ -799,13 +802,15 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 
 前端拿到这个对象后应**直接用它更新本地 store**，不必再发一次 `GET /api/auth/me`。`data` 中**永远不含 `password`**。
 
-`avatar` 也可能是**站内相对路径**（第十一批上传产生），此时 `data.avatar` 形如 `"/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png"` —— 前端渲染前要补上后端 origin，规则见「前端调用约定」。
+`data.avatar` 形如 `"/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png"` —— 前端渲染前要补上后端 origin，规则见「前端调用约定」。
+
+> 本接口现在**正常只用于清空头像**（传 `avatar: null`）；**设置头像走 `POST /api/users/me/avatar`**（外链下线后，上传是唯一入口）。这里仍接受 `/uploads/` 前缀的字符串，是给探针与运维留的窄口，**前端不暴露**。
 
 #### 失败
 
 | HTTP | code | message | 场景 |
 |---|---|---|---|
-| 400 | 40000 | 依据具体字段 | 请求体为空（无任何键）/ avatar 超长 / avatar 前缀不合法（既不是 `http(s)://` 外链、也不是 `/uploads/` 站内路径）/ bio 超长 |
+| 400 | 40000 | 依据具体字段 | 请求体为空（无任何键）/ avatar 超长 / avatar 不是 `/uploads/` 开头的站内路径（**含 http(s) 外链**）/ bio 超长 |
 | 400 | 40000 | 不允许修改其他用户的资料 | 请求体携带 `id` / `userId` / `username` / `password` |
 | 401 | 40100 | — | 未提供 token、token 格式错、token 过期或签名无效（`auth` 中间件既有行为） |
 | 404 | 40400 | 用户不存在 | token 有效但用户不存在（已删除等），与 `GET /api/auth/me` 口径一致 |
@@ -838,18 +843,21 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 
 上传头像文件（站内存储）。**需要登录**。身份完全取自 token，**不接受请求体里的任何身份字段**。
 
-与 `PUT /api/users/me` 的分工：那个接口改的是「`avatar` 这个字符串是什么」（可以是外链，也可以是站内路径）；**本接口直接收图片文件**，落盘后把生成的站内路径写进 `avatar`，**一步到位**。
+与 `PUT /api/users/me` 的分工（外链下线后定型）：**设置头像是本接口的专属职责** —— 直接收图片文件，落盘后把生成的站内路径写进 `avatar`，一步到位。`PUT /api/users/me` 的 `avatar` 现在**只用于清空**（传 `null`）；它虽仍接受 `/uploads/` 前缀的字符串（形态校验没变），但那是给探针与运维留的窄口，**前端不再暴露**（外链输入框已删）。
 
 #### 为什么是 `/users/me/avatar` 而不是通用 `/api/upload`
 
 | 对比项 | `POST /api/users/me/avatar`（本接口） | 通用 `POST /api/upload` |
 |---|---|---|
-| 步骤 | 一次请求完成：落盘 → 改库 → 清旧文件 | 两步：先上传拿 url，再 `PUT /api/users/me` |
+| 步骤 | 一次请求完成：落盘 → 改库 → 清旧文件 | 两步：先上传拿 url，再调另一个接口改库 |
+| 与 `PUT /api/users/me` 的关系 | **不依赖它**，自带写库 | **「拿 url 再 PUT /me」这条路已封死**（外链下线后 `/me` 只收 `/uploads/` 前缀且前端不暴露），通用接口必须自带写库步骤才可用 |
 | 孤儿文件 | **不会**（写库失败会反向删掉刚落盘的文件） | **会**：上传完不保存，文件就永远留在磁盘上 |
 | 权限 | 天然只能改自己 | 还要额外判断「谁能用这个 url」 |
 | 通用性 | 只服务头像 | 将来文章插图可复用 |
 
 MVP 只有头像一个上传场景，选专用的那个。将来真出现第二个场景（文章插图）时再抽通用 `/api/upload`，本接口保留为语义化的专用入口。
+
+> 外链下线后，本接口是**设置头像的唯一入口**（`PUT /api/users/me` 只能把它清空）。上表「与 `PUT /me` 的关系」一行的意义正在于此：如果当初选了通用 `/api/upload`，外链一封，就必须额外给通用接口补一套「写库 + 清旧文件」的逻辑才能用。
 
 #### 请求格式
 
@@ -930,14 +938,16 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 
 #### 旧头像文件的清理
 
-判定「旧头像要不要删」的依据只有一个：**旧值是不是站内路径**（以 `/uploads/` 开头）。
+外链下线后，**库里只要是合法值就一定是站内路径**（`/uploads/` 开头），判定因此变简单，但**判断条件本身不删**：
 
-| 操作 | 是否删旧文件 |
+| 情形 | 是否删旧文件 |
 |---|---|
-| 本接口上传新头像 | **删**（旧值是站内路径时） |
-| `PUT /api/users/me` 传 `avatar: null` 清空头像 | **删**（旧值是站内路径时） |
-| `PUT /api/users/me` 把头像改成外链 | **删**（旧值是站内路径时） |
-| 旧头像本来就是外链 | **不删**（文件不在我们的磁盘上） |
+| 本接口上传新头像（换图） | **删**旧文件 |
+| `PUT /api/users/me` 传 `avatar: null` 清空头像 | **删**旧文件 |
+| 旧值是 `null`（本来就没头像） | 不删（没有文件可删） |
+| 旧值不是 `/uploads/` 开头（**历史脏值**，如第九批留下的外链） | **不删** —— 文件不在我们的磁盘上。前缀判断的作用正是「只删自己的文件」 |
+
+> ⚠️ **`deleteLocalAvatar()` 的前缀判断要保留，不要顺手删掉。** 它现在的角色从「区分外链」变成了「脏值防御」：收紧校验只能保证**新的**脏值写不进来，读的时候仍要按同一条规则处理历史值。有人手工改库时，这是 `rm` 之前唯一的防线。
 
 **顺序必须是「先写库，再删旧文件」**：反过来（先删后写）一旦写库失败，用户就彻底没有头像了；前者删失败只留一个垃圾文件，不影响正确性。删除失败只记日志，**不回滚、不报错**。
 
@@ -976,7 +986,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 >
 > 说明 2：**搜索已实现**（`GET /api/articles` 的 `keyword` 参数，命中标题 + 正文），已从上表移出。搜索**不含作者昵称**，也不做标签 / 分类聚合搜索。
 >
-> 说明 3：**头像上传已实现**（第十一批，`POST /api/users/me/avatar`，文件落 `backend/uploads/`），已从上表移出。**外链方式保留** —— `PUT /api/users/me` 的 `avatar` 仍接受 `http(s)://` 外链，两种并存，用户可自选。遗留项：不做图片压缩 / 缩略图、不做孤儿文件定时对账、不校验 magic bytes，均登记在 `docs/DB.md`。
+> 说明 3：**头像上传已实现**（第十一批，`POST /api/users/me/avatar`，文件落 `backend/uploads/`），已从上表移出。**图片外链已下线** —— `PUT /api/users/me` 的 `avatar` 不再接受 `http(s)://`，只接受 `/uploads/` 站内路径（正常只用于传 `null` 清空），**上传成为设置头像的唯一入口**。遗留项：不做图片压缩 / 缩略图、不做孤儿文件定时对账、不校验 magic bytes，均登记在 `docs/DB.md`。
 
 ---
 
@@ -985,8 +995,9 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 - 所有请求走 `frontend/src/api/request.js` 导出的 axios 实例。
 - 响应拦截器约定：`code === 0` 直接返回 `data`；`code !== 0` 抛出携带 `message` 的 Error；HTTP 401 清除本地 token 并跳转登录页。
 - `frontend/src/api/auth.js` 封装本文件的 auth 接口，组件与 store 不直接写 URL。
-- **`avatar` 的 URL 拼接规则**（第十一批）：库里的头像可能是**站内相对路径** `/uploads/avatars/1/xxx.png`，直接塞进 `<img src>` 会被浏览器解析成**前端自己的 origin**（`localhost:5173`）而 404。
-  - 以 `http://` / `https://` 开头 → **原样使用**（外链，第九批既有形态）。
-  - 否则 → **补上后端 origin** 再使用。
+- **`avatar` 的 URL 拼接规则**（第十一批引入，外链下线后简化）：库里的头像是**站内相对路径** `/uploads/avatars/1/xxx.png`，直接塞进 `<img src>` 会被浏览器解析成**前端自己的 origin**（`localhost:5173`）而 404，所以必须拼上后端 origin。
+  - **以 `/uploads/` 开头** → **补上后端 origin** 再使用。
+  - **其它值**（历史脏值，如第九批可能留下的外链）→ **原样返回**，不做拼接。
+    - 为什么选「原样返回」而不是「硬拼 origin」：硬拼会得到 `http://localhost:3000https://cdn.example.com/a.png` 这种谁都不认识的 URL，**比破图更难排查**；原样返回的最坏情况是破图，而破图有 `@error` 回退文字头像兜底，是优雅降级。
   - ⚠️ 后端 origin 要**去掉 `VITE_API_BASE_URL` 末尾的 `/api`**：接口基址是 `http://localhost:3000/api`，而静态资源挂在 `http://localhost:3000/uploads/...`，**不带 `/api`**。
-  - 拼接只在 `frontend/src/utils/format.js` 的 `resolveAvatar()` 里做**一次**；`ArticleCard` / `AuthorCard` / `UserDropdown` / `CommentList` / `UserProfile` 五处渲染都走它，组件不用各自处理。
+  - 拼接只在 `frontend/src/utils/format.js` 的 `resolveAvatarUrl()` 里做**一次**；`ArticleCard` / `AuthorCard` / `UserDropdown` / `CommentList` / `UserProfile` 五处渲染都走它，组件不用各自处理。

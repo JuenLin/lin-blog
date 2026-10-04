@@ -6,8 +6,8 @@
       </template>
 
       <el-alert type="info" :closable="false" show-icon class="profile-edit-tip">
-        头像可以<strong>直接上传</strong>（JPG / PNG / WebP，不超过 2MB），也可以<strong>填图片外链</strong>。
-        <strong>上传是立即生效的</strong>，不必再点保存；简介仍要点保存。外链方式系统不托管图片，也不会检查链接是否真的能打开。
+        头像<strong>直接上传</strong>（JPG / PNG / WebP，不超过 2MB），
+        <strong>上传与清除都是立即生效的</strong>，不必再点保存；简介仍要点保存。
       </el-alert>
 
       <div class="avatar-preview">
@@ -29,17 +29,22 @@
         <div class="avatar-preview-meta">
           <p class="avatar-preview-label">当前头像</p>
           <p v-if="previewBroken" class="avatar-preview-warn">
-            链接加载失败（可能不存在或被防盗链拦截），保存后其他位置也会显示成文字头像。
+            图片加载失败（文件可能已被删除），其他位置也会显示成文字头像。
           </p>
           <p v-else-if="!previewSrc" class="avatar-preview-hint">
             还没有头像，将使用昵称首字。
           </p>
+          <p v-else class="avatar-preview-hint">
+            换图直接传新的即可，旧文件会被自动删掉。
+          </p>
         </div>
       </div>
 
-      <!-- 上传区（第十一批）。原生 input 用 CSS 藏起来，靠按钮代触发 click：
+      <!-- 头像操作区。原生 input 用 CSS 藏起来，靠按钮代触发 click：
            这样可以完全控制按钮文案 / loading 态，而不用去改 el-upload 的 DOM 结构
-           （也避免为了一个上传框引入 Element Plus 的 upload 组件）。 -->
+           （也避免为了一个上传框引入 Element Plus 的 upload 组件）。
+           「清除头像」也放在这里：外链下线后三态只剩「清空」一支，它与上传同属
+           「立即生效区」，不再挂进下面的表单里等保存。 -->
       <div class="avatar-upload">
         <input
           ref="fileInput"
@@ -52,16 +57,26 @@
           size="small"
           type="primary"
           :loading="uploading"
-          :disabled="uploading"
+          :disabled="uploading || clearing"
           @click="pickFile"
         >
           {{ uploading ? '上传中…' : '上传图片' }}
         </el-button>
+        <el-button
+          size="small"
+          text
+          type="danger"
+          :loading="clearing"
+          :disabled="uploading || clearing || !hasAvatar"
+          @click="handleClearAvatar"
+        >
+          {{ hasAvatar ? '清除头像' : '暂无头像' }}
+        </el-button>
         <span class="avatar-upload-hint">支持 JPG / PNG / WebP，不超过 2MB</span>
       </div>
 
-      <!-- label-width 给足：「头像链接」与「个人简介」长度不同，
-           label-position 默认 right 会让长短标签参差不齐，这里显式 left。
+      <!-- label-width 给足：「个人简介」不至于贴边；
+           label-position 默认 right 会让标签位置随内容跳动，这里显式 left。
            label-width="0"：提交区没有 label，不归零会被右推 100px。 -->
       <el-form
         ref="formRef"
@@ -71,30 +86,6 @@
         label-position="left"
         @submit.prevent="handleSubmit"
       >
-        <el-form-item label="或图片外链" prop="avatar">
-          <el-input
-            v-model="form.avatar"
-            placeholder="https://example.com/avatar.png，留空表示不改"
-            clearable
-          />
-          <p v-if="isUploadedAvatar" class="avatar-uploaded-tip">
-            当前是已上传的站内图片（服务端生成的路径，不建议手改）。
-          </p>
-          <div class="avatar-actions">
-            <el-button size="small" text type="primary" @click="clearAvatar">
-              {{ form.avatar ? '清除头像' : '已是清除状态' }}
-            </el-button>
-            <el-button
-              v-if="form.avatar"
-              size="small"
-              text
-              @click="form.avatar = originalAvatar || ''"
-            >
-              撤销修改
-            </el-button>
-          </div>
-        </el-form-item>
-
         <el-form-item label="个人简介" prop="bio">
           <el-input
             v-model="form.bio"
@@ -118,14 +109,13 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { updateMyProfile, uploadAvatar } from '../api/user.js';
 import { useUserStore } from '../stores/user.js';
 import { getAvatarColor, getAvatarText, resolveAvatarUrl } from '../utils/format.js';
 
-const AVATAR_MAX_LENGTH = 255;
 const BIO_MAX_LENGTH = 200;
 
 // 与后端 utils/upload.js 的白名单、services/upload.service.js 的 limits 保持一致。
@@ -139,9 +129,10 @@ const userStore = useUserStore();
 const formRef = ref(null);
 const loading = ref(false);
 
-// 上传是独立的一次请求，与「保存资料」的 loading 互不干扰：
-// 上传中仍可编辑简介，两个按钮各管各的禁用态。
+// 头像的两种操作（上传 / 清除）都立即发请求，各自一个 loading 态。
+// 与「保存资料」的 loading 互不干扰：头像操作中仍可编辑简介，各按钮各管各的禁用态。
 const uploading = ref(false);
+const clearing = ref(false);
 const fileInput = ref(null);
 
 const displayName = computed(() => {
@@ -152,80 +143,46 @@ const displayName = computed(() => {
   return userStore.user.nickname || userStore.user.username || '我';
 });
 
-// 「原始值」：进页面时的头像与简介。用于判断用户到底改了没有，
-// 以及「撤销修改」按钮回退到它。**必须是 null 而不是 ''**——
-// null 与 '' 在接口语义上完全不同（null 是清空，'' 对 bio 等价清空、对 avatar 是非法值）。
-const originalAvatar = ref(null);
+// 「原始值」：进页面时的简介。用于判断用户到底改了没有。
+//
+// 头像**不在表单里**（外链下线后没有可编辑的头像控件了）：上传与清除都立即写库，
+// 所以头像直接读 store，没有「本地草稿 vs 已保存值」这个区分。
 const originalBio = ref(null);
 
 const form = reactive({
-  avatar: '',
   bio: '',
 });
 
-// 初始化一次：把 store 里的现值搬进表单。
-// 注意 avatar 存的是 null 时，表单里显示为空字符串（用户看到「没填」），
-// 但「有没有头像」这件事由 avatarCleared 单独记录，不会因此丢掉三态语义。
 function initFromStore() {
   const user = userStore.user;
 
-  originalAvatar.value = user && user.avatar !== undefined ? user.avatar : null;
   originalBio.value = user && user.bio !== undefined ? user.bio : null;
-  form.avatar = originalAvatar.value || '';
   form.bio = originalBio.value || '';
 }
 
 initFromStore();
 
-// 用户是否点了「清除头像」。这个标志位是三态语义里 null 的来源，
-// 不能靠「form.avatar 是空串」来推断——空串既可能表示「没动过」，也可能表示「清了」。
-const avatarCleared = ref(false);
-
 const previewBroken = ref(false);
 
-// 预览源：清除状态 或 用户填了链接 才用链接，否则回退文字头像。
-//
-// 第十一批：值可能是站内相对路径（/uploads/avatars/1/xxx.png），
-// 必须过 resolveAvatarUrl 补上后端 origin，否则浏览器会去前端自己的 5173 端口找图。
-// 补 origin 只在这一个地方做（format.js 里），其它组件走 resolveAvatar 同样是这一处。
-const previewSrc = computed(() => {
-  if (avatarCleared.value) return '';
-  return resolveAvatarUrl(form.avatar.trim());
-});
+// 当前头像：直接取自 store（上传 / 清除成功后都由 uploadAvatar / updateMyProfile 回写的 user 驱动）。
+const currentAvatar = computed(() => (userStore.user ? userStore.user.avatar : null));
+const hasAvatar = computed(() => Boolean(currentAvatar.value));
+
+// 预览源：过 resolveAvatarUrl 补上后端 origin（库里的值形如 /uploads/avatars/1/x.png，
+// 直接塞进 <img src> 会被解析成前端自己的 5173 端口）。补 origin 只此一处。
+const previewSrc = computed(() => resolveAvatarUrl(currentAvatar.value));
 const previewText = computed(() => getAvatarText(displayName.value));
 const previewColor = computed(() => getAvatarColor(displayName.value));
 
-// 当前头像是不是「上传得来的站内路径」：是的话给一句提示，别让用户手改这个路径。
-const isUploadedAvatar = computed(() => !avatarCleared.value && form.avatar.trim().startsWith('/uploads/'));
+// 头像变了就复位「加载失败」标记：否则换上一张能用的图后，界面还停在
+// 上一张的失败态（文字头像），看起来像上传没生效。
+watch(currentAvatar, () => {
+  previewBroken.value = false;
+});
 
-// 前端只做「格式」校验，「是否真的存在」「是否与他人重复」等一律以服务端为准。
+// 前端只做长度校验，其余一律以服务端为准。
+// 注意：**这里不再有 avatar 规则** —— 没有头像输入框了，天然没有「格式非法」这个输入来源。
 const rules = computed(() => ({
-  avatar: [
-    {
-      validator: (_rule, value, callback) => {
-        const text = (value || '').trim();
-
-        // 清空状态不校验；空串（没动过）也不校验——服务端会因「键不出现」而跳过。
-        if (!text || avatarCleared.value) {
-          return callback();
-        }
-
-        // 与后端 user.validator.js 同一套规则：接受 http(s) 外链，
-        // 或第十一批上传产生的站内路径（/uploads/ 开头）。
-        // javascript: / data: 等伪协议仍然要挡——它们会被渲染进 <img src>，等同于 XSS。
-        if (!/^https?:\/\//i.test(text) && !text.startsWith('/uploads/')) {
-          return callback(new Error('必须是 http(s):// 外链，或 /uploads/ 开头的站内路径'));
-        }
-
-        if (text.length > AVATAR_MAX_LENGTH) {
-          return callback(new Error(`不能超过 ${AVATAR_MAX_LENGTH} 个字符`));
-        }
-
-        return callback();
-      },
-      trigger: 'blur',
-    },
-  ],
   bio: [
     {
       validator: (_rule, value, callback) => {
@@ -243,13 +200,11 @@ const rules = computed(() => ({
 }));
 
 /**
- * 上传头像（第十一批）。
+ * 上传头像。
  *
  * 与「保存」是两条独立路径：上传**立即写库**（后端一步到位，见 docs/API.md），
- * 不走 buildPayload / 不点保存。所以成功后要同步三件事，否则表单会「以为没改」：
- *   ① store（顶部下拉、文章卡片等处立刻显示新头像）
- *   ② originalAvatar（buildPayload 的比对基准，不同步会把新头像误判成「用户改了」再提交一次）
- *   ③ form.avatar（输入框与预览的源）
+ * 不经过 buildPayload、不点保存。成功后只需把接口返回的完整 user 写回 store ——
+ * 预览、顶部下拉、文章卡片都从 store 派生，一处更新全都跟着变。
  *
  * @param {Event} event input[type=file] 的 change 事件
  */
@@ -285,14 +240,9 @@ async function handleFileChange(event) {
   try {
     const user = await uploadAvatar(file);
 
+    // 预览与其它 4 处头像都从 store 派生，写回 store 就够了。
+    // previewBroken 由 watch(currentAvatar) 自动复位，这里不用手动清。
     userStore.setUser(user);
-    originalAvatar.value = user.avatar !== undefined ? user.avatar : null;
-    form.avatar = originalAvatar.value || '';
-    avatarCleared.value = false;
-    previewBroken.value = false;
-
-    // 清掉之前的校验报错（例如原先填过非法外链留下的红字）
-    formRef.value && formRef.value.clearValidate('avatar');
 
     ElMessage.success('头像已更新');
   } catch (error) {
@@ -305,7 +255,7 @@ async function handleFileChange(event) {
 }
 
 function pickFile() {
-  if (uploading.value) {
+  if (uploading.value || clearing.value) {
     return;
   }
 
@@ -313,12 +263,32 @@ function pickFile() {
   fileInput.value && fileInput.value.click();
 }
 
-function clearAvatar() {
-  avatarCleared.value = true;
-  form.avatar = '';
-  previewBroken.value = false;
-  // 手动清掉校验状态，否则之前的红色报错会留在界面上。
-  formRef.value && formRef.value.clearValidate('avatar');
+/**
+ * 清除头像（传 avatar: null）。
+ *
+ * **立即生效**，不进 buildPayload、不等点保存 —— 与上传同属「立即生效区」，
+ * 这样头像区的语义是自洽的（点了就变），简介区则仍是「改完点保存」。
+ *
+ * 「没有头像时点了」不用发请求：接口会把 `{ avatar: null }` 当成一次有效的清空操作，
+ * 但状态没变，白跑一次网络没有意义（按钮此时也是 disabled 的，这里只是双保险）。
+ */
+async function handleClearAvatar() {
+  if (clearing.value || uploading.value || !hasAvatar.value) {
+    return;
+  }
+
+  clearing.value = true;
+
+  try {
+    const user = await updateMyProfile({ avatar: null });
+    userStore.setUser(user);
+
+    ElMessage.success('头像已清除');
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    clearing.value = false;
+  }
 }
 
 function goBack() {
@@ -326,34 +296,19 @@ function goBack() {
 }
 
 /**
- * 组装提交体—— 本组件最核心的逻辑，实现 docs/API.md 的三态语义。
+ * 组装提交体 —— 实现 docs/API.md 的「只放改动过的键」。
  *
- * **只放用户实际改动过的键**：
- *   - 头像没动过（没碰清除、也没改链接）→ **不传 avatar 键**（不是传 null！）
- *   - 点了「清除头像」→ 传 avatar: null
- *   - 改了链接 → 传 avatar: 'https://...'
- *   - 简介没动过 → 不传 bio 键；改成空 → 传 bio: null（清空）
+ * 外链下线后，**这里只剩 bio**：头像的两种操作（上传 / 清除）都在头像区立即生效，
+ * 根本不经过本函数。所以 payload 里永远不会出现 avatar 键。
  *
- * 为什么这么写：接口靠「键是否出现」区分「不改」和「清空」。
- * 如果无脑把两个字段都带上，用户只改简介就会把头像被清空——这正是
- * API.md 里专门警告过的坑。宁可少传键，也不要替用户做决定。
+ * 为什么仍要坚持「只放改动过的键」：接口靠「键是否出现」区分「不改」和「清空」。
+ * 无脑把字段都带上，用户只动了一个字段却把另一个清掉——这正是 API.md 警告过的坑。
  */
 function buildPayload() {
   const payload = {};
 
-  const trimmedAvatar = form.avatar.trim();
-  const currentAvatar = originalAvatar.value || '';
   const currentBio = originalBio.value == null ? '' : String(originalBio.value);
   const nextBio = form.bio == null ? '' : String(form.bio);
-
-  if (avatarCleared.value) {
-    // 原本就没有头像、用户又点了一次清除 → 状态没变，不必发请求。
-    if (currentAvatar) {
-      payload.avatar = null;
-    }
-  } else if (trimmedAvatar !== currentAvatar) {
-    payload.avatar = trimmedAvatar;
-  }
 
   if (nextBio !== currentBio) {
     // 空串按「清空」提交（后端会把 '' 转成 null 存储）。
@@ -376,7 +331,7 @@ async function handleSubmit() {
 
   const payload = buildPayload();
 
-  // 一个键都没变：后端会拒（40000「至少要传一个」），这里提前拦下并给明确提示，
+  // 没改动：后端会拒（40000「至少要传一个」），这里提前拦下并给明确提示，
   // 避免用户对着表单点保存却收到一句看不懂的报错。
   if (Object.keys(payload).length === 0) {
     ElMessage.info('没有改动');
@@ -393,10 +348,7 @@ async function handleSubmit() {
     userStore.setUser(user);
 
     // 更新「原始值」：连续保存时不能拿旧值当基准，否则第二次会误判为「又改了」。
-    originalAvatar.value = user.avatar !== undefined ? user.avatar : null;
     originalBio.value = user.bio !== undefined ? user.bio : null;
-    avatarCleared.value = false;
-    previewBroken.value = false;
 
     ElMessage.success('资料已更新');
   } catch (error) {
@@ -486,6 +438,8 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 卡片固定 520px，正常一行放得下；窄屏 / 长文案时允许换行，别把按钮挤变形 */
+  flex-wrap: wrap;
   margin: -8px 0 20px;
 }
 
@@ -497,18 +451,6 @@ async function handleSubmit() {
 .avatar-upload-hint {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-.avatar-uploaded-tip {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.avatar-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
 }
 
 /* 兜底：标签不折行（label-width 已固定 100px） */

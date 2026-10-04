@@ -11,14 +11,15 @@
 import request from './request.js';
 
 /**
- * 修改当前用户资料（头像 / 简介）。对应 docs/API.md 的 PUT /api/users/me。
+ * 修改当前用户资料（简介 / 清空头像）。对应 docs/API.md 的 PUT /api/users/me。
  *
  * userId 取自 token，请求体不接受 id / userId / username / password。
  *
  * **三态语义**：调用方只放「用户实际改动过」的键，这里不做任何加工。
  *   - 不放 avatar 键→ 不改头像
- *   - avatar: null      → 清空头像
- *   - avatar: 'https://' → 设置头像
+ *   - avatar: null      → 清空头像（**外链下线后这是 avatar 唯一的用法**）
+ *   - avatar: '/uploads/...' → 设置头像。⚠️ 前端**不暴露**这条路：
+ *     设置头像统一走 `uploadAvatar()`（上传接口），它自带落盘 + 写库 + 清旧文件
  *
  * ⚠️ 不要在这里做「补全字段 / 填默认值」之类的处理：多加一个键就等于
  * 替用户做了决定，会把用户没动过的字段误清空。判断逻辑在 ProfileEdit.vue。
@@ -35,6 +36,8 @@ export function updateMyProfile(data) {
 
 /**
  * 上传头像文件。对应 docs/API.md 的 POST /api/users/me/avatar。
+ *
+ * **外链下线后，这是设置头像的唯一入口**（`updateMyProfile` 只能把它清空）。
  *
  * **一步到位**：后端落盘 → 写库 → 删旧文件，一次请求全做完，
  * 不返回「临时 url 让你再调 PUT /me」——那样中途放弃就会留下孤儿文件。

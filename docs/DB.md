@@ -175,7 +175,7 @@ Prisma 模型名 `User`，`@@map("users")`。
 | username | username | VARCHAR(50) | 否 | 无 | 用户名，唯一索引 |
 | password | password | VARCHAR(255) | 否 | 无 | bcryptjs 哈希，禁止明文 |
 | nickname | nickname | VARCHAR(50) | 是 | NULL | 昵称 |
-| avatar | avatar | VARCHAR(255) | 是 | NULL | 头像，第九批新增。**两种取值**：外链 URL（`http(s)://` 开头）或**站内相对路径**（`/uploads/` 开头，第十一批上传产生）。长度论证与文件存储见下方「第十一批：头像文件存储」 |
+| avatar | avatar | VARCHAR(255) | 是 | NULL | 头像，第九批新增。**只有一种取值**：**站内相对路径**（`/uploads/` 开头，由上传接口产生）。外链形态已下线（接口层不再接受，列定义未变）。长度论证与文件存储见下方「第十一批：头像文件存储」 |
 | bio | bio | VARCHAR(200) | 是 | NULL | 个人简介，第九批新增 |
 | createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
@@ -210,14 +210,14 @@ Prisma 模型名 `User`，`@@map("users")`。
 
 ### 第十一批：头像文件存储（uploads 目录）
 
-第十一批起头像支持**站内上传**（`POST /api/users/me/avatar`，见 `docs/API.md`）。**本节不涉及任何表结构变更** —— 下面先用一张表说清楚「为什么不用改 schema」。
+第十一批起头像支持**站内上传**（`POST /api/users/me/avatar`，见 `docs/API.md`）。**本节不涉及任何表结构变更** —— 下面先说清楚「为什么不用改 schema」。
 
 | 存的是什么 | 示例 | 长度 |
 |---|---|---|
-| 外链 URL | `https://cdn.example.com/a/1.png` | 典型 100~200 字符 |
 | **站内相对路径** | `/uploads/avatars/1/1759516800000-3f2a9c7e1b4d8065.png` | 约 **70** 字符 |
+| ~~外链 URL~~（已下线） | ~~`https://cdn.example.com/a/1.png`~~ | 历史形态，第九批引入、现已不再写入 |
 
-`VARCHAR(255)` 对两种都绰绰有余（站内路径最坏情况：`/uploads/avatars/` 17 + userId 10 位 + `/` 1 + 时间戳 13 + `-` 1 + 随机 hex 16 + `.webp` 5 ≈ 63，留了 4 倍余量）。**因此本批不迁移、不动 `schema.prisma`**。
+`VARCHAR(255)` 对站内路径绰绰有余（最坏情况：`/uploads/avatars/` 17 + userId 10 位 + `/` 1 + 时间戳 13 + `-` 1 + 随机 hex 16 + `.webp` 5 ≈ 63，留了 4 倍余量）。**因此本批不迁移、不动 `schema.prisma`** —— 外链下线时同样**没有**动过列定义，只是不再往里写外链了。
 
 #### 磁盘上的目录结构
 
@@ -534,6 +534,7 @@ const summary = [...content].slice(0, 100).join('');
 4. **`users.avatar` 与磁盘文件不保证强一致**（第十一批上传引入）：DB 存路径、磁盘存文件，两者之间没有事务。
    - **孤儿文件**（磁盘上有、DB 不指向）：进程在「写库成功 → 删旧头像」之间崩溃时产生。**悬空引用**（DB 指向、磁盘上没有）：手工删了文件、或直接改库时产生。
    - **当前可接受**：MVP 无用户注销功能、无定时清理，量级极低；悬空引用在前端表现为破图，已有 `img` 的 `error` 回退兜底，不会崩。
+   - ⚠️ 外链下线**没有消除**这条限制：它治理的是「DB 与磁盘的一致性」，与 avatar 取什么形态无关。反而去掉外链后，**库里只要是非 `null` 就一定有对应文件**（除非被手工删），这条限制的触发面更小了。
    - 触发条件：上传量上来、或出现用户注销功能。
    - 处理方向：定时对账任务（扫 `users.avatar` 的站内路径、与磁盘比对），或在用户注销流程里连目录一起清。**不做强一致** —— 那需要跨「文件系统 + 数据库」的分布式事务，代价远超收益。
 
