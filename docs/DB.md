@@ -446,6 +446,47 @@ ALTER TABLE `likes` ADD CONSTRAINT `likes_article_id_fkey` FOREIGN KEY (`article
 EPERM: operation not permitted, rename '.../query_engine-windows.dll.node.tmpNNNN' -> '.../query_engine-windows.dll.node'
 ```
 
+### 按点赞数排序（「热门」Tab，本次引入）
+
+`GET /api/articles` 的 `sortBy` 白名单新增 `likeCount`，前端「热门」Tab 按它倒序。**不改 schema、不加冗余列** —— 排序由 Prisma 的关联计数排序表达：
+
+```js
+orderBy: [{ likes: { _count: 'desc' } }, { id: 'desc' }]
+```
+
+`likeCount` 是**计算字段**（响应层由 `_count.likes` 折算），`articles` 表里没有这一列，**不能直接透传给 Prisma**（会报 `Unknown argument 'likeCount'`），所以在 `backend/src/services/article.service.js` 里用一张 `ARTICLE_SORT_MAP` 把 API 字段名翻成 orderBy 片段（见 `utils/query.js` 的 `options.map`）。
+
+实测（Prisma 6.19.3 + MySQL 8）：**编译成单条 SQL**，排序与分页都在 SQL 层，不是拉全量再在应用层排：
+
+```sql
+SELECT articles.id, ..., COALESCE(aggr_selection_0_Like._aggr_count_likes, 0) AS _aggr_count_likes
+FROM articles
+LEFT JOIN (SELECT likes.article_id, COUNT(*) AS orderby_aggregator FROM likes GROUP BY likes.article_id) AS orderby_1_Like
+     ON articles.id = orderby_1_Like.article_id
+LEFT JOIN (SELECT likes.article_id, COUNT(*) AS _aggr_count_likes FROM likes GROUP BY likes.article_id) AS aggr_selection_0_Like
+     ON articles.id = aggr_selection_0_Like.article_id
+WHERE articles.deleted_at IS NULL
+ORDER BY COALESCE(orderby_1_Like.orderby_aggregator, 0) DESC, articles.id DESC
+LIMIT 10 OFFSET 0
+```
+
+#### EXPLAIN 实测的代价（两条，按聚合值排序的必然结果）
+
+| 现象 | 说明 |
+|---|---|
+| `articles` 走 `Using temporary; Using filesort` | 排序列是**聚合结果**，无法走索引 |
+| `likes` 被聚合**两次** | `_count` 选择（`aggr_selection_0_Like`）与 `orderBy` 聚合（`orderby_1_Like`）是两条独立派生表，Prisma **不复用** |
+
+`GROUP BY` 本身有效命中我们建的 `likes_article_id_idx`（`Using index`）；`articles` 侧仍用 `articles_deleted_at_created_at_idx` 过滤软删除。
+
+#### 为什么不在 `articles` 加 `like_count` 冗余列
+
+冗余列能让排序走索引，但代价是：每次点赞 / 取消点赞都要额外 `UPDATE articles`，并引入「冗余列与真实计数不一致」这一新类 bug（并发、失败回滚、软删联动）。当前数据量下 filesort 完全无感，所以维持既定取舍：**`likeCount` 永远实时 `COUNT(*)`，不加冗余列**。量级上来后这里是第一个瓶颈，届时再评估（物化列 / 定时汇总 / 缓存各有代价）。
+
+#### 并列与分页稳定
+
+`likeCount` 大量并列（多数文章都是 0 赞）时，**次级排序 `id` 是必需的** —— 否则同一批数据在相邻两页可能重复出现或整行丢失。`buildOrderBy()` 的 `DEFAULT_SECONDARY_SORT = 'id'` 会自动补上，`sortBy=likeCount` 无需额外配置。
+
 ---
 
 ## 查询约定
@@ -537,6 +578,11 @@ const summary = [...content].slice(0, 100).join('');
    - ⚠️ 外链下线**没有消除**这条限制：它治理的是「DB 与磁盘的一致性」，与 avatar 取什么形态无关。反而去掉外链后，**库里只要是非 `null` 就一定有对应文件**（除非被手工删），这条限制的触发面更小了。
    - 触发条件：上传量上来、或出现用户注销功能。
    - 处理方向：定时对账任务（扫 `users.avatar` 的站内路径、与磁盘比对），或在用户注销流程里连目录一起清。**不做强一致** —— 那需要跨「文件系统 + 数据库」的分布式事务，代价远超收益。
+
+5. **按点赞数排序（`sortBy=likeCount`）无法走索引，且 `likes` 被聚合两次**：`ORDER BY` 的目标是**聚合结果**，MySQL 必然走 `Using temporary; Using filesort`；同时 Prisma 为 `_count` 选择与 `orderBy` 各生成一条派生表，`likes` 被扫两遍（实测 EXPLAIN 见「按点赞数排序」小节）。
+   - **当前可接受**：数据量小（11 篇 / 个位数点赞），耗时无感。这是「不加 `articles.like_count` 冗余列」的**既定取舍**，不是遗漏。
+   - 触发条件：文章数 / 点赞数上量，或「热门」成为默认 Tab（首页入口流量集中到这里）。
+   - 处理方向：加 `articles.like_count` 冗余列（代价见「按点赞数排序」小节末段），或做定时汇总表 / 缓存。**在数据量真的大到需要之前不优化** —— 冗余列会带来「计数与真实数据不一致」这一新类 bug。
 
 ---
 

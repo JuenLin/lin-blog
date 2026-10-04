@@ -6,7 +6,7 @@
 
         <el-tabs v-model="activeTab" class="home-tabs" @tab-change="handleTabChange">
           <el-tab-pane label="最新" name="createdAt" />
-          <el-tab-pane label="最近更新" name="updatedAt" />
+          <el-tab-pane label="热门" name="likeCount" />
         </el-tabs>
       </div>
 
@@ -87,9 +87,13 @@ import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import Pagination from '../components/Pagination.vue';
 
-// Tab 只保留「最新 / 最近更新」两个，对应 sortBy 白名单里的 createdAt / updatedAt
-// （docs/API.md 的 sortBy 白名单为 createdAt / updatedAt / id，越界后端返回 40000）。
-// 本期不做「热门」Tab：没有阅读量 / 点赞字段，做出来也是假的。
+// Tab：「最新」= createdAt desc，「热门」= likeCount desc，两个值都在后端 sortBy 白名单里
+// （docs/API.md 的白名单为 createdAt / updatedAt / id / likeCount，越界后端返回 40000）。
+// 「热门」的排序在**后端 SQL 层**完成（关联计数排序，不是拉全量再排），口径是
+// **all-time 累计点赞数**——不做时间窗衰减、不引入阅读量。并列时后端用 id desc 兜底
+// 保证翻页稳定（见 utils/query.js 的 DEFAULT_SECONDARY_SORT）。
+// 原先这里是「最近更新」Tab，2026-10-04 换成「热门」；updatedAt 仍在白名单里（接口不缩水），
+// 只是前端不再暴露入口。
 // 骨架屏画几张：跟真实卡片同形，取 5 张撑满一屏即可，不跟 pageSize 联动
 // （pageSize 可能是 10 / 20，照它画会把首屏撑得很长）。
 const SKELETON_COUNT = 5;

@@ -261,11 +261,13 @@ Authorization: Bearer <token>
 - 作者身份一律从 token 解析，**不接受请求体中的 `userId` / `authorId`**。
 - 删除为软删除（设置 `deletedAt`），列表与详情自动过滤已删除数据（契约 §9 删除小节）。
 - 分页沿用契约 §7：入参 `page` / `pageSize` / `sortBy` / `order`，返回 `{ list, page, pageSize, total, totalPages }`。
-- `sortBy` 白名单：文章 `createdAt` / `updatedAt` / `id`，默认 `createdAt desc`；评论 `createdAt` / `id`，默认 `createdAt desc`。
+- `sortBy` 白名单：文章 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt desc`；评论 `createdAt` / `id`，默认 `createdAt desc`。
+- **排序一律在数据库层完成**（SQL 的 `ORDER BY` + `LIMIT/OFFSET`），不是拉全量再在应用层排。`likeCount` 是计算字段（不是 `articles` 的列），它的排序由 Prisma 的关联计数排序表达，同样编译进单条 SQL（「热门」Tab 引入，详见 `GET /api/articles` 的 `sortBy` 说明与 `docs/DB.md`「按点赞数排序」）。
+- 排序值并列时**自动追加次级排序 `id`**（同 `order` 方向），保证分页稳定 —— 否则同一批数据在相邻两页可能重复出现或整行丢失（见 `backend/src/utils/query.js` 的 `DEFAULT_SECONDARY_SORT`）。
 - 文章列表支持 `keyword` 模糊搜索，命中范围为**标题 + 正文**（不含作者昵称），详见 `GET /api/articles`。
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
-- **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。
+- **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。它同时也是 `sortBy` 的合法值（「热门」Tab 按它倒序），语义见 `GET /api/articles`。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。
 - **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
   - 演变史（三批）：第九批引入 `avatar` 时是「用户自填的外链 URL」；第十一批加上传能力，**两种并存**；**本次把外链下线**，只留站内上传。`avatar` 的**列定义**（`VARCHAR(255) NULL`）与 `null`（未设头像）语义**三批都没变过**。
@@ -350,9 +352,17 @@ Authorization: Bearer <token>
 | -------- | ------ | -- | --------------------------------------------------- |
 | page     | number | 否  | 默认 1                                                |
 | pageSize | number | 否  | 默认 10，最大 100                                        |
-| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id`，默认 `createdAt` |
+| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt` |
 | order    | string | 否  | `asc` 或 `desc`，默认 `desc`                            |
 | keyword  | string | 否  | 标题 + 正文模糊搜索；trim 后最长 50 字符，**空串或纯空白视为不搜索（等价于不传）**，返回全量列表       |
+
+`sortBy` 语义：
+
+- `createdAt` / `updatedAt` / `id` 直接映射 `articles` 表的真实列。
+- **`likeCount`（「热门」）**：按 `likes` 表对该文章的**累计点赞条数**排序。口径是 **all-time**——不做时间窗衰减、不引入阅读量（`docs/DB.md`「按点赞数排序」）。0 赞的文章也参与排序（聚合为 `NULL` 时按 `0` 处理），不会从列表里消失。
+- **次级排序**：排序值并列时追加 `id`（同 `order` 方向）。`likeCount` 大量并列（多数文章都是 0 赞）时这条尤其重要，否则翻页会重复/丢行。
+- **非法值**：不在白名单内返回 `400 / 40000`，message 形如 `sortBy 不合法，可选值：createdAt, updatedAt, id, likeCount`。**大小写敏感**（`likecount` 不合法）。
+- **性能**：`likeCount` 排序会让查询带上 `LEFT JOIN` 聚合派生表并走 `Using temporary; Using filesort`（按聚合值排序不可避免）。当前数据量下无感，量级上来后这里是第一个瓶颈——取舍与实测 EXPLAIN 见 `docs/DB.md`「按点赞数排序」。
 
 `keyword` 语义（三条，逐条都有验收断言）：
 
