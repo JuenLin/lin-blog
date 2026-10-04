@@ -143,3 +143,8 @@ try {
   if (s) s.close();
   if (chrome) await stopChrome(chrome.child);
 }
+
+// 退出码：0 全绿 / 1 有断言失败 / 2 一条断言都没跑到（前置失败或中途中断）。
+// 这个文件原来**完全没有退出码** —— 有 FAIL 也返回 0，自动化拿它当门禁会漏判。
+if (summary.length === 0) process.exit(2);
+process.exit(summary.every((x) => x.ok) ? 0 : 1);

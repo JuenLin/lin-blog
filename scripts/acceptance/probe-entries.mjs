@@ -201,7 +201,13 @@ try {
   await s.evaluate(`(() => { const el = document.querySelector('.comment-author-link.is-clickable'); if (el) el.click(); return true; })()`);
   const okCl = await waitFor(`location.pathname.startsWith('/user/')`, 8000);
   const p4 = await curPath();
-  log('E4-2 点评论者跳其主页', okCl, `path=${p4}（点的是 admin 自己的评论，应为 /user/${admin.id}）`);
+  // ⚠️ 必须比到**具体是哪个用户的主页**：只判 startsWith('/user/') 的话，
+  // 跳到任何人的主页都算过（期望值 p4 上一版算出来却没参与断言）。
+  log(
+    'E4-2 点评论者跳其主页',
+    okCl && p4 === `/user/${admin.id}`,
+    `path=${p4} 期望=/user/${admin.id}`
+  );
 
   console.log('\n===== 个人主页入口 量化探针汇总 =====');
   const passN = summary.filter((x) => x.ok).length;
@@ -254,4 +260,8 @@ async function cleanupKnownArtifactsSafe() {
   }
 }
 
+// 退出码：0 全绿 / 1 有断言失败 / 2 一条断言都没跑到（前置失败或中途中断）。
+// ⚠️ 空数组 every 恒真，所以必须先挡掉「summary 为空」——否则连不上后端、
+// 在第一句 throw 就中断时，一条断言都没跑却会 exit 0（假绿）。
+if (summary.length === 0) process.exit(2);
 process.exit(summary.every((x) => x.ok) ? 0 : 1);

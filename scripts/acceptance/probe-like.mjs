@@ -369,11 +369,34 @@ async function main() {
     }`
   );
 
+  // 读的是**无障碍属性本身**，不是「有没有这个元素」。
+  //
+  // ⚠️ 注意点赞按钮**不是 `<button>`**：卡片整块是 router-link（真实 <a href>），
+  // 而 HTML 规范不允许 <a> 内嵌交互内容，所以项目约定用
+  // `<span role="button" tabindex="0">`（见 frontend/src/components/ArticleCard.vue）。
+  // 因此断言 SPAN + role=button + tabindex=0，**不能**照搬「tagName === 'BUTTON'」。
+  // aria-label 由组件给出：liked ? '取消点赞' : '点赞'。
+  const likeBtn = JSON.parse(
+    await session.evaluate(`(() => {
+      const b = document.querySelector('.article-card .article-like');
+      return JSON.stringify(b ? {
+        tag: b.tagName,
+        role: b.getAttribute('role'),
+        tab: b.getAttribute('tabindex'),
+        aria: b.getAttribute('aria-label'),
+      } : null);
+    })()`)
+  );
   check(
     'E3',
-    '卡片上有点赞按钮（aria-label 可读）',
-    dom.length > 0 && (await session.evaluate(`document.querySelectorAll('.article-card .article-like').length`)),
-    `按钮数=${await session.evaluate(`document.querySelectorAll('.article-card .article-like').length`)}`
+    '卡片点赞按钮是 span[role=button][tabindex=0] 且 aria-label 可读',
+    dom.length > 0 &&
+      Boolean(likeBtn) &&
+      likeBtn.tag === 'SPAN' &&
+      likeBtn.role === 'button' &&
+      likeBtn.tab === '0' &&
+      ['点赞', '取消点赞'].includes(likeBtn.aria),
+    `tag=${likeBtn && likeBtn.tag} role=${likeBtn && likeBtn.role} tab=${likeBtn && likeBtn.tab} aria=${likeBtn && likeBtn.aria}`
   );
 
   // E4：点第一张卡的点赞按钮 —— 必须 **只** 点赞、不能跳详情页。

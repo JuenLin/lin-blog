@@ -422,8 +422,13 @@ if (s) try {
         ? pass('C2-5', '发表后输入框清空', 'value 为空')
         : fail('C2-5', '发表后输入框清空', '仍有残留内容');
       await go('/article/' + fx.targetId);
-      await waitFor(`document.body.innerText.includes(${JSON.stringify(comment)})`, 8000);
-      pass('C3', '刷新后评论仍在（已落库）', '重新进入详情页仍渲染');
+      // ⚠️ 这里必须接住 waitFor 的返回值再判定。
+      // 原写法是 `await waitFor(...)` 丢返回值 + 紧接一句无条件的 `pass('C3', ...)`，
+      // 等于「脚本跑到这行就算过」—— 评论没落库、刷新后消失也照样绿。
+      const commentPersisted = await waitFor(`document.body.innerText.includes(${JSON.stringify(comment)})`, 8000);
+      commentPersisted
+        ? pass('C3', '刷新后评论仍在（已落库）', '重新进入详情页仍渲染')
+        : fail('C3', '刷新后评论仍在（已落库）', '刷新后页面上找不到该评论');
     } else {
       fail('C2-1', '登录后评论输入框可用', '未出现 textarea');
     }

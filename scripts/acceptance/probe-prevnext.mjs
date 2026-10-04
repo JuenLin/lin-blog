@@ -225,4 +225,8 @@ async function cleanupKnownArtifactsSafe() {
   }
 }
 
+// 退出码：0 全绿 / 1 有断言失败 / 2 一条断言都没跑到（前置失败或中途中断）。
+// ⚠️ 空数组 every 恒真，所以必须先挡掉「summary 为空」——否则连不上后端、
+// 在第一句 throw 就中断时，一条断言都没跑却会 exit 0（假绿）。
+if (summary.length === 0) process.exit(2);
 process.exit(summary.every((x) => x.ok) ? 0 : 1);
