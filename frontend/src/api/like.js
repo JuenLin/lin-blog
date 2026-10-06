@@ -15,3 +15,15 @@ export function likeArticle(id) {
 export function unlikeArticle(id) {
   return request.delete(`/articles/${id}/like`);
 }
+
+// 第十四批：查询当前登录用户是否已点赞该文章（需登录）。
+// 用于刷新详情页 / 切换文章后还原点赞按钮的初始态 —— 列表与详情这类公开接口
+// 不返回 liked（docs/API.md 通用约定），只能靠这个接口补。
+//
+// 响应体：{ liked: boolean }。**不带 likeCount**：详情页已从 GET /api/articles/:id
+// 拿到计数，同一个值若有两个来源，口径不一致时无法判断哪个对。
+//
+// 未登录不要调：后端强制 401，request.js 的 401 拦截器会清 token 并跳登录页。
+export function getArticleLiked(id) {
+  return request.get(`/articles/${id}/liked`);
+}

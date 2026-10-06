@@ -1,6 +1,7 @@
 import {
   likeArticle as likeArticleService,
   unlikeArticle as unlikeArticleService,
+  hasLiked as hasLikedService,
 } from '../services/like.service.js';
 import { sendOk } from '../utils/response.js';
 
@@ -22,6 +23,16 @@ export async function unlike(req, res, next) {
     const data = await unlikeArticleService(req.validated.params.id, req.user.userId);
 
     return sendOk(res, data, 200, '已取消点赞');
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function hasLiked(req, res, next) {
+  try {
+    const data = await hasLikedService(req.validated.params.id, req.user.userId);
+
+    return sendOk(res, data, 200, 'ok');
   } catch (error) {
     return next(error);
   }

@@ -73,6 +73,36 @@ export async function unlikeArticle(articleId, userId) {
 }
 
 /**
+ * 当前登录用户对某篇文章是否已点赞（第十四批，`GET /api/articles/:id/liked`）。
+ *
+ * 只返回 `{ liked }`，**不带 `likeCount`**：调用方（详情页）已从
+ * `GET /api/articles/:id` 拿到计数，同一个值若有两个来源，将来口径不一致时
+ * 无法判断哪个对。
+ *
+ * 文章不存在或已软删返回 404，而不是 `{ liked: false }` —— 与 `POST` / `DELETE`
+ * 保持一致（两者都先调 `requireArticleForWrite`）。返回 false 会让前端渲染成
+ * 「未赞 + 可点」，用户一点就吃 404。
+ *
+ * @param {number} articleId
+ * @param {number} userId 来自 token
+ * @returns {Promise<{ liked: boolean }>}
+ */
+export async function hasLiked(articleId, userId) {
+  await requireArticleForWrite(articleId);
+
+  // 用 findFirst 而不是 findUnique：`likes` 的唯一约束被显式命名为
+  // likes_user_id_article_id_key，Prisma 由此生成的复合 where 键名就叫这个约束名
+  // （不是 `userId_articleId`），写死它意味着 schema 一改名这里就崩。
+  // findFirst 的 WHERE user_id = ? AND article_id = ? 同样命中该唯一索引。
+  const row = await prisma.like.findFirst({
+    where: { userId, articleId },
+    select: { id: true },
+  });
+
+  return { liked: Boolean(row) };
+}
+
+/**
  * 某篇文章的点赞数。实时 COUNT(*)，不在 articles 表存冗余列。
  *
  * @param {number} articleId

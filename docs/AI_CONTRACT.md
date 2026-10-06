@@ -277,6 +277,7 @@ POST   /api/comments           发表评论
 GET    /api/articles/:id/comments   文章评论列表
 POST   /api/articles/:id/like       点赞
 DELETE /api/articles/:id/like       取消点赞
+GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
 ```
 
 > `/api/users` 系列中**仅 `PUT /api/users/me`（改资料）与 `POST /api/users/me/avatar`（上传头像）已实现**，  

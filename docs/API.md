@@ -268,7 +268,7 @@ Authorization: Bearer <token>
 - 文章列表支持 `category` 分类筛选（枚举 `技术` / `生活` / `随笔` / `未分类`），详见 `GET /api/articles`。`category` 与 `keyword` **正交、可叠加**：切分类保留当前 keyword，切 keyword 保留当前 category；非法 `category` 返回 `400 / 40000`。
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
-- **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。它同时也是 `sortBy` 的合法值（「热门」Tab 按它倒序），语义见 `GET /api/articles`。
+- **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。已登录用户想拿 `liked`，另调 `GET /api/articles/:id/liked`（需登录），列表 / 详情的返回结构不受影响。它同时也是 `sortBy` 的合法值（「热门」Tab 按它倒序），语义见 `GET /api/articles`。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。
 - **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
   - 演变史（三批）：第九批引入 `avatar` 时是「用户自填的外链 URL」；第十一批加上传能力，**两种并存**；**本次把外链下线**，只留站内上传。`avatar` 的**列定义**（`VARCHAR(255) NULL`）与 `null`（未设头像）语义**三批都没变过**。
@@ -288,6 +288,7 @@ Authorization: Bearer <token>
 | DELETE | /api/articles/:id          | 删除文章（仅作者，软删除）              | 是  |
 | POST   | /api/articles/:id/like     | 点赞文章（可对自己的文章点赞）             | 是  |
 | DELETE | /api/articles/:id/like     | 取消点赞                        | 是  |
+| GET    | /api/articles/:id/liked    | 查询当前用户是否已点赞该文章（刷新后取按钮态）     | 是  |
 | POST   | /api/comments              | 发表评论                       | 是  |
 | GET    | /api/articles/:id/comments | 文章评论列表                     | 否  |
 
@@ -420,10 +421,10 @@ Authorization: Bearer <token>
 | list[].summary   | string | 后端截取 `content` 前 100 字符，列表不返回全文    |
 | list[].category  | string | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单保证一定在这 4 个值内 |
 | list[].author    | object | 作者 `id` / `username` / `nickname`  |
-| list[].likeCount | number | 该文章的点赞数（第十批新增），实时 `COUNT(*)`；不含 `liked` |
+| list[].likeCount | number | 该文章的点赞数（第十批新增），实时 `COUNT(*)`；不含 `liked`（已登录用户改调 `GET /api/articles/:id/liked`） |
 
 - `likeCount` 是**实时统计**而非冗余字段：由 `likes` 表 `COUNT(*)` 得出，不在 `articles` 表存列，因此永远不会与真实点赞数不一致。
-- 列表**不返回 `liked`**（当前用户是否已赞）。这两个接口无需登录，若要在它们里区分「当前用户是否已赞」，就必须给 `auth` 中间件加「token 无效也不报错」的可选模式 —— 那会改动所有接口共用的中间件，影响面超出点赞功能本身。详见 `POST /api/articles/:id/like` 的「为什么不返回 `liked`」。
+- 列表**不返回 `liked`**（当前用户是否已赞）。这两个接口无需登录，若要在它们里区分「当前用户是否已赞」，就必须给 `auth` 中间件加「token 无效也不报错」的可选模式 —— 那会改动所有接口共用的中间件，影响面超出点赞功能本身。改由独立接口 `GET /api/articles/:id/liked`（需登录）提供，列表与详情本身不动。详见 `POST /api/articles/:id/like` 的「为什么不返回 `liked`」。
 
 `summary` 为原始 `content` 截取，可能包含 Markdown 标记，前端负责渲染时清理。
 
@@ -456,7 +457,7 @@ Authorization: Bearer <token>
 }
 ```
 
-`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`**。`category` 为文章的分类枚举值。
+`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`** —— 详情页刷新后要还原按钮态，由前端在已登录时调 `GET /api/articles/:id/liked`。`category` 为文章的分类枚举值。
 
 失败：
 
@@ -578,9 +579,10 @@ Authorization: Bearer <token>
 给 `auth` 加可选模式能解决这个问题，但**改的是所有接口共用的中间件**，影响面超出点赞这一项功能。按 `docs/AI_CONTRACT.md` 第 13 节第 21 条（发现契约 / API / DB 三边冲突，或涉及公共文件改动时，先列出影响范围等确认），这一项**留待单独排批**。因此本批采用：
 
 - 列表 / 详情**只返回 `likeCount`，不返回 `liked`**；
-- `liked` 由本接口与 `DELETE` 接口的**响应**给出。
+- `liked` 由本接口与 `DELETE` 接口的**响应**给出；
+- 已登录用户**刷新详情页后要拿回按钮态**，走独立接口 `GET /api/articles/:id/liked`（需登录，见同名小节）。
 
-**已知代价（用户已确认，单独排一批改善）**：已点赞的用户刷新详情页后，按钮仍显示「未赞」态（`likeCount` 是对的，只有按钮态不准）。此时再点一次会收到 `409`。MVP 可接受。
+> 上面第 3 条是对「已知代价」的收口。此前已点赞的用户刷新详情页后，按钮仍显示「未赞」态（`likeCount` 是对的，只有按钮态不准，此时再点一次会收到 `409`）。该问题已由 `GET /api/articles/:id/liked` 解决，**列表 / 详情的返回结构与 `auth` 中间件都未改动**。
 
 ---
 
@@ -637,6 +639,62 @@ Authorization: Bearer <token>
 | 对已软删的文章点赞 / 取消点赞      | **404**（复用 `requireArticleForWrite(id)`，与发表评论同一条路径）                         |
 | 文章被软删后，已有的点赞行         | **保留**，不连带删除。文章整体不可见，其 `likeCount` 不会外泄                                     |
 | 点赞者被软删后，他的点赞行         | **保留，且仍计入 `likeCount`** —— 计数只按 `article_id` 过滤，不过滤点赞者。MVP 无用户删除功能故不触发，已登记在 `docs/DB.md`「已知限制」第 3 条 |
+
+---
+
+### GET /api/articles/:id/liked
+
+查询**当前登录用户**对某篇文章是否已点赞。**需要登录**。用途：刷新详情页后还原点赞按钮的初始态。
+
+路径参数：`id`，正整数。**无请求体**。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "liked": true
+  }
+}
+```
+
+| 字段         | 类型      | 说明               |
+| ---------- | ------- | ---------------- |
+| data.liked | boolean | 当前登录用户是否已点赞该文章 |
+
+失败：
+
+| HTTP | code  | message       | 场景                    |
+| ---- | ----- | ------------- | --------------------- |
+| 400  | 40000 | id 非正整数       | 路径参数非法                |
+| 401  | 40100 | 未登录或 token 无效 | 未提供 token、token 无效或过期 |
+| 404  | 40400 | 文章不存在         | 文章不存在**或已被软删除**       |
+
+判断顺序同 `POST` / `DELETE`：参数 → 鉴权（401）→ 文章存在性（404）→ 查询。
+
+#### 为什么单独开接口，而不是给列表 / 详情加 `liked`
+
+列表 / 详情是**无需登录的公开接口**，要在它们里返回 `liked`，就必须给 `auth` 中间件加「token 无效也不报错」的可选模式 —— 那是所有接口共用的中间件，影响面超出点赞本身（理由见 `POST /api/articles/:id/like` 的「为什么不返回 `liked`」）。
+
+本接口**不动 `auth` 一个字**：它本来就要求登录，`auth` 保持强制 401 的单一语义。同时**不改列表 / 详情的返回结构**，既有断言零影响。
+
+#### `data` 只含 `liked`，不带 `likeCount`
+
+调用方（文章详情页）已从 `GET /api/articles/:id` 拿到 `likeCount`。若本接口再返回一份，同一个值就有了两个来源，将来口径不一致时无法判断哪个对。保持最小响应。
+
+#### 文章已软删返回 404，而不是 `{ liked: false }`
+
+与 `POST` / `DELETE /:id/like` 一致（两者都先调 `requireArticleForWrite(id)`）。若返回 `{ liked: false }`，前端会渲染成「未赞 + 可点」，用户一点就吃 404，体验割裂。代价是多一次主键查询，换来三个 like 接口语义完全统一。
+
+#### 前端接入要点
+
+- **仅在已登录时调用**。未登录访问详情页**不发这个请求** —— `request.js` 的 401 拦截器会清 token 并跳登录页，会把匿名读者踢走。
+- 调用时机：详情页 `onMounted`；切换文章时重新拉取。
+- 请求失败：保持 `liked = false`，**不弹错误提示**（非关键路径）。
+- 切换文章时的响应竞态：用 `articleId` 闭包比对，丢弃过期响应。
+- **列表页卡片按钮态不修**：`ArticleCard` 点击时的 409 兜底仍在（已赞时点击会拿到 409 并自动修正为 `liked = true`），卡片态不准时可自愈。
 
 ---
 
@@ -1020,7 +1078,7 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 收藏、标签、评论删除、「只看我的文章」筛选。
 
-> 说明 0：**点赞已实现**（第十批，`POST` / `DELETE /api/articles/:id/like`，列表与详情返回 `likeCount`），已从上表移出。遗留项：`liked`（当前用户是否已赞）不在列表 / 详情返回，刷新详情页后按钮态会显示为「未赞」，**单独排一批改善**。
+> 说明 0：**点赞已实现**（第十批，`POST` / `DELETE /api/articles/:id/like`，列表与详情返回 `likeCount`），已从上表移出。原遗留项「`liked`（当前用户是否已赞）不在列表 / 详情返回，刷新详情页后按钮态会显示为『未赞』」**已解决**（第十四批）：新增需登录的 `GET /api/articles/:id/liked`，列表 / 详情的返回结构与 `auth` 中间件**均未改动**。
 >
 > 说明 1：「只看我的文章」不涉及表结构变更，将来做「我的博客」页时，在 `GET /api/articles` 加一个可选 `authorId` 查询参数即可。
 >

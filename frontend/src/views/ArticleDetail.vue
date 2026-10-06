@@ -141,7 +141,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { deleteArticle, getArticle, listArticles } from '../api/article.js';
-import { likeArticle, unlikeArticle } from '../api/like.js';
+import { likeArticle, unlikeArticle, getArticleLiked } from '../api/like.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
@@ -245,8 +245,10 @@ const absoluteTime = computed(() => formatAbsoluteTime(article.value && article.
  * 第十批：点赞
  * ------------------------------------------------------------------------ */
 
-// 与卡片同口径：公开接口不返回 liked，这里只维护「本次会话点过」。
-// 换文章（load）时复位，否则上一篇的已赞态会串到下一篇。
+// 第十批：公开接口不返回 liked，默认 false，由下面两处修正：
+//   1. 已登录时调 fetchLiked() 拉真实值（第十四批）；
+//   2. 点赞 / 取消的响应，以及 409 / 404 的兜底纠正。
+// 换文章（load）时必须复位，否则上一篇的已赞态会串到下一篇。
 const liked = ref(false);
 
 // 防连点。
@@ -258,6 +260,32 @@ const likeCount = computed(() => {
 
   return typeof count === 'number' ? count : 0;
 });
+
+/**
+ * 第十四批：拉取「当前用户是否已点赞」，还原按钮初始态。
+ *
+ * 只在已登录时调用 —— 未登录发这个请求必然拿到 401，而 request.js 的 401
+ * 拦截器会清 token 并跳登录页，等于把匿名读者从文章页踢走。
+ *
+ * 非关键路径：失败时保持 liked = false 且不弹提示。真的赞过时，用户点一下
+ * 会收到 409，toggleLike 的兜底分支会把它纠正为 true（自愈）。
+ */
+async function fetchLiked() {
+  if (!userStore.isLogin || !article.value) return;
+
+  // 闭包比对：请求期间若切换到别的文章（watch 已触发新一轮 load），这份响应就过期了。
+  const requestedId = articleId.value;
+
+  try {
+    const data = await getArticleLiked(articleId.value);
+
+    if (requestedId !== articleId.value) return;
+
+    liked.value = Boolean(data && data.liked);
+  } catch {
+    // 静默：见上方说明。
+  }
+}
 
 async function toggleLike() {
   // 未登录：跳登录页并带 redirect，登录后能回到这篇文章。
@@ -304,11 +332,15 @@ async function load() {
   loading.value = true;
   notFound.value = false;
   neighborWindow.value = []; // 重置，避免从上一篇/下一篇跳转时残留旧文章的邻居
-  liked.value = false; // 换文章时复位点赞态（接口不返回 liked，无法从数据恢复）
+  liked.value = false; // 换文章先复位，已登录时由下面的 fetchLiked() 拉真实值回填
 
   try {
     article.value = await getArticle(route.params.id);
     setTitle(`${article.value.title} - 博客广场`);
+
+    // 还原点赞按钮态（已登录才有意义）。不 await：它不是阅读正文的前置条件，
+    // 慢了也不该拖住渲染，与下面的 loadNeighbors 同口径。
+    fetchLiked();
   } catch (error) {
     // 文章不存在 / 已被软删除，后端返回 40400；详情页不抛红，按空态处理。
     article.value = null;
