@@ -11,6 +11,21 @@
         修改成功后需要重新登录。已登录的其他设备不会立即失效，密码变更请谨慎。
       </el-alert>
 
+      <!-- 密码要求：纯静态说明，不做 JS 校验、不给实时反馈。
+           文案与后端 auth.validator.js 的 newPassword 规则严格一致
+           （6~100 字符、不 trim、无复杂度要求），所以这里刻意不写常见的
+           「至少 8 位 / 必须含字母和数字」——那与后端实际规则不符，会误导用户。
+           同时它也承担占位职责：本页内容比「编辑资料」页少，
+           没有这块时卡片底部会空出约 200px。 -->
+      <div class="pw-rules">
+        <p class="pw-rules-title">密码要求</p>
+        <ul class="pw-rules-list">
+          <li>长度 6 到 100 个字符</li>
+          <li>首尾空格也算字符，不会被自动去除</li>
+          <li>不要与其他网站共用同一个密码</li>
+        </ul>
+      </div>
+
       <!-- label-width 必须显式给足：「确认新密码」5 个汉字（约 70px）+ 必填星号，
            再加label 自带的 padding-right: 12px，88px 会撑不下导致标签换行、按钮被挤到右边。
            label-position 默认是right，标签长短不一會右对齐得参差不齐，这里显式改成 left。 -->
@@ -187,6 +202,31 @@ function goBack() {
 
 .change-password-tip {
   margin-bottom: 16px;
+}
+
+/* 静态说明块：照抄 ProfileEdit 里 .avatar-preview 的 bordered 观感
+   （border + border-radius 8 + padding 16），全站内嵌说明块统一一种长相。
+   颜色全走主题令牌，浅/暗自动成对。 */
+.pw-rules {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.pw-rules-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.pw-rules-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-regular);
 }
 
 /* 兜底：即使在很窄的视口下，标签也不折行（label 已有 100px 固定宽，
