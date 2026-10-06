@@ -14,6 +14,11 @@ const ArticleEditorView = () => import('../views/ArticleEditor.vue');
 const UserProfileView = () => import('../views/UserProfile.vue');
 // 第二步：修改密码，需登录，未登录由beforeEach 统一跳登录页（带 redirect）。
 const ChangePasswordView = () => import('../views/ChangePassword.vue');
+// 第十四批 A5：设置页壳（左侧导航 + 右侧子视图）。
+// 下面两个子页面是它的 children，路径 /settings/profile、/settings/password 与
+// 各自的 name 都**没变**，变的只是「多了一层壳」和下拉菜单的入口合并成一个。
+const SettingsView = () => import('../views/Settings.vue');
+const ProfileEditView = () => import('../views/ProfileEdit.vue');
 
 // meta.layout 决定 App.vue 是否渲染 Header / Footer：
 // - 默认（不写）：带 Header + Footer
@@ -65,27 +70,45 @@ const routes = [
     component: UserProfileView,
   },
   {
-    // 修改密码（PUT /api/auth/password）：
-    // 需登录——未登录时 beforeEach 跳登录页并带 redirect，登录后可直接回来。
-    // 路径刻意用 /settings/password 而不是 /user/password：
-    // 将来「/settings」做个人资料编辑时，密码与资料可以并排成子页面。
-    path: '/settings/password',
-    name: 'settings-password',
-    component: ChangePasswordView,
+    // 第十四批 A5：/settings 本身只是个壳，进来默认落在「编辑资料」。
+    // redirect 用 name 而不是写死 '/settings/profile'：路径以后调整不用改这里。
+    //
+    // 为什么改成嵌套而不是让两个页面各自复制一份侧栏：
+    // 侧栏只有一份，加第三个设置项时只改 Settings.vue 一处。
+    // 代价是两个子页面的根容器原本是「整页居中」，现在变成「右侧区域居中」，
+    // 它们各自的 el-card 定宽不变，视觉上只是整体右移。
+    path: '/settings',
+    name: 'settings',
+    component: SettingsView,
+    redirect: { name: 'settings-profile' },
     meta: {
       requiresAuth: true,
     },
-  },
-  {
-    // 编辑资料（第九批）：改头像与简介，走 PUT /api/users/me。
-    // 路径沿用 /settings/* 的分组（与修改密码同级），而不是 /profile/edit——
-    // 前者已经是「登录态下的账号操作」这一组，两个页面并列更清楚。
-    path: '/settings/profile',
-    name: 'settings-profile',
-    component: () => import('../views/ProfileEdit.vue'),
-    meta: {
-      requiresAuth: true,
-    },
+    children: [
+      {
+        // 修改密码（PUT /api/auth/password）：
+        // 需登录——未登录时 beforeEach 跳登录页并带 redirect，登录后可直接回来。
+        // 路径刻意用 /settings/password 而不是 /user/password：
+        // 与「编辑资料」并列在 /settings 下，两个页面同级更清楚。
+        path: 'password',
+        name: 'settings-password',
+        component: ChangePasswordView,
+        meta: {
+          requiresAuth: true,
+        },
+      },
+      {
+        // 编辑资料（第九批）：改头像与简介，走 PUT /api/users/me。
+        // 路径沿用 /settings/* 的分组（与修改密码同级），而不是 /profile/edit——
+        // 前者已经是「登录态下的账号操作」这一组，两个页面并列更清楚。
+        path: 'profile',
+        name: 'settings-profile',
+        component: ProfileEditView,
+        meta: {
+          requiresAuth: true,
+        },
+      },
+    ],
   },
 ];
 

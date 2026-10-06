@@ -21,11 +21,11 @@
       <el-dropdown-menu>
         <!-- 个人主页入口（/user/:id，纯前端跳转，不改接口）。 -->
         <el-dropdown-item v-if="myProfileId" command="profile">我的主页</el-dropdown-item>
-        <!-- 编辑资料（第九批）：需登录，走 PUT /api/users/me，改头像与简介。 -->
-        <el-dropdown-item command="edit-profile">编辑资料</el-dropdown-item>
-        <!-- 修改密码（第二步）：需登录，走的是 PUT /api/auth/password。
-             放在账号操作一组的末尾、「退出登录」上方—— 「退出登录」是会话操作，隔开一段。 -->
-        <el-dropdown-item command="password">修改密码</el-dropdown-item>
+        <!-- 第十四批 A5：原来「编辑资料」「修改密码」两个平级项合并成一个「设置」，
+             点进去是 /settings（默认显示编辑资料），由左侧导航在两项间切换。
+             两项都还在，只是从「菜单里选一个」变成「进设置页再选」，
+             将来加第三个设置项时菜单不再变长。 -->
+        <el-dropdown-item command="settings">设置</el-dropdown-item>
         <el-dropdown-item command="logout">退出登录</el-dropdown-item>
       </el-dropdown-menu>
     </template>
@@ -80,15 +80,11 @@ function handleCommand(command) {
     return;
   }
 
-  if (command === 'edit-profile') {
-    router.push({ name: 'settings-profile' });
-    return;
-  }
-
+  // 第十四批 A5：走 /settings 壳，由 redirect 落到「编辑资料」子页。
   // 整个下拉菜单只在登录态渲染（AppHeader 的 v-if），所以直接推即可；
   // 真要手工兜一道，路由的 meta.requiresAuth 也会把未登录者弹去登录页。
-  if (command === 'password') {
-    router.push({ name: 'settings-password' });
+  if (command === 'settings') {
+    router.push({ name: 'settings' });
     return;
   }
 
@@ -100,12 +96,47 @@ function handleCommand(command) {
 </script>
 
 <style scoped>
+/* 顶栏右上角的用户入口。第十四批补了三种状态的视觉反馈：
+   hover / 菜单展开 / 键盘焦点 —— 改之前这三者都没有，鼠标移上去、
+   点开菜单，用户名和倒三角都纹丝不动，看不出这是个能点的控件。
+   全部走 style.css 的令牌（--chip-bg / --chip-text 浅暗各一套），不写死色值。 */
 .user-dropdown {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  /* 底块只做视觉、不占布局：padding 撑出可点区域，再用等量负 margin 抵消，
+     外边距盒尺寸与改前一致 —— 顶栏三个子元素的 x / w / 垂直中心都不变
+     （改后实测过：见本次提交的验收记录）。 */
+  padding: 6px 10px;
+  margin: -6px -10px;
+  border-radius: var(--radius-panel);
   cursor: pointer;
   outline: none;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+/* hover 与「菜单已展开」给同一套高亮，让用户知道菜单现在是开着的。
+   aria-expanded 由 Element Plus 自己维护（收起 false / 展开 true），
+   挂在它上面就能拿到展开态，template 与 script 一行都不用改。
+   注意菜单面板是 teleport 到 body 的，不是本元素的兄弟或后代，
+   所以除 aria-expanded 外没有别的纯 CSS 办法能选中展开态。 */
+.user-dropdown:hover,
+.user-dropdown[aria-expanded='true'] {
+  background: var(--chip-bg);
+}
+
+.user-dropdown:hover .user-name,
+.user-dropdown[aria-expanded='true'] .user-name,
+.user-dropdown:hover .user-caret,
+.user-dropdown[aria-expanded='true'] .user-caret {
+  color: var(--chip-text);
+}
+
+/* 键盘焦点：上面为了鼠标点击不出描边写了 outline: none，
+   这里必须补回来 —— 否则 Tab 到这个下拉时完全看不出焦点落在哪（既有缺陷）。 */
+.user-dropdown:focus-visible {
+  outline: 2px solid var(--chip-text);
+  outline-offset: 3px;
 }
 
 /* 色块头像（无 avatar 时的回退形态） */
@@ -134,10 +165,13 @@ function handleCommand(command) {
 .user-name {
   font-size: 14px;
   color: var(--text-strong);
+  /* 与底块同步过渡，深浅两色都走 --transition-base（全站统一 200ms） */
+  transition: color var(--transition-base);
 }
 
 .user-caret {
   font-size: 12px;
   color: var(--text-muted);
+  transition: color var(--transition-base);
 }
 </style>

@@ -177,7 +177,12 @@ function goBack() {
 }
 
 .change-password-card {
-  width: 460px;
+  /* 同 .profile-edit-card：宽度改为「弹性 + 520 封顶」，与资料页同宽。 */
+  width: 100%;
+  max-width: 520px;
+  /* min-height 540 与资料页对齐：本页内容只有 374，拉高后留白，
+     换来两页切换时底边不动（原来要上收 108px）。 */
+  min-height: 540px;
 }
 
 .change-password-tip {

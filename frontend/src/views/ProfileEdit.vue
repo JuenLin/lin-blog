@@ -90,7 +90,7 @@
           <el-input
             v-model="form.bio"
             type="textarea"
-            :rows="4"
+            :rows="2"
             maxlength="200"
             show-word-limit
             placeholder="介绍一下你自己，留空表示不改"
@@ -369,7 +369,13 @@ async function handleSubmit() {
 }
 
 .profile-edit-card {
-  width: 520px;
+  /* width:100% + max-width 而不是写死 520px：窄屏下先收缩到容器宽度，
+     宽屏封顶 520，与「修改密码」页同宽 —— 两页切换时左边缘不再横移。 */
+  width: 100%;
+  max-width: 520px;
+  /* min-height 540：实测本页内容高桌面 482 / 754 宽 503 / 480 宽 531，
+     540 覆盖最坏值，与密码页等高 —— 切换时卡片底边不再上收 108px。 */
+  min-height: 540px;
 }
 
 .profile-edit-tip {
