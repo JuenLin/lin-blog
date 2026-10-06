@@ -90,7 +90,7 @@
           <el-input
             v-model="form.bio"
             type="textarea"
-            :rows="2"
+            :rows="4"
             maxlength="200"
             show-word-limit
             placeholder="介绍一下你自己，留空表示不改"
