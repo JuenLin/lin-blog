@@ -537,6 +537,63 @@ LIMIT 10 OFFSET 0
 
 ---
 
+## 第 2 批：用户主页接口（零 schema 变更）
+
+新增三个接口（`docs/API.md` 有完整规格）：
+
+| 接口                              | 用途                    | schema 影响                    |
+| -------------------------------- | --------------------- | --------------------------- |
+| `GET /api/users/:id`             | 用户详情 + 三个计数          | **无**（只读现有 `users` / `articles` / `likes`） |
+| `GET /api/users/:id/articles`     | 用户文章 Tab，真后端分页         | **无**（复用 `articles` 现有查询与唯一索引）        |
+| `GET /api/users/me/likes`         | 当前用户点赞过的文章 Tab        | **无**（复用 `likes` 现有查询与 `likes_user_id_article_id_key`） |
+
+### 三条登记（本批唯一的 DB 侧内容）
+
+**① 不新增表、不加列、不建索引、不做迁移。**
+
+三个接口全部只读既有表：`users`、`articles`、`likes`、`comments`。没有 `CREATE TABLE`、没有 `ALTER TABLE`，所以**「迁移记录」表本批不新增行**，`prisma migrate status` 应仍显示 6 个迁移全部 applied、无 pending。写实现时**不需要跑 `migrate dev`** —— 如果发现需要，那说明实现走偏了，回头查是不是把接口字段当成了列。
+
+**② 三个计数一律实时 `COUNT(*)`，不落冗余列。**
+
+`GET /api/users/:id` 返回的 `articleCount` / `receivedLikeCount` / `receivedCommentCount`：
+
+- **不往 `users` 表加列**。三个数字全部实时查，与文章 `likeCount` 是同一纪律（`likeCount` 也没有 `articles.like_count` 冗余列，见「likes」小节「按点赞数排序」）。
+- **理由**：三个数字都随软删实时变化（作者删文后立即下降）。冗余列要么每次写路径维护（漏一处就长期不一致），要么加定时任务对账，两者复杂度都高于实时 `COUNT(*)` 的成本 —— 当前数据量下单次 `COUNT` 是毫秒级。
+- **口径必须与列表接口对齐**：`articleCount` 排除 `deletedAt IS NOT NULL` 的文章；`receivedLikeCount` / `receivedCommentCount` 也只统计**未软删文章**上的记录。三者都走 `whereNotDeleted()`，**禁止手写 `deletedAt: null`**（见「查询约定」）。
+- **`receivedLikeCount` 含自赞**：`POST /api/articles/:id/like` 允许给自己的文章点赞，所以「获赞数」不排除本人点赞，与 `likeCount` 同为 all-time 累计、不做时间窗衰减。
+- 探针不要断言这三个数字的绝对值 —— 它们随测试数据变动。断言「用户 A 有 N 篇未软删文章时 `articleCount` 为 N」这种**关系**，不要断言具体数字。
+
+**③ `likedAt` 是响应层虚拟字段，不建列。**
+
+`GET /api/users/me/likes` 的 `list[].likedAt` = 点赞时间：
+
+- **数据库里没有 `liked_at` 列，也不需要有** —— 这个值就是 `likes.created_at` 本身（`Like` 模型的自带列），API 层起名叫 `likedAt` 只是为了和 `articles.createdAt`（文章发布时间）在同一个响应对象里区分语义。
+- **Prisma 侧不存在 `likedAt` 字段**：直接写 `orderBy: { likedAt: 'desc' }` 会报 `Invalid ...`（实测）。必须由 `buildOrderBy()` 的 `map` 翻译成 `{ createdAt: order }`（`likes.createdAt`），与 `ARTICLE_SORT_MAP` 同一机制。
+- **如果将来真的要「点赞时间可单独排序 / 独立于创建时间」，那才需要加列**；现在不需要 —— 加了就是冗余，与 ② 同一条纪律。
+
+### 为什么不加冗余列（通用原则，跨批适用）
+
+本批三个接口一个列都不加，但结论不止适用于本批：**凡是「可由既有列实时算出」的展示型数字，一律不加冗余列。**
+
+判断标准：加冗余列的收益是省一次查询，代价是多一处写路径维护 + 一处对账逻辑。`COUNT(*)` 在 MySQL 上走索引，成本足够低，收益远小于维护成本。真正该加列的是「算不出来」的数据（比如「最后登录时间」这种外部事件写入的值）。
+
+**推论：将来第 4 批的 `follows` 表是这张表的少数例外** —— 关注数虽然也能 `COUNT` 出来，但 `follows` 表本身是业务必需（关注关系要存），不是为省查询而加的冗余。
+
+### 与「已批准的例外」的关系（**本批不新增条目**）
+
+契约第 2 节的「已批准的例外」目前是 **4 项**，本批**不新增、不改动**其中任何一项：
+
+| # | 批次   | 例外内容                          | 归属禁令    |
+|---|------|------------------------------|-----------|
+| 1 | 第九批  | 新增 `users.avatar` / `users.bio`   | schema 禁令   |
+| 2 | 第十批  | 新建 `likes` 表                    | schema 禁令   |
+| 3 | 第十一批 | 引入 `multer` 依赖                 | 依赖禁令     |
+| 4 | 分类功能 | 新增 `articles.category`           | schema 禁令   |
+
+**本批零 schema 变更、零新依赖，因此不构成例外** —— 不需要审批，也不需要改契约。例外数会在**第 4 批（`follows` 新建表）**变成 5 项，那时才动契约第 2 节。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。

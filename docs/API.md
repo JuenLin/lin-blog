@@ -20,8 +20,6 @@
 | 40900 | 资源冲突          |
 | 50000 | 服务器错误         |
 
-
-
 ---
 
 ## 通用接口（已实现）
@@ -273,24 +271,30 @@ Authorization: Bearer <token>
 - **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
   - 演变史（三批）：第九批引入 `avatar` 时是「用户自填的外链 URL」；第十一批加上传能力，**两种并存**；**本次把外链下线**，只留站内上传。`avatar` 的**列定义**（`VARCHAR(255) NULL`）与 `null`（未设头像）语义**三批都没变过**。
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
+- **用户主页接口（第 2 批）**：`GET /api/users/:id`（详情 + 计数）、`GET /api/users/:id/articles`（文章 Tab）、`GET /api/users/me/likes`（点赞 Tab，仅本人）。**前两个无需登录，第三个必须登录**。用户不存在或已软删一律 `404 / 40400`。
+- **用户主页的计数一律实时 `COUNT(*)`**：`articleCount` / `receivedLikeCount` / `receivedCommentCount` 三个数字都不落 `users` 冗余列，与文章 `likeCount` 同一纪律；且**只统计未软删的文章及其上的记录**（作者删文后计数下降是预期行为）。**本批零 schema 变更**。
+- **「用户不存在」与「用户没发过文章」是两个状态**：用户存在但 0 篇文章时，`GET /api/users/:id/articles` 返回 `200` + 空 `list` + `total: 0`，**不是 404**。前端据此渲染空态，不要把整页判成不存在。
 
 ### 接口清单
 
-| 方法     | 路径                         | 说明                         | 登录 |
-| ------ | -------------------------- | -------------------------- | -- |
-| PUT    | /api/auth/password         | 修改当前用户密码（详见通用接口一节）         | 是  |
+| 方法     | 路径                         | 说明                                                | 登录 |
+| ------ | -------------------------- | ------------------------------------------------- | -- |
+| PUT    | /api/auth/password         | 修改当前用户密码（详见通用接口一节）                                | 是  |
 | PUT    | /api/users/me              | 修改当前用户资料（简介；`avatar` 只能传 `null` 清空，**设置头像走上传接口**） | 是  |
-| POST   | /api/users/me/avatar       | 上传头像（multipart，详见业务接口一节）      | 是  |
-| POST   | /api/articles              | 发布文章                       | 是  |
-| GET    | /api/articles              | 博客广场列表                     | 否  |
-| GET    | /api/articles/:id          | 文章详情                       | 否  |
-| PUT    | /api/articles/:id          | 编辑文章（仅作者）                  | 是  |
-| DELETE | /api/articles/:id          | 删除文章（仅作者，软删除）              | 是  |
-| POST   | /api/articles/:id/like     | 点赞文章（可对自己的文章点赞）             | 是  |
-| DELETE | /api/articles/:id/like     | 取消点赞                        | 是  |
-| GET    | /api/articles/:id/liked    | 查询当前用户是否已点赞该文章（刷新后取按钮态）     | 是  |
-| POST   | /api/comments              | 发表评论                       | 是  |
-| GET    | /api/articles/:id/comments | 文章评论列表                     | 否  |
+| POST   | /api/users/me/avatar       | 上传头像（multipart，详见业务接口一节）                          | 是  |
+| POST   | /api/articles              | 发布文章                                              | 是  |
+| GET    | /api/articles              | 博客广场列表                                            | 否  |
+| GET    | /api/articles/:id          | 文章详情                                              | 否  |
+| PUT    | /api/articles/:id          | 编辑文章（仅作者）                                         | 是  |
+| DELETE | /api/articles/:id          | 删除文章（仅作者，软删除）                                     | 是  |
+| POST   | /api/articles/:id/like     | 点赞文章（可对自己的文章点赞）                                   | 是  |
+| DELETE | /api/articles/:id/like     | 取消点赞                                              | 是  |
+| GET    | /api/articles/:id/liked    | 查询当前用户是否已点赞该文章（刷新后取按钮态）                           | 是  |
+| POST   | /api/comments              | 发表评论                                              | 是  |
+| GET    | /api/articles/:id/comments | 文章评论列表                                            | 否  |
+| GET    | /api/users/:id             | 用户详情（含文章数 / 获赞数 / 评论数）                            | 否  |
+| GET    | /api/users/:id/articles    | 该用户发布的文章列表（真后端分页）                                 | 否  |
+| GET    | /api/users/me/likes        | 我点赞过的文章列表（分页，**仅本人**）                             | 是  |
 
 ---
 
@@ -300,11 +304,11 @@ Authorization: Bearer <token>
 
 请求体：
 
-| 字段      | 类型     | 必填 | 校验                   |
-| ------- | ------ | -- | -------------------- |
-| title   | string | 是  | 1–100 字符，trim，不能为纯空格 |
-| content | string | 是  | 1–20000 字符           |
-| category | string | 否 | 枚举 `技术` / `生活` / `随笔` / `未分类`；**省略时默认 `未分类`**；非法值返回 `400 / 40000` |
+| 字段       | 类型     | 必填 | 校验                                                                |
+| -------- | ------ | -- | ----------------------------------------------------------------- |
+| title    | string | 是  | 1–100 字符，trim，不能为纯空格                                              |
+| content  | string | 是  | 1–20000 字符                                                        |
+| category | string | 否  | 枚举 `技术` / `生活` / `随笔` / `未分类`；**省略时默认 `未分类`**；非法值返回 `400 / 40000` |
 
 > 备注：`content` 的数据库类型为 `MEDIUMTEXT`（见 `docs/DB.md`），不影响本接口契约。
 
@@ -317,6 +321,7 @@ Authorization: Bearer <token>
 ```
 
 > `category` 省略时后端填入默认值 `未分类`；`"category": "未分类"` 与省略等价。
+
 
 成功：HTTP 201
 
@@ -630,6 +635,7 @@ Authorization: Bearer <token>
 - 点赞是**一个动作**，不是一条可隐藏的内容，没有「隐藏但保留」的语义；
 - 若做软删，同一 `(user_id, article_id)` 取消后再点赞会撞唯一约束，只能改成 `UPDATE ... SET deleted_at = NULL` 而非 `INSERT`，「点赞 = 该行存在」这个不变式就不成立了。
 
+
 因此取消点赞是 `DELETE FROM likes WHERE user_id = ? AND article_id = ?`，且**用 `deleteMany` 而非 `delete`** —— 后者在记录不存在时会抛 `P2025`，前者返回 `{ count }`，用 `count === 0` 判断「没赞过」更直接。
 
 #### 软删除联动
@@ -780,7 +786,7 @@ Authorization: Bearer <token>
 
 修改当前登录用户的资料（头像 / 简介）。**需要登录**。身份完全取自 token。
 
-路径用 `/me` 而非 `/:id`：本接口**只允许改自己**，不接受路径参数指定用户。用 `PUT /api/users/:id` 会把「用户管理」语义一并打开（未来要加管理员功能时容易混淆），且路径参数可枚举。本项目 MVP 不做用户管理，**这是本项目的 user 模块之一，另一个是 `POST /api/users/me/avatar`（上传头像）**。
+路径用 `/me` 而非 `/:id`：本接口**只允许改自己**，不接受路径参数指定用户。用 `PUT /api/users/:id` 会把「用户管理」语义一并打开（未来要加管理员功能时容易混淆），且路径参数可枚举。本项目 MVP 不做用户管理，**这是本项目的 user 模块接口之一（该节只讲改资料；user 模块共 5 个已实现接口，完整清单见文末「已实现但不在上表内」一段）**。
 
 请求头：
 
@@ -953,6 +959,7 @@ HTTP 200，**返回完整的 public user**（比 `GET /api/auth/me` 多`avatar` 
 | 权限 | 天然只能改自己 | 还要额外判断「谁能用这个 url」 |
 | 通用性 | 只服务头像 | 将来文章插图可复用 |
 
+
 MVP 只有头像一个上传场景，选专用的那个。将来真出现第二个场景（文章插图）时再抽通用 `/api/upload`，本接口保留为语义化的专用入口。
 
 > 外链下线后，本接口是**设置头像的唯一入口**（`PUT /api/users/me` 只能把它清空）。上表「与 `PUT /me` 的关系」一行的意义正在于此：如果当初选了通用 `/api/upload`，外链一封，就必须额外给通用接口补一套「写库 + 清旧文件」的逻辑才能用。
@@ -1057,16 +1064,261 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 
 ---
 
+### GET /api/users/:id
+
+用户详情（公开只读）。**无需登录**。对应契约第 5 节的 `GET /api/users/:id`，本批把它从「未实现」转为已实现。
+
+存在的理由：`UserProfile.vue` 原先靠「从该作者的文章里反推 `author`」拿昵称与头像，**该用户 0 篇文章时头部会退化成「用户 #id」**。有了本接口，头部信息不再依赖文章列表。
+
+请求：无查询参数、无请求体。路径参数 `id` 必须是正整数，非法返回 `400 / 40000`。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "id": 1,
+    "username": "demo",
+    "nickname": "Demo",
+    "avatar": "/uploads/avatars/1/1730000000000-ab12cd34.png",
+    "bio": "写点东西，也看点东西。",
+    "createdAt": "2026-09-29T14:00:00.000Z",
+    "articleCount": 11,
+    "receivedLikeCount": 7,
+    "receivedCommentCount": 3
+  }
+}
+```
+
+| 字段                | 类型              | 说明                                                                        |
+| ----------------- | --------------- | ------------------------------------------------------------------------- |
+| id                | number          | 用户 id                                                                     |
+| username          | string          | 用户名                                                                       |
+| nickname          | string \| null  | 昵称；未设置时为 `null`（前端按 `nickname \|\| username` 回退）                          |
+| avatar            | string \| null  | 头像，语义与 `PUT /api/users/me` 一致：**只有 `/uploads/` 站内路径一种形态**（可能为 `null`）。前端渲染前必须补后端 origin，规则见「前端调用约定」 |
+| bio               | string \| null  | 个人简介；未设置时为 `null`                                                         |
+| createdAt         | string          | 注册时间，ISO 8601 UTC                                                         |
+| articleCount      | number          | 该用户**未软删**的文章数                                                            |
+| receivedLikeCount | number          | 该用户**未软删**文章收到的点赞总数（实时 `COUNT(*)`）                                       |
+| receivedCommentCount | number | 该用户**未软删**文章下**未软删**的评论数（即「收到的评论数」，非他发出的评论数）                    |
+
+**字段来源**：前 6 个字段与 `PUT /api/users/me` / `POST /api/users/me/avatar` 返回的 public user **逐字相同**（同一份 `PUBLIC_FIELDS`，见 `backend/src/services/user.service.js`）—— 三个接口返回同一个对象，前端可以无差别地用它更新 store。
+
+**计数口径（四条，逐条都要写清）**：
+
+- **全部实时 `COUNT(*)`，不加冗余列**：与文章 `likeCount` 同一纪律（本文件「通用约定」/ 契约 §11）。三个计数都不进 `users` 表，**本批零 schema 变更**。
+- **只数未软删的内容**：`articleCount` 排除 `deletedAt IS NOT NULL` 的文章；`receivedLikeCount` / `receivedCommentCount` 也只统计未软删文章上的记录。作者删文后计数下降是**预期行为**，不是 bug。
+- **`receivedLikeCount` 含本人给自己文章的赞**：`POST /api/articles/:id/like` 允许给自己的文章点赞（接口清单已注明），所以「获赞数」不排除自赞。与 `likeCount`（某篇文章的赞数）口径一致，都是 all-time 累计、不做时间窗衰减。
+- **不含 `likeGivenCount`（我赞过多少篇）**：那个数字由 `GET /api/users/me/likes` 的 `total` 提供，本接口不重复给 —— 同一个数字两个来源，将来口径不一致时无法判断哪个对。
+
+**刻意不含**：`password`（永不进 select）、`updatedAt`、`email`（表里没有）、关注数 / 粉丝数（第 4 批 `follows` 表的事）。
+
+失败：
+
+| HTTP | code  | message    | 触发                                             |
+| ---- | ----- | ---------- | ---------------------------------------------- |
+| 400  | 40000 | `id 必须是正整数` | 路径参数非正整数                                        |
+| 404  | 40400 | `用户不存在`    | id 不存在，**或该用户已软删**（`deletedAt IS NOT NULL`）    |
+
+> 已软删的用户返回 **404** 而不是「返回基本信息」：与 `GET /api/articles/:id` 的软删口径一致（契约 §9）。他名下的文章仍留在广场、`author` 照常返回（通用约定最后一条），但**主页不可访问**。
+
+---
+
+### GET /api/users/:id/articles
+
+该用户发布的文章列表，**真后端分页**（个人主页「文章」Tab）。**无需登录**。
+
+查询参数：
+
+| 字段       | 类型     | 必填 | 校验                                                        |
+| -------- | ------ | -- | --------------------------------------------------------- |
+| page     | number | 否  | 默认 1                                                      |
+| pageSize | number | 否  | 默认 10，最大 100                                               |
+| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt` |
+| order    | string | 否  | `asc` 或 `desc`，默认 `desc`                                  |
+
+- **不支持 `keyword` / `category`**：搜索与分类是「广场」维度的筛选，个人主页不叠加（将来要加再扩，不影响现有字段）。
+- `sortBy` 语义、次级排序 `id`、非法值 `400 / 40000`，全部与 `GET /api/articles` 一致（见该节）。`likeCount` 同样是计算字段，走 `buildOrderBy` 的 `ARTICLE_SORT_MAP` 翻译，编译进单条 SQL。
+
+成功：HTTP 200 —— 响应**与 `GET /api/articles` 完全同形**（`{ list, page, pageSize, total, totalPages }`），`list[]` 由同一个 `toArticleListItem()` 生成：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      {
+        "id": 1,
+        "title": "我的第一篇博客",
+        "summary": "正文前 100 字……",
+        "category": "技术",
+        "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
+        "likeCount": 3,
+        "createdAt": "2026-09-29T14:00:00.000Z",
+        "updatedAt": "2026-09-29T14:00:00.000Z"
+      }
+    ],
+    "page": 1,
+    "pageSize": 10,
+    "total": 11,
+    "totalPages": 2
+  }
+}
+```
+
+- `total` 是该作者**未软删文章的总数**（后端 `COUNT`），**不受 100 上限约束** —— 这正是它与旧实现（前端过滤 100 窗）的本质区别。
+- `list[].author` 仍然内嵌返回：与广场列表同形，前端 `ArticleCard` 可原样复用。
+
+失败：
+
+| HTTP | code  | message | 触发                                    |
+| ---- | ----- | ------- | ------------------------------------- |
+| 400  | 40000 | 见 `GET /api/articles` | 分页参数 / `sortBy` 非法，或 `id` 非正整数     |
+| 404  | 40400 | `用户不存在`  | 用户不存在或已软删                             |
+
+> **用户存在但 0 篇文章 ≠ 404**：此时返回 `200`，`list: []`、`total: 0`、`totalPages: 0`。前端据此渲染空态，而不是把用户主页整页判成不存在。
+
+---
+
+### GET /api/users/me/likes
+
+当前登录用户点赞过的文章列表（个人主页「点赞」Tab）。**需要登录**。
+
+- 路径用 `/me/likes` 而**不是** `/:id/likes`：**只提供查自己**，不提供按 id 查他人点赞记录的能力 ——「谁赞过什么」属个人隐私维度，与 `PUT /api/users/me`（只能改自己）同一条原则。契约第 5 节没有这个路径，属本批新增。
+- 与 `GET /api/users/:id` 不冲突：`/me/likes` 是两段路径、`/:id` 是一段，Express 不会误匹配；注册时仍把 `/me/likes` 放在 `/:id` **之前**（防御将来新增 `/:id/xxx` 时的歧义）。
+- **`GET /api/users/me`（不带 `/likes`）会命中 `/:id` 并回 `400`** —— 实测 `z.coerce.number()` 对非数字字符串报 `Invalid input: expected number, received NaN`。**这是可接受的行为**，理由：① 前端不会发这个请求（头像与资料走 `PUT /me`、`POST /me/avatar`）；② 回 `400 / 40000` 而不是 `404`，语义上是「这个 id 不合法」而非「资源不存在」，不算误导；③ 为此专门加一条 `GET /me` 别名反而多一个入口、多一处将来要维护的行为。**明确记下来，免得将来有人当 bug 修**。
+- method 不冲突：`PUT /me`（改资料）、`POST /me/avatar`（上传头像）、`GET /me/likes`（点赞列表）三者 path 相同但 method 不同，Express 按 method 分派，互不影响。
+
+查询参数：
+
+| 字段       | 类型     | 必填 | 校验                                            |
+| -------- | ------ | -- | --------------------------------------------- |
+| page     | number | 否  | 默认 1                                          |
+| pageSize | number | 否  | 默认 10，最大 100                                   |
+| sortBy   | string | 否  | 白名单 `likedAt` / `createdAt` / `likeCount`，默认 `likedAt` |
+| order    | string | 否  | `asc` 或 `desc`，默认 `desc`                      |
+
+`sortBy` 语义（三个都是 **API 层字段名**，需要翻译成 Prisma 的 orderBy）：
+
+| sortBy       | 含义                            | Prisma orderBy|
+| ------------ | ----------------------------- | ---------------------------------------------|
+| `likedAt`    | **点赞时间**（`likes.createdAt`）    | `{ createdAt: order }`                        |
+| `createdAt`  | 文章发布时间（`articles.createdAt`）  | `{ article: { createdAt: order } }`           |
+| `likeCount`  | 文章的获赞数（`likes` 表聚合）           | `{ article: { likes: { _count: order } } }`   |
+
+
+- 次级排序固定 `likes.id`（真实列，保证翻页稳定，见 `DEFAULT_SECONDARY_SORT`）。
+
+> **次级排序为什么直接写 `{ id: order }` 就够，不需要（也不能）写 `{ likes: { id: order } }`**
+>
+> 这一条实测过两次（`prisma.like.findMany`，直接打库验证，不是推断）：
+>
+> | 写法                                | 结果                | 排的是谁                        |
+> | --------------------------------- | ----------------- | --------------------------- |
+> | `{ id: order }`                    | ✅ 接受             | **`likes.id`**（查询模型的 id）    |
+> | `{ likes: { id: order } }`         | ❌ `Invalid ...`    | 报错——`Like` 模型上没有 `likes` 关系    |
+> | `{ article: { id: order } }`       | ✅ 接受             | `articles.id`（**另一个东西**）    |
+>
+> 关键区别在于**查询的主模型是谁**：本接口从 `likes` 表出发（要拿到 `likes.createdAt` 当 `likedAt`），所以顶层 `{ id }` 解析成 `Like.id`。写成 `{ article: { id } }` 才会切到 `articles.id` —— 那是**另一个语义**（文章编号），恰好也能被 Prisma 接受，最容易混。
+>
+> 顺带确认 `buildOrderBy` 的 `secondary` 默认值 `'id'` 在这里正好对上：它走的是 `else` 分支 `{ [field]: order }`（`utils/query.js`），**不做 map 翻译** —— 这是对的，`likes.id` 是真实列而非计算字段。
+>
+> 另外实测：三种主排序写法（`{ createdAt }` / `{ article: { createdAt } }` / `{ article: { likes: { _count } } }`）**全部被 Prisma 接受**，与 `GET /api/articles` 的 `ARTICLE_SORT_MAP` 同一套机制，编译进单条 SQL，不需要拉全量在 JS 里排。
+- 前端 Tab **不暴露排序控件**，只用默认 `likedAt desc`（最近点赞的在前）。白名单留三个是给探针与将来用，与 `GET /api/articles` 保留 `updatedAt` 的做法一致。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      {
+        "id": 1,
+        "title": "我的第一篇博客",
+        "summary": "正文前 100 字……",
+        "category": "技术",
+        "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
+        "likeCount": 3,
+        "createdAt": "2026-09-29T14:00:00.000Z",
+        "updatedAt": "2026-09-29T14:00:00.000Z",
+        "likedAt": "2026-10-06T12:00:00.000Z"
+      }
+    ],
+    "page": 1,
+    "pageSize": 10,
+    "total": 3,
+    "totalPages": 1
+  }
+}
+```
+
+| 字段               | 类型     | 说明                                                              |
+| ---------------- | ------ | --------------------------------------------------------------- |
+| list[]           | object | 与 `GET /api/users/:id/articles` 的 `list[]` **逐字相同**（同一个 `toArticleListItem()`） |
+| list[].likedAt   | string | **本接口多出的唯一字段**：当前用户点赞该文章的时间（`likes.createdAt`），ISO 8601 UTC     |
+
+> **为什么把 `likedAt` 平铺进文章对象，而不是包一层 `{ likedAt, article }`**：前者让前端 `ArticleCard` 可以原样复用（`:article="item"`），两个 Tab 的渲染代码完全一致；后者每个列表项都要解包，且两个 Tab 的 `item` 形状不同，容易出错。代价是「文章字段」与「点赞字段」平级、靠字段名区分 —— 可接受。
+
+**实现说明 · `likedAt` 怎么平铺进去（三条硬约束，照做别走样）**：
+
+1. **禁止改 `toArticleListItem()`**。它是 `GET /api/articles`（广场）与 `GET /api/users/:id/articles` 共用的塑形函数，给它加 `likedAt` 会污染广场列表的响应（那三个接口都没有点赞记录，也拿不到）。
+2. **在 `map` 之后单独附加**。正确写法是 `list.map((row) => ({ ...toArticleListItem(row.article), likedAt: row.createdAt }))` —— `row` 是 `Like` 行（带 `article` 关联），`row.createdAt` 即点赞时间、`toArticleListItem(row.article)` 拿到与另两个接口逐字相同的文章对象。
+3. **`likedAt` 是虚拟字段，不是数据库列**。Prisma 侧没有 `likedAt` 列（直接写 `orderBy: { likedAt }` 实测报 `Invalid ...`），它是 API 层的名字，靠上表的 map 翻译成 `likes.createdAt`。写探针时断言响应体的 `likedAt`，不要去库里找列。
+
+- **只返回未软删的文章**：我赞过、但作者后来删除的文章不出现在列表里，也不计入 `total`。
+- `total` 是「当前用户已点赞 **且** 文章未软删」的条数；取消点赞后立即下降（`likes` 是物理 DELETE，无软删列）。
+
+失败：
+
+| HTTP | code  | message       | 触发                                                      |
+| ---- | ----- | ------------- | ------------------------------------------------------- |
+| 400  | 40000 | 见 `GET /api/articles` | 分页参数 / `sortBy` 非法                                    |
+| 401  | 40100 | 未登录或 token 无效   | **未登录直接访问**（`auth` 中间件现行行为，本批不改中间件）                     |
+| 404  | 40400 | `用户不存在`       | token 里的用户已软删（理论路径：软删后旧 token 在有效期内仍然可用）                |
+
+#### 点赞 Tab 的可见性（只给自己看）
+
+- 点赞 Tab **仅在「当前登录用户 id === 路由参数 `:id`」时渲染**；未登录或访问他人主页时**不渲染该 Tab，也不发** `GET /api/users/me/likes` 请求。
+- 理由与 `GET /api/articles/:id/liked` 一致：匿名读者访问他人主页时若发这个请求，`auth` 会回 401，而 `request.js` 的 401 拦截器会**清 token 并跳登录页** —— 对一个只是路过的人来说等于被踢了一脚。不发请求就不会触发。
+
+---
+
+### 用户主页改造：`UserProfile.vue` 的分页语义变更（前端必读）
+
+本批同时改前端：**从「无 Tab + 前端过滤 100 窗 + 假分页」改成「el-tabs + 真后端分页」**。这是行为级变更，不只是加接口：
+
+| 项          | 改前                                                            | 改后                                                                |
+| ---------- | ------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 数据来源       | `listArticles({ page:1, pageSize:100 })` 拉窗，前端 `filter(a.author.id === id)` | 文章 Tab → `GET /api/users/:id/articles`；点赞 Tab → `GET /api/users/me/likes`；头部 → `GET /api/users/:id` |
+| **分页语义**  | **前端切片**：`pagedList = filtered.slice(...)`，`total = filtered.length` | **后端分页**：列表本身就是当前页；`total` = 后端 `COUNT` 出的命中总数                     |
+| **`total` 上限** | 受 100 窗约束（最多 100 篇），命中 100 时要显示「仅显示最近 100 篇」                  | **无上限**；「仅显示最近 100 篇」提示**删除**                                     |
+| 翻页是否发请求    | 不发（数据已在内存）                                                    | **发**（只在 `Pagination` 的 `@change` 里发；遵守 `Pagination.vue` 顶部约定，不 watch 分页状态） |
+| 头部作者信息     | 从命中的文章反推 `author`；**0 篇时退化成「用户 #id」**                         | 直接用 `GET /api/users/:id` 的响应；0 篇也正常显示昵称 / 头像 / 简介                |
+| Tab        | 无                                                             | `el-tabs`：「文章」「点赞」（后者**仅本人**可见）                                   |
+| 分页状态       | 一组 `page` / `pageSize`                                        | **每个 Tab 各自一组**；切 Tab 回到第 1 页（不重置会越界成空列表）                         |
+| 空态         | 统一「还没有发布文章」                                                   | 文章 Tab「还没有发布文章」；点赞 Tab「还没有点赞过任何文章」                                |
+| 骨架屏        | `loading && !initialized`                                     | 同；翻页沿用首页 B2 约定 —— **保留旧列表**，不清空                                   |
+
+- **越界页沿用现有约定**：`page` 超过 `totalPages` 时后端返回空 `list` + 真实 `total`（**不报错**），前端不做自动回退，与 `GET /api/articles` / 首页一致。
+- **切 Tab 与翻页的加载态**：首屏（第一次进页面）走骨架屏；之后翻页保留旧列表；**切 Tab 属于换了数据集**，要先清空该 Tab 的列表再加载，否则会短暂显示上一个 Tab 的内容。
+
+---
+
 ### 用户接口（其余未实现）
 
-契约第 5 节列出的 5 个用户管理接口（列表 / 详情 / 新增 / 更新 / 删除）**全部未实现**。已实现的 user 接口是另外两个——`PUT /api/users/me`（改资料，第九批）与 `POST /api/users/me/avatar`（上传头像，第十一批），都在「业务接口」一节，不在下表内。
+契约第 5 节列出的 5 个用户管理接口中，**`GET /api/users/:id` 已实现**（第 2 批，只读公开详情，见「业务接口」一节）；**其余 4 个（列表 / 新增 / 更新 / 删除）全部未实现**。已实现的 user 接口共五个 —— `GET /api/users/:id`、`PUT /api/users/me`（改资料，第九批）、`POST /api/users/me/avatar`（上传头像，第十一批）、`GET /api/users/:id/articles`、`GET /api/users/me/likes`（后三个为第 2 批），都在「业务接口」一节，不在下表内。
 
 MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 对象返回。
 
 | 方法 | 路径 | 状态 |
 |---|---|---|
 | GET | /api/users | 未实现 |
-| GET | /api/users/:id | 未实现 |
+| GET | /api/users/:id | **已实现**（第 2 批：只读公开详情，见「业务接口」一节 `GET /api/users/:id`） |
 | POST | /api/users | 未实现 |
 | PUT | /api/users/:id | 未实现（**注意：与已实现的 `PUT /api/users/me` 是两个不同路径**，本项目不提供按 id 改他人资料的能力） |
 | DELETE | /api/users/:id | 未实现 |

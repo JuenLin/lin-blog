@@ -148,3 +148,27 @@ export const USER_PROFILE_LIMITS = {
   AVATAR_MAX_LENGTH,
   BIO_MAX_LENGTH,
 };
+
+/**
+ * 路径参数 : id 的校验规则（第 2 批）。
+ *
+ * 与 article.validator.js 的 articleIdParamSchema 同形（都是「路径参数是字符串，
+ * 统一 coerce 成正整数」），但**独立定义**、不复用：
+ *   - 两者目前规则完全一致，但 article 的 id 语义是「文章」；
+ *     user 的 id 语义是「用户」。将来文章可能支持 slug 形式的 id，
+ *     那时articleIdParamSchema 要改而userIdParamSchema 不该跟着改。
+ *   - 契约 §2禁止新增文件不是理由（这是加函数不是加文件），
+ *     但「两处共享同一个校验器」等于把两个资源的 id 规则绑死在一个文件里。
+ *
+ * 错误码统一走 validate 中间件的 400 / 40000（docs/API.md 失败表）。
+ *
+ * 注意：`'me'` 这类非数字字符串会在这里报
+ * `Invalid input: expected number, received NaN`（zod 的 coerce 行为，实测）。
+ * GET /api/users/me 命中本规则回 400，是**已登记的预期行为**，不是 bug。
+ */
+export const userIdParamSchema = z.object({
+  id: z.coerce
+    .number()
+    .int('必须是整数')
+    .positive('必须是正整数'),
+});

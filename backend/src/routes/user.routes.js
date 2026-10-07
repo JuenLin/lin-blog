@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import validate from '../middlewares/validate.js';
 import auth from '../middlewares/auth.js';
-import { updateProfile, uploadAvatar } from '../controllers/user.controller.js';
-import { updateProfileSchema } from '../validators/user.validator.js';
+import {
+  updateProfile,
+  uploadAvatar,
+  getUserDetail,
+  listArticlesByUser,
+  listLikedArticles,
+} from '../controllers/user.controller.js';
+import { updateProfileSchema, userIdParamSchema } from '../validators/user.validator.js';
 import { avatarUpload } from '../services/upload.service.js';
 
 const router = Router();
@@ -34,5 +40,30 @@ router.put('/me', auth, validate({ body: updateProfileSchema }), updateProfile);
  * 前者收文件、后者收字符串，语义不同，合成一个反而要在本函数里分叉。
  */
 router.post('/me/avatar', auth, avatarUpload, uploadAvatar);
+
+/**
+ * 第 2 批：用户主页三个接口的**注册顺序有硬约束**（docs/API.md 已注明）。
+ *
+ * `/me/likes` 必须注册在 `/:id` **之前**：Express 按注册先后匹配，
+ * 虽然 `/me/likes`（两段）与 `/:id`（一段）段数不同、今天不会真的误匹配，
+ * 但一旦将来新增 `/:id/xxx` 形式的两段路径，顺序颠倒就会让 `/me/likes` 被吃掉。
+ *先注册具体的、再注册带参数的，是这类路由的通用写法。
+ *
+ * 中间件顺序：
+ *   - getUserDetail / listArticlesByUser **无 auth**（公开只读，匿名可访问）。
+ *     validate 只校验路径参数 id是正整数。
+ *   - listLikedArticles **只有 auth**：它没有路径参数（id 来自 token），
+ *     所以**不挂 validate** —— req.params 是空对象，userIdParamSchema 要求 id 必填，
+ *     挂上去会让这个接口恒返回 400。
+ *
+ * 已知行为：`GET /api/users/me`（不带 /likes）会命中 `/:id` 并回 400，
+ * 因为 zod 的 coerce.number() 对'me' 报 NaN。这是**预期行为**（docs/API.md 已登记），
+ * 不是 bug —— 不为此加 `GET /me` 别名。
+ */
+router.get('/me/likes', auth, listLikedArticles);
+
+router.get('/:id/articles', validate({ params: userIdParamSchema }), listArticlesByUser);
+
+router.get('/:id', validate({ params: userIdParamSchema }), getUserDetail);
 
 export default router;

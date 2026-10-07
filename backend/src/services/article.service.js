@@ -275,3 +275,27 @@ export async function deleteArticle(id, userId) {
 
   return null;
 }
+
+/* ---------- 供user.service.js 复用的内部件（第 2 批导出） ---------- */
+
+/**
+ * 第2 批（用户主页接口）复用这三个内部件，让「按用户列文章」与「博客广场列表」
+ * 的list[] **逐字同形**。
+ *
+ * ## 导出的是「塑形与查询常量」，不是业务函数
+ *
+ * 这三样都**不含独立业务语义**，离开article.service.js 单独用反而会漂移：
+ *   - toArticleListItem：summary 长度、author 字段集、likeCount 折算全在这里，
+ *    复制一份必然出现两个列表接口的summary 长度不一样这种问题；
+ *   - ARTICLE_DETAIL_SELECT：广场列表与用户文章列表要**完全一致**的 select，
+ *    包含 author 内嵌与 _count.likes；
+ *   - ARTICLE_SORT_MAP：likeCount 的关联计数排序翻译（真实列 vs 计算字段的处理）。
+ *
+ * ## 为什么不抽到公共文件
+ * 现阶段只有一个复用方，抽出 `article-shape.js` 会多一层间接。
+ * 出现第三个复用方时再抽（DB.md / API.md 已登记这条演进路径）。
+ *
+ * 注意：这三个名字**不要当成对外接口的稳定契约**，它们只在后端内部使用，
+ * 不影响 docs/API.md 定义的任何响应结构。
+ */
+export { toArticleListItem, ARTICLE_DETAIL_SELECT, ARTICLE_SORT_MAP, AUTHOR_SELECT };
