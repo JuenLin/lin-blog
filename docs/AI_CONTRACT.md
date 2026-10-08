@@ -263,8 +263,10 @@ GET    /api/auth/me            当前用户
 PUT    /api/auth/password      修改密码
 PUT    /api/users/me           修改当前用户资料
 POST   /api/users/me/avatar    上传头像
+GET    /api/users/:id          用户详情（含文章数 / 获赞数 / 收到评论数）
+GET    /api/users/:id/articles 该用户的文章列表（分页）
+GET    /api/users/me/likes     我点赞过的文章（需登录，分页）
 GET    /api/users              用户列表（未实现）
-GET    /api/users/:id          用户详情（未实现）
 POST   /api/users              新增用户（未实现）
 PUT    /api/users/:id          更新用户（未实现）
 DELETE /api/users/:id          删除用户（未实现）
@@ -280,8 +282,11 @@ DELETE /api/articles/:id/like       取消点赞
 GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
 ```
 
-> `/api/users` 系列中**仅 `PUT /api/users/me`（改资料）与 `POST /api/users/me/avatar`（上传头像）已实现**，  
-> 清单里标「未实现」的 5 个（列表 / 详情 / 增 / 改他人 / 删）保持未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
+> `/api/users` 系列**已实现 5 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）。
+>
+> 清单里标「未实现」的 4 个（列表 / 新增 / 改他人 / 删）保持未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
+>
+> 三个已实现接口的字段与失败码以 `docs/API.md` 为准。`GET /api/users/me`（不带 `/likes`）会命中 `/:id` 并由 zod 回 400（`id='me'` 不是数字），这是第 2 批登记过的预期行为，**不是 bug**，不要为此新增 `GET /api/users/me` 别名。
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 

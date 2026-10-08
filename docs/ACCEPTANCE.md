@@ -56,9 +56,10 @@ SKIP | A3-1 | 分页翻页 | 总条数 1 ≤ 每页 10，无第 2 页
 scripts/acceptance/
 ├── run.mjs              # 主脚本：前置检查 → 造数据 → 起浏览器 → 跑 50 条 → 清理 → 出报告
 ├── cleanup.mjs          # 单独清理临时数据（脚本被中断时用它兜底）
-├── probe-*.mjs          # 各批次的量化探针（16 个：search / search-ui / password / profile /
-│                        #   profile-edit / like / upload / dark / styles / batch2 / batch3 /
-│                        #   card-visual / prevnext / author-others / entries / category）
+├── probe-*.mjs          # 各批次的量化探针（19 个：search / search-ui / password / profile /
+│                        #   profile-edit / like / liked / upload / dark / styles / batch2 /
+│                        #   batch3 / card-visual / prevnext / author-others / entries /
+│                        #   category / user-detail / profile-tabs）
 ├── shot-*.mjs           # 截图辅助脚本（3 个：hover / before / detail-title，不改源码，仅 CDP 注入）
 └── lib/
     ├── config.mjs       # 路径与配置，全部相对脚本位置推算，和 cwd 无关
@@ -220,9 +221,11 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 ## 7. 最近一次结果
 
-`node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-04，第三批 F1/F2/F7/D1 + B2 进度条之后，结论不变；第四步 ⑤ 暗色模式叠加后仍是 50/50 全绿）。
+`node scripts/acceptance/run.mjs` → **合计 50 条：PASS 50 / FAIL 0 / SKIP 0**（2026-10-08 复跑：第 2 批用户主页前端重构之后仍是 50/50 全绿；更早的基线是 2026-10-04，第三批 F1/F2/F7/D1 + B2 进度条之后、第四步 ⑤ 暗色模式叠加之后结论均未变）。
 
 分类功能（2026-10-04 新增）另加 `node scripts/acceptance/probe-category.mjs` → **13/13 全绿**；含它的完整批共 **301 项断言全绿、exit 全 0**（原 288 + 分类 13）。
+
+用户主页重构（2026-10-08 新增）另加 `node scripts/acceptance/probe-profile-tabs.mjs` → **29/29 全绿、exit 0**。跑前跑后库一致：**users 4** / 文章 13（可见 11）/ 评论 1 / likes 3 —— 注意 users 基线自 2026-10-07 起是 **4 不是 3**，多出来的 `#64 pwprobe1791293218495285` 由 `probe-password` 于 2026-10-06 遗留（0 文章 0 赞 0 评论），已决定保留不清；写「users 3」会误报多一个账号。
 
 历史上一共出现过 2 条 FAIL，**都是脚本自己的断言写错，不是产品问题**，已修复：
 
@@ -250,6 +253,8 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-upload.mjs [报告目录]` | 第十一批 头像上传 `POST /api/users/me/avatar`：真传 PNG → 201 且 avatar 形状为 `/uploads/avatars/{userId}/{ts}-{16hex}.{ext}`、**originalname 不参与命名**（故意传 `../../evil.html`）、落盘字节数一致、静态可访问且 `content-type: image/*`、目录列表已关 / 点文件被拒、非 multipart / 无文件 / 字段名错 / `image/gif` / 超 2MB / 未登录 各自 40000 或 40100、**二次上传旧文件被删（磁盘核对）**、`PUT /me` 传站内路径放行 + 传非 `/uploads/` 值（伪协议/外链/相对路径）全 40000、`avatar:null` 清空且旧文件删、回收后 users 条数复原（**纯 API + 直读磁盘，不启 Chrome，共 19 项**） |
 | `node scripts/acceptance/probe-search-ui.mjs [截图目录]` | 第七批 前端搜索框：未登录时搜索框渲染在 AppHeader 内、回车触发且 URL 带 keyword、真实请求带 keyword（抓 Network）、页面结果与后端命中 id 集合逐一对齐、刷新后搜索态保留、切 Tab 仍带 keyword、第 2 页状态下搜索 page 重置为 1、搜不到时独立文案 + 清空搜索按钮且不误显示「还没有文章」、点清空恢复全量、详情页/个人主页搜索框可见且回车跳回首页带 keyword、**卡片时间 chip 悬停出绝对时间且 chip 本身显示相对时间**（两者互补）、详情页阅读时长 chip 悬停出「预计阅读时长」（含暗色，共 21 项） |
 | `node scripts/acceptance/probe-category.mjs [报告目录]` | 分类功能 `POST` / `GET` / `PUT` + 卡片 chip：POST 带/不带 category（默认未分类）、`GET ?category=技术` 只返回技术子集、`GET ?category=xx` → 400/40000、`GET ?category=技术&keyword=xx` 两条件 AND、PUT 不传保留原值、PUT 非法 → 400、列表/详情响应含 category、卡片渲染分类 chip 且复用 `.article-chip` 基类（含暗色成对翻转，**启 Chrome，共 13 项**） |
+| `node scripts/acceptance/probe-user-detail.mjs` | 第 2 批 用户主页三个接口的**后端**探针：`GET /users/:id` public user 恰 6 个字段且**不含** `password` / `updatedAt` / `email`、字段名是 `receivedCommentCount` 而**非** `commentCount`（防回归）、三个计数实时 COUNT 且口径为「别人给我的」（`receivedLikeCount` **含自赞**；别人在我文章上评论才算我收到的）、跨用户隔离（A 给 B 点赞是「给出去的赞」，不计入 A 的 `receivedLikeCount`）；`GET /users/:id/articles` 存在但 0 篇返 200 空列表、**软删文章不计入**、`pageSize=2` 翻两页 2+1 无重复；`GET /users/me/likes` 每条带 `likedAt` 且**与文章 `createdAt` 不同**（证明取的是 `likes.createdAt`）、软删文章上的赞不计入、未登录 401；D 组验路由注册顺序与**既有接口不回归**，并把 `GET /api/users/me`（不带 `/likes`）回 400 登记为预期行为以防将来当 bug 修（**纯 API，不启 Chrome，共 88 项**） |
+| `node scripts/acceptance/probe-profile-tabs.mjs [截图目录]` | 第 2 批 用户主页重构 `GET /users/:id` + `/users/:id/articles` + `/users/me/likes`：头部三计数与详情接口**逐字一致**、**0 篇用户头部不退化成「用户 #id」**（旧实现靠列表反推 author，0 篇就丢昵称/头像）、文章 Tab 第一页 10 张且**两页无重复**（证明是真后端分页不是前端切片）、total 走后端 COUNT、不再出现「仅显示最近 100 篇」、点赞 Tab **仅本人主页可见**、软删文章不计入、每条都带 `likedAt` 且**与文章 `createdAt` 不同**（证明取的是 `likes.createdAt` 而非文章时间，符合契约「不得改 `toArticleListItem()`、须在 map 之后另行附加」）；切 Tab 页码重置为 1 且**每次都重新发请求**、**反复切 3 轮每次列表都有数据**（修的真 bug：曾被 `initialized` 短路，切回历史 Tab 只清空不加载 → 全变空）、首屏骨架只给当前激活 Tab、翻页 `is-refreshing` 期间旧卡片仍在（含浅色/暗色截图，**启 Chrome + Network 域，共 29 项**） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 | `node scripts/acceptance/shot-detail-title.mjs` | 详情页标题随文章变 + 复原 |
