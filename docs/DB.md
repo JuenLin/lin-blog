@@ -594,6 +594,49 @@ LIMIT 10 OFFSET 0
 
 ---
 
+## 第 3 批：删除评论（零 schema 变更）
+
+新增一个接口 `DELETE /api/comments/:id`（`docs/API.md` 有完整规格）：
+
+| 接口 | 用途 | schema 影响 |
+| --- | --- | --- |
+| `DELETE /api/comments/:id` | 删除评论（评论作者或文章作者，软删） | **无**（复用既有 `comments.deleted_at`） |
+
+### 四条登记（本批唯一的 DB 侧内容）
+
+**① 不新增表、不加列、不建索引、不做迁移。**
+
+- `comments.deleted_at` 列已在迁移 `20260929144738_blog_articles_comments` 建好（`DATETIME(3) NULL`，见「comments（评论表）」字段表），本批直接复用做软删，**不 ALTER 任何表**。
+- 「迁移记录」表本批不新增行：实测 `backend/prisma/migrations/` 现有 **6** 个迁移目录，本批不新增；`prisma migrate status` 应仍显示 6 个全部 applied、无 pending。写实现时**不需要跑 `migrate dev`** —— 若发现需要，说明实现走偏了（把接口字段当成了列）。
+- **删除查询的索引已存在**：既有索引 `comments_article_id_deleted_at_created_at_idx(article_id, deleted_at, created_at)` 已覆盖「`article_id = ? AND deleted_at = NULL ORDER BY created_at`」这一软删过滤模式。本批**不新增任何索引**。（注：此索引存在性与「comments（评论表）→ 索引」段的旧描述冲突，见下方「待办核对②」。）
+
+**② 软删纪律与现有接口完全一致，自动生效、无需改。**
+
+- 评论列表 `GET /api/articles/:id/comments`（`comment.service.js:107`）走 `whereNotDeleted({ articleId })`，软删后该评论**自动从列表消失**，无需改该接口。
+- `receivedCommentCount`（`user.service.js:246-251`）的 `comment.count` where 同时带 `article.deletedAt: null` 与 `comment.deletedAt: null` 两层过滤 —— **删评论后该计数自动下降，本批零 service 改动**。
+- 与文章软删（`DELETE /api/articles/:id`）同构：已软删评论再删 → `whereNotDeleted` 过滤后查不到 → 返回 40400，不会重复置时间戳。
+
+**③ 软删行物理保留，与全仓软删纪律一致。**
+
+`deleted_at` 置为非 NULL 而非 `DELETE`，符合契约 §9 的通用软删约定。`comments` 表无 `parentId`（平铺、无嵌套回复），删除单条无级联，也不影响其它评论。
+
+**④ 与「已批准的例外」关系：本批不新增条目。**
+
+- 本批零 schema 变更、零新依赖，不构成例外，不需要审批、不需要改契约。例外数保持 4 项，直到第 4 批（`follows` 新建表）才变 5。
+
+### 边界与前端交互（跨文档登记，DB 层只定性）
+
+- **文章已软删时**：权限判定的"文章作者"分支走 `whereNotDeleted({ id: comment.articleId })`，文章不可见则查不到 → 文章作者失去删除权；只有**评论作者**仍可删。这是预期行为（文章都不可见了，评论也不该允许文章作者再操作），API.md 草案会明写，避免将来读代码误以为漏判。DB 层无影响。
+- **前端二次确认**：沿用文章删除的 `ElMessageBox.confirm`（不可逆操作一致性），属 `CommentList.vue` / API.md / 探针范畴，不改变 DB 结构。`probe-comment-delete.mjs` 会断言"点了确认才发 DELETE、取消不发"。
+- **撤销/恢复删除**：本批不含（MVP 范围），与文章删除一致。
+
+### 待办核对（非本批改动，供用户决策）
+
+- **①** `user.service.js:246-251` 的 `receivedCommentCount` 实际**手写** `deletedAt: null`，与第 2 批「② 三个计数」段"三者都走 `whereNotDeleted()`、禁止手写 `deletedAt: null`"的描述口径不一致。功能正确（计数已过滤软删），属历史遗留，是否统一写法留待用户裁决，不纳入本批。
+- **②** 「comments（评论表）→ 索引」段（关于 `deletedAt` 在索引里的旧论述："索引里没有 `deleted_at`，是刻意的；若将来真做评论删除，加回 `(article_id, deleted_at, created_at)` 只需一条迁移）与实测矛盾——迁移 `20260929144738` 第 26 行**已建** `comments_article_id_deleted_at_created_at_idx(article_id, deleted_at, created_at)`。该段应更正为"索引已含 `deleted_at`，无需将来补建"，否则后人会误以为缺索引。更正时机由用户定，不纳入本批。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
