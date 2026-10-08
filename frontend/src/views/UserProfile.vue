@@ -1,13 +1,14 @@
 <template>
   <div class="user-profile">
     <div class="user-profile-inner">
-      <!-- 头部：作者信息 + 返回广场。作者名从命中文章里取昵称 / 用户名；
-           若 100 窗内没有该作者的文章（0 篇），退化为「用户 #id」。 -->
+      <!-- 头部：作者信息 + 三个计数 + 返回广场。
+           第 2 批起数据源是 GET /api/users/:id，不再从「命中的文章」反推 author ——
+           旧实现该用户 0 篇文章时 authorInfo 为 null，头部退化成「用户 #id」，
+           昵称 / 头像 / 简介全丢。现在接口有值就用，0 篇也正常显示。 -->
       <div class="profile-head">
-        <!-- 第五处头像渲染（第十一批补）：前四处是 UserDropdown / ArticleCard /
-             AuthorCard / CommentList，都走 resolveAvatar；这里原本只渲染文字头像，
-             第九批漏了，导致「上传了头像却在个人主页看不到」。
-             两种形态同样用 v-if 分支：有 avatar 渲染 <img>，否则回退色块 + 首字。 -->
+        <!-- 头像渲染（第十一批补，第五处）：两种形态用 v-if 分支，有 avatar 渲染 <img>，
+             否则回退色块 + 首字。avatarBroken 是图片加载失败的运行时状态，
+             换人时必须复位，否则跳到下一个用户会沿用上一次的失败态。 -->
         <img
           v-if="avatarInfo.type === 'image' && !avatarBroken"
           class="profile-avatar-img"
@@ -19,174 +20,322 @@
         <div class="profile-meta">
           <h1 class="profile-name">{{ displayName }} 的主页</h1>
           <p class="profile-sub">
-            {{ total }} 篇文章<template v-if="capped"><span class="profile-cap">（仅显示最近 100 篇）</span></template>
+            <template v-if="detail">
+              {{ detail.articleCount }} 篇文章 · {{ detail.receivedLikeCount }} 获赞 · {{ detail.receivedCommentCount }} 收到评论
+            </template>
+            <template v-else-if="detailError">该用户不存在或已注销</template>
+            <template v-else>加载中…</template>
           </p>
+          <p v-if="detail && detail.bio" class="profile-bio">{{ detail.bio }}</p>
         </div>
         <el-button class="profile-back" text @click="goHome">返回广场</el-button>
       </div>
 
-      <!-- 骨架屏：复用全局 .sk-card（形状与 ArticleCard 完全一致，B1 同形贴骨）。
-           只在「首次加载」出现；翻页是纯前端切片，不重新请求，故不重复骨架。 -->
-      <el-skeleton v-if="loading && !initialized" animated>
-        <template #template>
-          <div v-for="i in SKELETON_COUNT" :key="i" class="sk-card">
-            <div class="sk-row">
-              <div class="el-skeleton__item sk-avatar"></div>
-              <div class="el-skeleton__item sk-line" style="width: 84px"></div>
-              <div class="el-skeleton__item sk-line" style="width: 60px"></div>
-            </div>
-            <div class="el-skeleton__item sk-line-lg" style="width: 44%; height: 18px; margin-top: 12px"></div>
-            <div class="el-skeleton__item sk-line" style="width: 92%; margin-top: 10px"></div>
-            <div class="el-skeleton__item sk-line" style="width: 72%; margin-top: 8px"></div>
-          </div>
-        </template>
-      </el-skeleton>
+      <!-- 404：用户不存在 / 已软删。整页退化成一个提示。
+           注意这与「用户存在但 0 篇文章」是两件事 —— 后者正常渲染头部 + 空列表。 -->
+      <EmptyState v-if="detailError" :description="detailError" />
 
       <template v-else>
-        <!-- 空态复用 EmptyState：该作者 0 篇时给出明确文案 -->
-        <EmptyState v-if="!filtered.length" :description="emptyText" />
+        <el-tabs v-model="activeTab" class="profile-tabs" @tab-change="handleTabChange">
+          <el-tab-pane label="文章" name="articles" />
+          <!-- 点赞 Tab 仅本人可见：查的是 /users/me/likes，接口只允许查自己。
+               isOwner 是 computed，userStore.user 到位后（AppHeader 的 fetchMe 返回）
+               Tab 自动出现，不需要刷新页面。首屏 user 还没到位时会短暂只有文章 Tab。 -->
+          <el-tab-pane v-if="isOwner" label="点赞" name="likes" />
+        </el-tabs>
 
-        <template v-else>
-          <div class="profile-list">
-            <ArticleCard v-for="item in pagedList" :key="item.id" :article="item" />
-          </div>
+        <!-- 刷新条 + 半透明列表：只在「initialized 之后的再次加载」出现（翻页 / 改每页条数）。
+             首屏走下面的骨架屏。与 Home.vue 的 .home-list.is-refreshing 同一套约定：
+             保留旧列表不清空，避免翻页时闪白 + 滚动条跳动。 -->
+        <div class="profile-refresh">
+          <div class="profile-refresh-bar" :class="{ 'is-active': currentState.loading }"></div>
+        </div>
 
-          <!-- 分页复用现有 Pagination；total 取前端过滤后的真实条数（受 100 窗上限约束） -->
-          <Pagination
-            v-model:page="page"
-            v-model:page-size="pageSize"
-            :total="total"
-            @change="handlePageChange"
-          />
-        </template>
+        <!-- 骨架屏：复用全局 .sk-card（形状与 ArticleCard 完全一致，贴骨不位移）。
+             **只给当前激活的 Tab 渲染**：首屏默认文章 Tab，切到点赞 Tab 才显示点赞的骨架。
+             两个 Tab 共用同一套 SKELETON_COUNT / .sk-card 结构，不另造。 -->
+        <el-skeleton v-if="currentState.loading && !currentState.initialized" animated>
+          <template #template>
+            <div v-for="i in SKELETON_COUNT" :key="i" class="sk-card">
+              <div class="sk-row">
+                <div class="el-skeleton__item sk-avatar"></div>
+                <div class="el-skeleton__item sk-line" style="width: 84px"></div>
+                <div class="el-skeleton__item sk-line" style="width: 60px"></div>
+              </div>
+              <div class="el-skeleton__item sk-line-lg" style="width: 44%; height: 18px; margin-top: 12px"></div>
+              <div class="el-skeleton__item sk-line" style="width: 92%; margin-top: 10px"></div>
+              <div class="el-skeleton__item sk-line" style="width: 72%; margin-top: 8px"></div>
+            </div>
+          </template>
+        </el-skeleton>
+
+        <div
+          v-else
+          class="profile-list"
+          :class="{ 'is-refreshing': currentState.loading }"
+        >
+          <!-- 空态按 Tab 分开：0 篇与 0 赞是两件事，共用一句会让用户以为数据丢了 -->
+          <EmptyState v-if="!currentState.list.length" :description="currentState.emptyText" />
+
+          <template v-else>
+            <ArticleCard v-for="item in currentState.list" :key="item.id" :article="item" />
+
+            <!-- 分页：total 是后端 COUNT 的真实总数（不再是前端过滤后的条数）。
+                 翻页在 @change 里发请求，遵守 Pagination.vue 顶部约定：
+                 不 watch(page) / watch(pageSize)，否则一次操作打两遍接口。 -->
+            <Pagination
+              :page="currentState.page"
+              :page-size="currentState.pageSize"
+              :total="currentState.total"
+              @change="handlePageChange"
+            />
+          </template>
+        </div>
       </template>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { listArticles } from '../api/article.js';
+import { getUser, listMyLikes, listUserArticles } from '../api/user.js';
 import { getAvatarColor, getAvatarText, resolveAvatar } from '../utils/format.js';
+import { useUserStore } from '../stores/user.js';
 import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import Pagination from '../components/Pagination.vue';
 
-// 个人主页（第一步 ①）：纯前端，不改接口 / 不改 schema / 不动契约。
-// 用现有 GET /api/articles 拉「最近 100 篇」窗口，前端按 author.id 过滤出该作者的文章。
-// 已知限制：单用户超过 100 篇时只能看到最近 100 篇（pageSize 上限 = 后端 MAX_PAGE_SIZE，契约 §7 / §11）。
-// 分页是纯前端切片：数据已在 100 窗内，翻页 / 改每页条数不再打接口。
+// 个人主页（第 2 批）：三个后端接口 + el-tabs + 真后端分页。
+// 旧实现是「拉全站最近 100 篇再前端过滤+ 前端切片假分页」，本批全部换掉：
+//   GET /api/users/:id           头部（昵称 / 头像 / 简介 / 三个计数）
+//   GET /api/users/:id/articles  文章 Tab，真后端分页
+//   GET /api/users/me/likes      点赞 Tab，仅本人
+//
+// 分页语义变了：Pagination 的 total 从「前端切片后的条数（受 100 窗约束）」
+// 变成「后端 COUNT 的真实总数」。因此不再需要 capped（仅显示最近 100 篇）提示 ——
+// 真后端分页没有 100 窗概念，留着是错的。
 
 const SKELETON_COUNT = 5;
-const WINDOW_SIZE = 100; // 与后端 MAX_PAGE_SIZE 对齐，一次拉满一窗
 
 const route = useRoute();
 const router = useRouter();
+const userStore = useUserStore();
 
 // 路由参数可能是非数字；非法时记 null，命中逻辑直接返回空（不至于 NaN 串进 UI）。
 const targetId = computed(() => {
   const n = Number(route.params.id);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) && n > 0 ? n : null;
 });
 
-const all = ref([]); // 100 窗内全部文章
-const filtered = ref([]); // 命中所选作者的那部分
-const initialized = ref(false);
-const loading = ref(false);
+const detail = ref(null);
+const detailError = ref('');
 
-const page = ref(1);
-const pageSize = ref(10);
+const activeTab = ref('articles');
 
-const authorInfo = computed(() => {
-  const hit = filtered.value.find((a) => a.author);
-  return hit ? hit.author : null;
+// 两个 Tab 各自一组状态，互不影响。切 Tab / 换人时只动其中一组。
+function makeTabState(emptyText) {
+  return reactive({
+    list: [],
+    total: 0,
+    page: 1,
+    pageSize: 10,
+    loading: false,
+    initialized: false,
+    emptyText,
+  });
+}
+
+const articlesState = makeTabState('还没有发布文章');
+const likesState = makeTabState('还没有点赞过任何文章');
+
+const currentState = computed(() => (activeTab.value === 'likes' ? likesState : articlesState));
+
+// 是否是「自己的主页」：点赞 Tab 只对本人可见（接口只允许查自己）。
+// 必须是 computed —— userStore.user 是异步到位的（AppHeader 调 fetchMe），
+// 一次性判断会在首屏 user 为 null 时算出 false 且再也不更新，Tab 永远不出现。
+const isOwner = computed(() => {
+  if (!userStore.isLogin) return false;
+  const me = userStore.user;
+  const id = targetId.value;
+  if (!me || id === null) return false;
+  return Number(me.id) === id;
 });
 
 const displayName = computed(() => {
-  const a = authorInfo.value;
-  if (a) return a.nickname || a.username || '匿名';
+  const d = detail.value;
+  if (d) return d.nickname || d.username || '匿名';
   return targetId.value === null ? '用户' : `用户 #${targetId.value}`;
 });
 
 // 头像形态由 resolveAvatar 统一决定：有 avatar 渲染 <img>，否则色块 + 首字。
-// authorInfo 在「该作者 0 篇」时为 null，resolveAvatar 内部有 truthy 判断，自然回退文字头像。
-const avatarInfo = computed(() => resolveAvatar(authorInfo.value, displayName.value));
+// detail 为 null（加载中 / 出错）时 resolveAvatar 内部有truthy 判断，自然回退文字头像。
+const avatarInfo = computed(() => resolveAvatar(detail.value, displayName.value));
 const fallbackText = computed(() => getAvatarText(displayName.value));
 const fallbackColor = computed(() => getAvatarColor(displayName.value));
 
-// 图片加载失败（文件被手工删了 / 悬空引用）时回退到色块 + 首字。
-// 头像 URL 服务端只校验形态、不保证可达（docs/API.md），所以这是常态路径之一，不是兜底。
-// 关键：作者切换时必须复位，否则跳到下一个作者会沿用上一次的失败状态。
+// 图片加载失败（文件被手工删了 /悬空引用）时回退到色块 + 首字。
+// 换人时必须在下面的 watch 里复位，否则跳到下一个用户会沿用上一次的失败状态。
 const avatarBroken = ref(false);
 
-watch(
-  () => route.params.id,
-  () => {
-    avatarBroken.value = false;
+/**
+ * 重置某个 Tab 的状态。切 Tab / 换人时调用。
+ * 注意要把 initialized 一起归 false —— 否则切回来时 initialized 仍是 true，
+ * 骨架屏不出现，页面会先闪一下空列表再出数据。
+ */
+function resetTabState(state) {
+  state.list = [];
+  state.total = 0;
+  state.page = 1;
+  state.loading = false;
+  state.initialized = false;
+}
+
+function resetAll() {
+  resetTabState(articlesState);
+  resetTabState(likesState);
+  activeTab.value = 'articles';
+}
+
+async function loadDetail() {
+  const id = targetId.value;
+  if (id === null) {
+    detailError.value = '用户不存在或已注销';
+    return;
   }
-);
-
-// 过滤后的真实条数（受 100 窗上限约束，可能小于作者实际总数）
-const total = computed(() => filtered.value.length);
-// 命中数恰好达到窗口上限，说明可能还有更老的没拉到 —— 给个提示
-const capped = computed(() => total.value >= WINDOW_SIZE);
-
-const pagedList = computed(() => {
-  const start = (page.value - 1) * pageSize.value;
-  return filtered.value.slice(start, start + pageSize.value);
-});
-
-const emptyText = computed(() => {
-  const a = authorInfo.value;
-  const name = a ? a.nickname || a.username || '该作者' : targetId.value === null ? '用户' : `用户 #${targetId.value}`;
-  return `${name} 还没有发布文章`;
-});
-
-async function load() {
-  loading.value = true;
   try {
-    const data = await listArticles({
-      page: 1,
-      pageSize: WINDOW_SIZE,
-      sortBy: 'createdAt',
-      order: 'desc',
-    });
-    const list = (data && data.list) || [];
-    all.value = list;
-    filtered.value = list.filter(
-      (a) => a.author && targetId.value !== null && Number(a.author.id) === targetId.value
-    );
+    detail.value = await getUser(id);
+    detailError.value = '';
   } catch (error) {
-    // 错误提示由 request.js 拦截器统一抛出；列表加载失败落到空态，不卡在 loading。
-    ElMessage.error(error.message || '加载失败');
-  } finally {
-    loading.value = false;
-    initialized.value = true;
+    // 错误提示由 request.js 拦截器统一抛出；头部信息拿不到时退化成整页错误态。
+    detail.value = null;
+    detailError.value = error.businessCode === 40400 ? '用户不存在或已注销' : '加载失败，请稍后重试';
   }
 }
 
-// 分页是纯前端切片：只在 @change 里更新页码 / 每页条数，不重新发请求。
-function handlePageChange({ page: nextPage, pageSize: nextPageSize }) {
-  page.value = nextPage;
-  pageSize.value = nextPageSize;
+async function loadArticles() {
+  const id = targetId.value;
+  if (id === null) return;
+  articlesState.loading = true;
+  try {
+    const data = await listUserArticles(id, {
+      page: articlesState.page,
+      pageSize: articlesState.pageSize,
+    });
+    articlesState.list = (data && data.list) || [];
+    articlesState.total = (data && data.total) || 0;
+  } catch (error) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    articlesState.loading = false;
+    articlesState.initialized = true;
+  }
+}
+
+async function loadLikes() {
+  likesState.loading = true;
+  try {
+    // sortBy 用默认值 likedAt desc（最近点赞的在前）。Tab 不暴露排序控件。
+    const data = await listMyLikes({
+      page: likesState.page,
+      pageSize: likesState.pageSize,
+    });
+    likesState.list = (data && data.list) || [];
+    likesState.total = (data && data.total) || 0;
+  } catch (error) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    likesState.loading = false;
+    likesState.initialized = true;
+  }
+}
+
+/**
+ * 切 Tab。三个要点：
+ * 1. **必须把目标 Tab 的 page 重置为 1**。文章停在第 3 页时切到点赞（可能只有 1 页），
+ *    沿用旧页码会拿到空列表，看起来像「他没赞过」。与首页切分类同一理由。
+ * 2. **先清空目标 Tab 的列表**。切 Tab 属于换了数据集，不清会短暂显示上一个 Tab 的内容。
+ * 3. **每次切 Tab 都重新请求**（不做「首次才发」的短路）。
+ *
+ *    ⚠️ 这里踩过一次真bug：早期写成
+ *        state.list = []; if (state.initialized) return;
+ *    结果「清空」之后被短路挡住，loadArticles() 根本没被调用 ——
+ *    切回文章 Tab 时列表永远停在空态（探针实测 cards=0、空态文案「还没有发布文章」、
+ *    Network 域抓到**零个** /articles 请求）。清空与发请求必须成对出现，
+ *    不能用一个「已加载过」的标志把发请求挡掉。
+ *
+ *    语义上也**就该**每次重拉：Tab 的数据是可能变的（别人新发了文章、
+ *    自己刚取消点赞），缓存旧列表给用户看不准确的数据反而是错的。
+ *    initialized 只用于「首次加载才显示骨架屏」，不承担跳过请求的职责。
+ */
+function handleTabChange(name) {
+  const state = name === 'likes' ? likesState : articlesState;
+  state.page = 1;
+  state.list = [];
+  state.total = 0;
+  // 让骨架屏重新出现：这次是「换数据集」，不是「翻页保旧列表」
+  state.initialized = false;
+
+  if (name === 'likes') loadLikes();
+  else loadArticles();
+}
+
+/**
+ * 翻页 / 改每页条数。只在 Pagination 的 @change 里发请求，
+ * 不 watch(page) / watch(pageSize)（Pagination.vue 顶部约定，否则一次操作打两遍）。
+ */
+function handlePageChange({ page, pageSize }) {
+  const state = currentState.value;
+  state.page = page;
+  state.pageSize = pageSize;
+  if (activeTab.value === 'likes') loadLikes();
+  else loadArticles();
 }
 
 function goHome() {
   router.push({ name: 'home' });
 }
 
-// 在个人主页之间跳转（换了 :id）时重新拉取窗口
+// 换人（:id 变）：头部与两个 Tab 全部重置，initialized 归 false 重走骨架屏。
+// 新用户不能沿用上一个人的列表 / 页码 / 计数。
+//
+// ⚠️ 这里曾经是**两个** watch(() => route.params.id)：一个只复位 avatarBroken，
+// 一个做 resetAll + 加载。两个都合法、都会触发，但同一 source 拆成两处，
+// 将来有人加第三个就会搞不清顺序（比如谁先清谁后加载）。
+// 现在合并成一个，一个 watch 做一件事的完整集合：
+//   ① 复位头像失败态 ② 清空头部 ③ 重置两个 Tab ④ 重新加载
 watch(
   () => route.params.id,
   () => {
-    page.value = 1;
-    load();
+    // ① 头像失败态必须复位，否则跳到下一个人会沿用上一次的破图状态
+    avatarBroken.value = false;
+    // ② 头部先清空，避免短暂显示上一个人的昵称 / 计数
+    detail.value = null;
+    detailError.value = '';
+    // ③ 两个 Tab 全清（页码、列表、initialized）
+    resetAll();
+    // ④ 重新加载：头部详情 + 默认文章 Tab
+    loadDetail();
+    loadArticles();
   }
 );
 
-onMounted(load);
+// 【已删】原来这里有个 watch(isOwner)：userStore.user 到位、isOwner 翻 true 时
+// 若当前在点赞 Tab 就补 loadLikes()。它现在**有害**—— 是重复请求的第二个来源：
+// AppHeader 异步 fetchMe() 落地的那一刻，watch 与 handleTabChange 各发一次
+// /users/me/likes（探针实测同一 URL 发两条）。
+// 根因是 handleTabChange 曾经被「首次才发」的短路挡住，两处都要兜同一个空缺。
+// 现在 handleTabChange 每次切 Tab 都发，这个 watch 的存在前提已消失，删掉。
+//
+// 为什么不需要兜底：点赞 Tab 由 v-if="isOwner" 控制，isOwner 为 false 时
+// **这个 Tab 根本不存在**，用户点不到它；等 isOwner 变 true、Tab 出现时，
+// 用户第一次点它必然触发 handleTabChange → loadLikes()。没有「Tab 在但没数据」的窗口。
+
+onMounted(() => {
+  loadDetail();
+  loadArticles();
+});
 </script>
 
 <style scoped>
@@ -245,16 +394,71 @@ onMounted(load);
   color: var(--text-muted);
 }
 
-.profile-cap {
+/* 简介：单行省略，避免长 bio 把头部撑得很高 */
+.profile-bio {
+  margin: 4px 0 0;
+  font-size: 13px;
   color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profile-back {
   flex: 0 0 auto;
 }
 
+/* Tab 样式与 Home.vue 完全一致（同一份视觉语言）：
+   header 外边距归零而不是用负 margin 抵消，底部 2px 灰线换成 1px 浅色线。 */
+.profile-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.profile-tabs :deep(.el-tabs__nav-wrap)::after {
+  height: 1px;
+  background: var(--border);
+}
+
+/* 顶部 2px 刷新条：只在翻页 / 改每页条数时动，指示「在加载但旧内容还在」 */
+.profile-refresh {
+  height: 2px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--border);
+}
+
+.profile-refresh-bar {
+  width: 30%;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--transition-base);
+}
+
+.profile-refresh-bar.is-active {
+  opacity: 1;
+  animation: profile-refresh-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes profile-refresh-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(360%);
+  }
+}
+
 /* 列表容器：与首页同形，复用 ArticleCard 的外边距 / 间距体系 */
 .profile-list {
-  margin-top: 4px;
+  transition: opacity var(--transition-base);
+}
+
+.profile-list.is-refreshing {
+  opacity: 0.5;
+  pointer-events: none;
 }
 </style>

@@ -1,11 +1,16 @@
-// 用户管理接口：列表、详情、新增、更新、删除。
-// 契约第 3 节声明本文件承载用户类接口。
+// 用户接口。路径与字段严格按 docs/API.md，不在这里改字段名。
+// 所有请求都走 request.js 实例，不写完整 URL（契约第 3 节 / 第 10 节）。
 //
-// 现状（第九批起变化）：MVP 不做用户管理——
-// docs/API.md 已把 GET/POST/PUT/DELETE /api/users 全部登记为「未实现」，
+// 现状：MVP 不做用户管理——
+// docs/API.md 已把 GET/POST/PUT/DELETE /api/users（列表 / 新增 / 更新 / 删除）全部登记为「未实现」，
 // 文章与评论的作者信息通过内嵌 author 对象返回，不依赖用户列表接口。
-// **已实现的是 PUT /api/users/me（改资料）与 POST /api/users/me/avatar（传头像）**，
-// 这是本项目仅有的两个 user 接口。
+//
+// **已实现的 user 接口共五个**：
+//   - PUT  /api/users/me            改资料（第九批）
+//   - POST /api/users/me/avatar     传头像（第十一批）
+//   - GET  /api/users/:id           公开详情 + 三个计数（第 2 批）
+//   - GET  /api/users/:id/articles  该用户文章列表，真后端分页（第 2 批）
+//   - GET  /api/users/me/likes      当前用户点赞列表，仅本人（第 2 批）
 //
 // 保留本文件而不删除：契约第 3 节声明了api/ 下的文件划分（契约 §3 有清单）。
 import request from './request.js';
@@ -72,13 +77,89 @@ export function uploadAvatar(file) {
   });
 }
 
+// ---------- 第 2 批：用户主页三接口 ----------
+
+/**
+ * 用户公开详情。对应 docs/API.md 的 GET /api/users/:id。
+ *
+ * **无需登录。** 存在的理由：UserProfile.vue 原先靠「从该作者的文章里反推 author」
+ * 拿昵称与头像，该用户 0 篇文章时头部会退化成「用户 #id」。本接口让头部信息
+ * 不再依赖文章列表 —— 0 篇也正常显示昵称 / 头像 / 简介。
+ *
+ * 前 6 个字段（id / username / nickname / avatar / bio / createdAt）与
+ * `PUT /me`、`POST /me/avatar` 返回的 public user **逐字相同**（同一份 PUBLIC_FIELDS），
+ * 三个接口返回同一个对象，调用方可以无差别地用它更新 store。
+ * avatar 是**站内相对路径**（`/uploads/...`），渲染前必须走 `resolveAvatar()` 补后端 origin。
+ *
+ * 三个计数（实时 COUNT，不落冗余列）：
+ *   - articleCount          未软删文章数
+ *   - receivedLikeCount     未软删文章上收到的赞，**含自赞**
+ *   - receivedCommentCount  未软删文章下未软删的评论数（是「收到的」，非他发出的）
+ * 作者删文后计数下降是**预期行为**。
+ *
+ * @param {number|string} id 用户 id
+ * @returns {Promise<object>} public user + 三个计数
+ * @throws {Error} 400（非正整数）/ 404（不存在**或已软删**）
+ */
+export function getUser(id) {
+  return request.get(`/users/${id}`);
+}
+
+/**
+ * 某用户发布的文章列表。对应 docs/API.md 的 GET /api/users/:id/articles。
+ *
+ * **无需登录。真后端分页**（不再是前端拿 100 窗自己过滤）。
+ *
+ * ⚠️ 与 GET /api/articles 的差异（调用方必须知道）：
+ *   - **不支持 keyword / category**：搜索与分类是「广场」维度的筛选，个人主页不叠加
+ *   - sortBy 白名单与广场一致：createdAt / updatedAt / id / likeCount，默认 createdAt desc
+ *
+ * 响应与 `GET /api/articles` **完全同形**（{ list, page, pageSize, total, totalPages }），
+ * `list[]` 由同一个 toArticleListItem() 生成，ArticleCard 可原样复用。
+ * `total` 是该作者未软删文章的总数（后端 COUNT），**不受 100 上限约束**。
+ *
+ * **用户存在但 0 篇文章 ≠ 404**：返回 200 + `list: []` + `total: 0` + `totalPages: 0`。
+ * 调用方据此渲染空态，不要把整页判成「用户不存在」。
+ *
+ * @param {number|string} id 用户 id
+ * @param {object} [params] { page, pageSize, sortBy, order }
+ * @returns {Promise<{list: object[], page: number, pageSize: number, total: number, totalPages: number}>}
+ * @throws {Error} 400（分页 / sortBy 非法，或 id 非正整数）/ 404（不存在或已软删）
+ */
+export function listUserArticles(id, params) {
+  return request.get(`/users/${id}/articles`, { params });
+}
+
+/**
+ * 当前登录用户点赞过的文章。对应 docs/API.md 的 GET /api/users/me/likes。
+ *
+ * **需要登录。** 路径是 `/me/likes` 而非 `/:id/likes`：只提供查自己，
+ * 不提供按 id 查他人点赞记录（「谁赞过什么」属个人隐私维度，
+ * 与 PUT /me 只能改自己同一条原则）。
+ *
+ * ⚠️ 不要写成 `/users/me/likes` 之外的任何形式——后端**没有** `GET /api/users/me`
+ * 这个接口（会命中 `/:id` 回 400 / 40000），已登记为预期行为，别当 bug 修。
+ *
+ * `list[]` 与 `GET /users/:id/articles` 的 `list[]` **逐字相同**，只多一个 `likedAt`
+ * （就是 likes.createdAt，虚拟字段、库里没有这一列）。平铺而非包一层
+ * `{ likedAt, article }`，是为了让 ArticleCard 原样复用（`:article="item"`）。
+ *
+ * sortBy 白名单 likedAt / createdAt / likeCount，默认 likedAt desc。
+ * 前端 Tab **不暴露排序控件**，只用默认值。
+ *
+ * 只返回未软删的文章：赞过但作者已删的不出现，也不计入 total。
+ *
+ * @param {object} [params] { page, pageSize, sortBy, order }
+ * @returns {Promise<{list: object[], page: number, pageSize: number, total: number, totalPages: number}>}
+ * @throws {Error} 401（未登录）/ 400（分页 / sortBy 非法）
+ */
+export function listMyLikes(params) {
+  return request.get('/users/me/likes', { params });
+}
+
 // 将来的形状示例（未启用）：
 // export function listUsers(params) {
 //   return request.get('/users', { params });
-// }
-//
-// export function getUser(id) {
-//   return request.get(`/users/${id}`);
 // }
 //
 // export function createUser(data) {
