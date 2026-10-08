@@ -170,7 +170,7 @@ Prisma 模型名 `Comment`，`@@map("comments")`。
 | comments_author_id_fkey | 普通（外键自动创建） | author_id | 外键索引 |
 
 - `article_id` 的外键索引由 `comments_article_id_created_at_idx` 的**左前缀**承担，MySQL 未额外创建单列索引。
-- **索引已含 `deleted_at`**：迁移 `20260929144738_blog_articles_comments` 已建 `comments_article_id_deleted_at_created_at_idx(article_id, deleted_at, created_at)`，直接覆盖软删过滤模式 `article_id = ? AND deleted_at = NULL ORDER BY created_at`。原描述称「索引里没有 `deleted_at`、将来要补建」与实测矛盾，已更正。
+- **索引是 `(article_id, created_at)`，不含 `deleted_at`**：建表迁移 `20260929144738` 曾建 `(article_id, deleted_at, created_at)`，但后续迁移 `20260929145244_comments_idx_article_created` 第 5 行 `DROP` 该索引、第 8 行重建为 `(article_id, created_at)`（该列恒为 NULL 时无选择性收益）；`SHOW INDEX FROM comments` 实测亦仅 `(article_id, created_at)`。软删过滤查询 `article_id = ? AND deleted_at IS NULL ORDER BY created_at` 需回表过滤 `deleted_at`，MVP 数据量小可接受；若将来评论量大，加回 `(article_id, deleted_at, created_at)` 只需一条迁移。
 
 ### 建表 SQL（迁移生成，未手工改写）
 
@@ -608,7 +608,7 @@ LIMIT 10 OFFSET 0
 
 - `comments.deleted_at` 列已在迁移 `20260929144738_blog_articles_comments` 建好（`DATETIME(3) NULL`，见「comments（评论表）」字段表），本批直接复用做软删，**不 ALTER 任何表**。
 - 「迁移记录」表本批不新增行：实测 `backend/prisma/migrations/` 现有 **6** 个迁移目录，本批不新增；`prisma migrate status` 应仍显示 6 个全部 applied、无 pending。写实现时**不需要跑 `migrate dev`** —— 若发现需要，说明实现走偏了（把接口字段当成了列）。
-- **删除查询的索引已存在**：既有索引 `comments_article_id_deleted_at_created_at_idx(article_id, deleted_at, created_at)` 已覆盖「`article_id = ? AND deleted_at = NULL ORDER BY created_at`」这一软删过滤模式。本批**不新增任何索引**。
+- **本批不新增索引（选项 B）**：现有 `comments_article_id_created_at_idx(article_id, created_at)` 不含 `deleted_at`，软删查询 `article_id = ? AND deleted_at IS NULL` 需回表过滤；但 MVP 评论量极小（当前库仅 1 条），回表成本可忽略，故不为此加索引。若将来评论量大，加回 `(article_id, deleted_at, created_at)` 只需一条迁移（见「comments（评论表）→ 索引」段）。
 
 **② 软删纪律与现有接口完全一致，自动生效、无需改。**
 
@@ -633,7 +633,7 @@ LIMIT 10 OFFSET 0
 ### 待办核对（非本批改动，供用户决策）
 
 - **①** `user.service.js:246-251` 的 `receivedCommentCount` 实际**手写** `deletedAt: null`，与第 2 批「② 三个计数」段"三者都走 `whereNotDeleted()`、禁止手写 `deletedAt: null`"的描述口径不一致。功能正确（计数已过滤软删），属历史遗留，是否统一写法留待用户裁决，不纳入本批。
-- **②（已修正）** 「comments（评论表）→ 索引」段原称"索引里没有 `deleted_at`、将来要补建"，与实测矛盾（迁移 `20260929144738` 第 26 行已建 `comments_article_id_deleted_at_created_at_idx`）。已在同批文档修正中改为实测事实，冲突已消除。
+- **②（已复核·原描述正确）** 「comments（评论表）→ 索引」段称"索引是 `(article_id, created_at)`，不含 `deleted_at`"经实测确认正确：建表迁移 `20260929144738` 曾建 `(article_id, deleted_at, created_at)`，但后续迁移 `20260929145244_comments_idx_article_created` 第 5 行 `DROP`、第 8 行重建为 `(article_id, created_at)`；`SHOW INDEX FROM comments` 实测亦仅 `(article_id, created_at)`。故本批对该段**无改动**；`6229c03` 仅读了建表迁移、漏看后续修改迁移而误改，已在本批改回。
 
 ---
 
