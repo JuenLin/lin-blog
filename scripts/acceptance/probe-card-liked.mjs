@@ -19,6 +19,7 @@
 // B 组：三处列表点位都要生效（广场 / 文章 Tab / 点赞 Tab）
 // C 组：写回与登出边界
 // D 组：**跨账号串号防线**（最容易出的真 bug）
+// E 组：401 路径永久回归（认证态清空：localStorage.token 被清 + likedStore.Set 清空 + 头部退回登录按钮）
 //
 // 与其他 Chrome 探针同一套规矩：
 //   - 一次性 pwprobe 账号 + 探针自造文章，finally 清理，不碰真实用户数据；
@@ -475,6 +476,102 @@ async function main() {
     '换账号后重新拉一次 B 的集合（恰好 1 次）',
     d1Count === 1,
     `/users/me/likes=${d1Count} 次（Reset 后应重拉）`
+  );
+
+  /* ================= E 组：401 路径永久回归（认证态清空） ================= */
+  // 这是一次真 bug 修复的回归保护：request.js 401 分支只 removeItem + dispatchEvent('auth:cleared')，
+  // 不调 setToken。若有人「优化」改回直接 import store，401 路径会悄悄退回 bug。
+  // 取证法：造非法 token 写进 localStorage → 点别的卡的赞按钮触发 PUT /like → 401；
+  // 在 auth:cleared 派发后的 nextTick 抓首页快照（此时 reset 已 flush、router 尚未跳转）。
+  // E1 localStorage.token 被清 / E2 likedStore.Set 清空（靶子变灰、红卡=0）/ E3 头部退回登录按钮。
+
+  // E0 前置：以 A 重新登录进首页，且把靶子重新点回赞（C1 把它取消了），
+  // 这样靶子是红的、头部有下拉（已登录态）—— 给 E2 一个「红→灰」的真实起点。
+  await api('POST', `/articles/${targetArticleId.value}/like`, { token: A.token });
+  await gotoAs(A.token, '/');
+  const e0Ready = await waitFor(`document.querySelectorAll('.article-card').length > 0`);
+  const e0Red = await waitFor(`(() => {
+    const el = document.querySelector('.article-card[href="/article/${targetArticleId.value}"] .article-like');
+    return Boolean(el) && el.classList.contains('is-liked');
+  })()`, 10000);
+  await sleep(300);
+  const e0Cards = await readCards();
+  const e0Target = e0Cards.find((c) => c.id === String(targetArticleId.value));
+  const e0Dropdown = await session.evaluate(`!!document.querySelector('.user-dropdown')`);
+  check(
+    'E0',
+    'E 组前置：以 A 登录进首页，靶子红 + 头部有登录态（下拉存在）',
+    e0Ready && Boolean(e0Target) && e0Target.liked === true && e0Dropdown,
+    e0Target
+      ? `靶子 is-liked=${e0Target.liked}，下拉存在=${e0Dropdown}`
+      : `首页没找到靶子（卡片 ${e0Cards.length} 张）`
+  );
+
+  // 选一张非靶子的卡来点（其实任意卡都会因非法 token 先撞 401，但避开靶子更清晰）。
+  const otherCard = e0Cards.find((c) => c.id !== String(targetArticleId.value)) || e0Target;
+
+  // 注册 auth:cleared 快照监听：401 那一瞬间抓首页 DOM，nextTick 后读（确保 reset 已 flush）。
+  await session.evaluate(`(() => {
+    window.__authSnap = null;
+    window.addEventListener('auth:cleared', () => {
+      Promise.resolve().then(() => {
+        const t = '/article/${targetArticleId.value}';
+        const el = document.querySelector('.article-card[href="' + t + '"] .article-like');
+        window.__authSnap = JSON.stringify({
+          path: location.pathname,
+          lsToken: localStorage.getItem('token'),
+          targetLiked: el ? el.classList.contains('is-liked') : null,
+          redCount: document.querySelectorAll('.article-card .article-like.is-liked').length
+        });
+      });
+    }, { once: true });
+    return 'ok';
+  })()`);
+
+  // 造非法 token 写进 localStorage（不重载页面 —— 请求拦截器每次从 localStorage 现读）。
+  await session.evaluate(`localStorage.setItem('token', 'not.a.valid.jwt'); 'ok'`);
+
+  // 触发 401：点另一张卡的赞按钮。
+  const eTrigger = await clickLikeButtonOf(otherCard.id);
+
+  // 等快照（nextTick 内同步写好，几乎瞬时；给 8s 兜底）。
+  const eSnapReady = await waitFor(`window.__authSnap !== null`, 8000);
+  const eSnapRaw = await session.evaluate(`window.__authSnap`);
+  let eSnap = null;
+  try {
+    eSnap = eSnapRaw ? JSON.parse(eSnapRaw) : null;
+  } catch {
+    eSnap = null;
+  }
+
+  check(
+    'E1',
+    '401 后 localStorage.token 已被清（removeItem 生效）',
+    eSnapReady && Boolean(eSnap) && eSnap.lsToken === null,
+    eSnap ? `lsToken=${eSnap.lsToken}，触发=${eTrigger}` : `未抓到快照（触发=${eTrigger}）`
+  );
+
+  check(
+    'E2',
+    '401 后 likedStore.Set 已清空：靶子变灰 + 全页红卡=0（首页瞬间快照）',
+    Boolean(eSnap) && eSnap.path === '/' && eSnap.targetLiked === false && eSnap.redCount === 0,
+    eSnap
+      ? `path=${eSnap.path}，靶子 is-liked=${eSnap.targetLiked}，红卡=${eSnap.redCount}`
+      : '未抓到快照'
+  );
+
+  // E3：401 后头部退回「登录」按钮（isLogin=false → .user-dropdown 消失）。
+  // 此时可能已跳到 /login，但登出态下头部都不该有 .user-dropdown。
+  await waitFor(`!document.querySelector('.user-dropdown')`, 8000);
+  const e3Dropdown = await session.evaluate(`!!document.querySelector('.user-dropdown')`);
+  const e3LoginBtn = await session.evaluate(
+    `Array.from(document.querySelectorAll('button')).some((b) => b.textContent.trim() === '登录')`
+  );
+  check(
+    'E3',
+    '401 后 AppHeader 退回「登录」按钮（下拉消失 / 出现登录按钮）',
+    !e3Dropdown && e3LoginBtn,
+    `下拉存在=${e3Dropdown}，登录按钮存在=${e3LoginBtn}`
   );
 }
 

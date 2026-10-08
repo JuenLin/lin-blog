@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-// 401 后通过事件通知前端登录态同步清空（见下方响应拦截器）。
+// 「认证态已清空」事件 —— 注意：它不是「401 事件」。
+// 语义是「登录态已失效，前端需把 token ref / 已赞集合全部清空」，触发源不限于 401：
+// 将来若出现「其它标签页登出」「服务端主动吊销 token」「令牌过期主动失效」等场景，
+// 都应派发**同一个**事件，而不是为 401 新增一个专属 hook（否则逻辑散落、回归难覆盖）。
 // 用事件而非直接 import userStore，是为规避 request.js ↔ stores/user.js 的静态循环依赖
 // （store 的 reset 挂在 setToken 上，走事件让 AppHeader 调 setToken('') 即可覆盖这条路径）。
 export const AUTH_CLEARED_EVENT = 'auth:cleared';
@@ -45,11 +48,13 @@ request.interceptors.response.use(
     const message = (response && response.data && response.data.message) || error.message || '网络错误';
 
     if (response && response.status === 401) {
+      // ⚠️ 清 token 的唯一路径：removeItem 之后派发 AUTH_CLEARED_EVENT，
+      // 由 AppHeader 监听并调 userStore.setToken('') 完成「ref 置空 + likedStore.reset()」。
+      // 任何别处若要清 token，都必须走同一条路（经 setToken 同步 store / likedStore），
+      // 绝不能只 removeItem 而不同步 —— 否则 401 后头部仍显示登录态、列表卡片错误变红（真实 bug，
+      // 已由 probe-card-liked.mjs 的 E 组永久回归覆盖）。
       localStorage.removeItem('token');
 
-      // 通知前端登录态同步清空：头部退回「登录」按钮、likedStore 的 Set 清空（防卡片错误变红）。
-      // 不直接调 userStore 是为规避循环依赖；AppHeader 监听该事件后调 setToken('')，
-      // 既更新 token ref（isLogin=false）又触发 likedStore.reset()。
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(AUTH_CLEARED_EVENT));
       }
