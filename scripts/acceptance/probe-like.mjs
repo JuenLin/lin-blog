@@ -405,6 +405,24 @@ async function main() {
     `tag=${likeBtn && likeBtn.tag} role=${likeBtn && likeBtn.role} tab=${likeBtn && likeBtn.tab} aria=${likeBtn && likeBtn.aria}`
   );
 
+  // E3b：**E4 的数据前提** —— 第一张卡必须初始是「未赞」。
+  // E4 断言「点一下计数 +1」，这个 +1 只在卡片原先是空心时成立。
+  // 探针账号是新注册的（上面第 118 行 POST /auth/register），赞数必为 0，
+  // 但这是个**脆弱假设**：一旦将来换成复用已有账号，或者第 3 批起
+  // ArticleCard 的 liked 改由 useLikedStore 驱动（缓存了「我赞过的文章」），
+  // 第一张卡就可能已经是红的，点下去会变成「取消赞」(-1)，
+  // E4 会 FAIL 但看起来像是跳转或计数 bug。
+  // 显式断言这条前提，失败时一眼就知道是数据不成立，而不是去翻组件代码。
+  const firstCardLikedBefore = await session.evaluate(
+    `document.querySelector('.article-card .article-like').classList.contains('is-liked')`
+  );
+  check(
+    'E3b',
+    '数据前提：第一张卡初始未赞（E4 的 +1 断言依赖此成立）',
+    firstCardLikedBefore === false,
+    `第一张卡 is-liked=${firstCardLikedBefore}（true 说明该账号已赞过这篇，E4 的语义会从「点赞」变成「取消赞」）`
+  );
+
   // E4：点第一张卡的点赞按钮 —— 必须 **只** 点赞、不能跳详情页。
   // 卡片整块是 router-link（真实 <a href>），只写 .stop 拦不住原生导航，
   // 这条就是 @click.prevent.stop 的直接回归测试。

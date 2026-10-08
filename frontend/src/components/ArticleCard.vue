@@ -93,6 +93,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
+import { useLikedStore } from '../stores/liked.js';
 import { likeArticle, unlikeArticle } from '../api/like.js';
 
 const props = defineProps({
@@ -104,6 +105,7 @@ const props = defineProps({
 
 const router = useRouter();
 const userStore = useUserStore();
+const likedStore = useLikedStore();
 
 const authorName = computed(() => {
   const author = props.article.author;
@@ -162,12 +164,18 @@ function goToAuthor() {
  * 第十批：点赞
  * ------------------------------------------------------------------------ */
 
-// 已点赞态。**只维护「本次会话内在这张卡上点过」**：
-// 列表 / 详情这类公开接口不返回 liked（docs/API.md 通用约定，避免响应随登录态变化），
-// 所以刷新页面后按钮会回到「未赞」。
-// 已知限制（本批不处理，等后续补 liked 查询接口）：刷新后再点会拿到 409，
-// 下面 catch 里把本地态纠正成已赞并提示，不会让按钮一直卡在错误状态。
-const liked = ref(false);
+// 已点赞态：**唯一真相来源是 useLikedStore 的已赞集合**（登录后拉一次自己的点赞清单），
+// 所以刷新页面、换页、从详情页退回来都认得出红色。
+//
+// 改成 computed 之后，换文章 / 换页时它跟着 props.article.id 自动重算，
+// 不需要（也不允许）手动复位 —— 下面那个 watch 因此删掉了给 liked 赋值的那一行。
+//
+// 集合的三个边界都不表现为「显示错误」，而是退化为旧行为（空心 → 点了才纠正）：
+//   1. 未登录访问：集合为空，全是空心；
+//   2. 赞过的文章超过缓存上限（truncated）：未命中的卡片维持空心；
+//   3. 跨设备 / 跨标签页点的赞：这个标签页不知道，同 2。
+// 详见 src/stores/liked.js 顶部注释。
+const liked = computed(() => likedStore.has(props.article.id));
 
 // likeCount 的本地覆盖值。null = 还没本地改过，显示 props 里的值。
 // 不能直接改 props.article（单向数据流），所以用一个 override，换页时 watch 复位。
@@ -188,12 +196,17 @@ const likeCount = computed(() => {
   return typeof count === 'number' ? count : 0;
 });
 
-// 换页 / 换文章（含详情页「作者其他文章」复用同一组件）时复位本地态，
-// 否则上一篇文章的点赞数和已赞态会串到下一篇上。
+// 换页 / 换文章（含详情页「作者其他文章」复用同一组件）时复位**本地覆盖值**，
+// 否则上一篇文章的点赞数会串到下一篇上。
+//
+// ⚠️ 这里原先还有一行 `liked.value = false`，已随 liked 改成 computed 一起删掉：
+// computed 随 props.article.id 自动重算，再手动赋值会抛
+// 「Write operation failed: computed value is readonly」。
+// 删掉之后「从已赞文章切到未赞文章，爱心跟着变灰」由 computed 天然保证
+// （探针 probe-card-liked.mjs 有专门断言覆盖，不靠推理）。
 watch(
   () => props.article.id,
   () => {
-    liked.value = false;
     likeCountOverride.value = null;
   },
 );
@@ -216,18 +229,27 @@ async function toggleLike() {
       ? await unlikeArticle(props.article.id)
       : await likeArticle(props.article.id);
 
-    liked.value = Boolean(data && data.liked);
+    // 等响应回来之后才动集合 —— 这里是**刻意的设计，不是漏写乐观更新**：
+    // 集合的任务是「下次渲染时知道已赞」，点击手感由下面的 likeCountOverride 负责。
+    // 乐观更新要处理网络超时 / 409 / 404 三种回滚，容易漏；而收益已经被 override 拿走。
+    // 分工细节见 src/stores/liked.js 顶部「两条职责边界」。
+    if (data && data.liked) {
+      likedStore.add(props.article.id);
+    } else {
+      likedStore.remove(props.article.id);
+    }
 
     if (data && typeof data.likeCount === 'number') {
       likeCountOverride.value = data.likeCount;
     }
   } catch (error) {
-    // 409「已点赞过这篇文章」：说明本地 liked 是错的（刷新丢状态、或在别处点过赞），
-    // 顺手纠正成已赞，避免按钮每次点都报错。404「还没有点赞过这篇文章」同理反向纠正。
+    // 409「已点赞过这篇文章」：说明集合漏了这一篇（未登录期间点的 / 跨设备点的 /
+    // 缓存被 truncated），顺手补进去，避免每次点都报错。
+    // 404「还没有点赞过这篇文章」同理反向剔除。
     if (error.httpStatus === 409) {
-      liked.value = true;
+      likedStore.add(props.article.id);
     } else if (error.httpStatus === 404) {
-      liked.value = false;
+      likedStore.remove(props.article.id);
     }
 
     ElMessage.error(error.message || '操作失败，请稍后重试');

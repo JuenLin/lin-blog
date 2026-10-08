@@ -43,15 +43,25 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { AUTH_CLEARED_EVENT } from '../api/request.js';
 import { useUserStore } from '../stores/user.js';
+import { useLikedStore } from '../stores/liked.js';
 import SearchBar from './SearchBar.vue';
 import UserDropdown from './UserDropdown.vue';
 
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
+const likedStore = useLikedStore();
+
+// 401 拦截器不流经 userStore（会引循环依赖），改为派发事件；这里监听并调 setToken('')。
+// 既把 token ref 置空（isLogin=false → 头部退回「登录」按钮），又触发 likedStore.reset()
+// （清空已赞集合，否则 401 后头部仍显示登录态、列表卡片错误变红 —— 真 bug）。
+function handleAuthCleared() {
+  useUserStore().setToken('');
+}
 
 // 暗色模式（第五步 ⑤）：状态即 <html> 上是否有 .dark 类。
 // index.html 的内联脚本已在首帧前据此设置好 class，这里只同步按钮图标。
@@ -73,6 +83,10 @@ function toggleTheme() {
 
 // 刷新页面后 token 还在 localStorage，但 Pinia 里的 user 是空的，这里补拉一次。
 // token 已过期时 request.js 会清 token 并跳登录，所以这里只需要保证不把错误抛到页面外。
+//
+// 放在 AppHeader 而不是某个列表页：这四个列表点位都要用到这份缓存
+// （广场 / 用户文章 Tab / 点赞 Tab / 详情页的「作者其他文章」），
+// 放列表页会漏点位，放 App.vue 则与已有的「登录态初始化」模式分散。
 onMounted(async () => {
   isDark.value = document.documentElement.classList.contains('dark');
 
@@ -83,7 +97,47 @@ onMounted(async () => {
       // 401 已由 request.js 处理；其余错误不影响页面渲染。
     }
   }
+
+  // 已赞集合：整个 SPA 生命周期只真拉一次（store 内部有 initialized 幂等）。
+  // 未登录**决不能调** —— 会吃 401 从而被 request.js 踢去登录页；这与
+  // 详情页 getArticleLiked 是同一条纪律（见 api/like.js 注释）。
+  //
+  // 注意这里不 await 到阻塞渲染：卡片做的是「命中即红」，集合晚到位只会让爱心
+  // 晚一拍变红，不影响列表本身渲染。失败了也是退化为旧行为，不是错态。
+  if (userStore.isLogin) {
+    try {
+      await likedStore.ensureLoaded();
+    } catch (error) {
+      // ensureLoaded 内部已兜住，这里是双保险：绝不让初始化失败冒泡到 App 挂掉。
+    }
+  }
+
+  // 监听 401 拦截器派发的「登录态已失效」事件（request.js 为避免循环依赖改用事件而非直接调 store）。
+  window.addEventListener(AUTH_CLEARED_EVENT, handleAuthCleared);
 });
+
+onUnmounted(() => {
+  window.removeEventListener(AUTH_CLEARED_EVENT, handleAuthCleared);
+});
+
+// 换账号：token 被换成别人的那一刻，旧的已赞集合已经在 setToken() 里清掉了，
+// 这里负责把新账号那份拉回来。
+//
+// 不用 immediate —— 首次进页面由上面的 onMounted 负责（那时 token 是从 localStorage
+// 读出来的初始值，watch 不会触发）。
+// 也不在这里处理登出：setToken('') 已清空，下面的 isLogin 判断会让这次回调什么都不做。
+watch(
+  () => userStore.token,
+  async (next) => {
+    if (!next) return;
+
+    try {
+      await likedStore.ensureLoaded();
+    } catch (error) {
+      // 同上：初始化失败只退化为「全是空心」，不影响页面。
+    }
+  },
+);
 
 function goLogin() {
   router.push({ name: 'login', query: { redirect: route.fullPath } });

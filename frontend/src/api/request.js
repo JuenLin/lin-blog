@@ -1,5 +1,10 @@
 import axios from 'axios';
 
+// 401 后通过事件通知前端登录态同步清空（见下方响应拦截器）。
+// 用事件而非直接 import userStore，是为规避 request.js ↔ stores/user.js 的静态循环依赖
+// （store 的 reset 挂在 setToken 上，走事件让 AppHeader 调 setToken('') 即可覆盖这条路径）。
+export const AUTH_CLEARED_EVENT = 'auth:cleared';
+
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
   timeout: 10000,
@@ -41,6 +46,13 @@ request.interceptors.response.use(
 
     if (response && response.status === 401) {
       localStorage.removeItem('token');
+
+      // 通知前端登录态同步清空：头部退回「登录」按钮、likedStore 的 Set 清空（防卡片错误变红）。
+      // 不直接调 userStore 是为规避循环依赖；AppHeader 监听该事件后调 setToken('')，
+      // 既更新 token ref（isLogin=false）又触发 likedStore.reset()。
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(AUTH_CLEARED_EVENT));
+      }
 
       const { default: router } = await import('../router/index.js');
 
