@@ -277,6 +277,7 @@ PUT    /api/articles/:id       编辑文章（仅作者）
 DELETE /api/articles/:id       删除文章（仅作者，软删除）
 POST   /api/comments           发表评论
 GET    /api/articles/:id/comments   文章评论列表
+DELETE /api/comments/:id       删除评论（评论作者或文章作者，软删除）
 POST   /api/articles/:id/like       点赞
 DELETE /api/articles/:id/like       取消点赞
 GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
