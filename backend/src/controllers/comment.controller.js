@@ -1,6 +1,7 @@
 import {
   createComment as createCommentService,
   listCommentsByArticle as listCommentsByArticleService,
+  deleteComment as deleteCommentService,
 } from '../services/comment.service.js';
 import { sendOk, sendCreated } from '../utils/response.js';
 
@@ -18,6 +19,17 @@ export async function create(req, res, next) {
 export async function listByArticle(req, res, next) {
   try {
     const data = await listCommentsByArticleService(req.validated.params.id, req.query);
+
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+// 与 article.controller.js 的 remove 同构：controller 不做业务判断，只转发 service 结果或错误。
+export async function remove(req, res, next) {
+  try {
+    const data = await deleteCommentService(req.validated.params.id, req.user.userId);
 
     return sendOk(res, data);
   } catch (error) {

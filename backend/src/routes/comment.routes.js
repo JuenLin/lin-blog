@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import validate from '../middlewares/validate.js';
 import auth from '../middlewares/auth.js';
-import { createCommentSchema, articleIdParamSchema } from '../validators/comment.validator.js';
-import { create, listByArticle } from '../controllers/comment.controller.js';
+import { createCommentSchema, articleIdParamSchema, commentIdParamSchema } from '../validators/comment.validator.js';
+import { create, listByArticle, remove } from '../controllers/comment.controller.js';
 
 // 评论的两个接口挂在不同前缀下，所以这里导出两个 router，
 // 由 routes/index.js 分别挂载，避免把 POST /api/comments 误挂到 /api/articles 下。
@@ -11,6 +11,7 @@ import { create, listByArticle } from '../controllers/comment.controller.js';
 export const commentRootRouter = Router();
 
 commentRootRouter.post('/', auth, validate({ body: createCommentSchema }), create);
+commentRootRouter.delete('/:id', auth, validate({ params: commentIdParamSchema }), remove);
 
 // 挂载在 /api/articles：GET /api/articles/:id/comments
 export const commentArticleRouter = Router();

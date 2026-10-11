@@ -16,4 +16,13 @@ export const createCommentSchema = z.object({
     .refine((value) => value.length <= 500, '不能超过 500 个字符'),
 });
 
+// 路径参数在 Express 里是字符串，统一 coerce 成正整数（与 articleIdParamSchema 同构）。
+// docs/API.md 的 DELETE /api/comments/:id：id 非法返回 40000。
+export const commentIdParamSchema = z.object({
+  id: z.coerce
+    .number()
+    .int('必须是整数')
+    .positive('必须是正整数'),
+});
+
 export { articleIdParamSchema };
