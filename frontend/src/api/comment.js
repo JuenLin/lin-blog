@@ -11,3 +11,7 @@ export function listComments(articleId, params) {
 export function createComment(data) {
   return request.post('/comments', data);
 }
+
+export function deleteComment(id) {
+  return request.delete('/comments/' + id);
+}

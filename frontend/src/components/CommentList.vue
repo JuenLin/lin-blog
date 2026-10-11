@@ -18,7 +18,7 @@
     </el-skeleton>
 
     <template v-else>
-      <EmptyState v-if="!list.length" description="还没有评论，来说两句吧" />
+      <EmptyState v-if="!list.length && !total" description="还没有评论，来说两句吧" />
 
       <template v-else>
         <!-- B2：刷新期间旧评论留在原地，变淡 + 不可交互 -->
@@ -62,6 +62,14 @@
               >
                 <span class="comment-time">{{ formatRelativeTime(item.createdAt) }}</span>
               </el-tooltip>
+              <el-button
+                v-if="canDelete(item)"
+                class="comment-delete-btn"
+                link
+                type="danger"
+                size="small"
+                @click="handleDelete(item)"
+              >删除</el-button>
             </div>
 
             <div class="comment-content">{{ item.content }}</div>
@@ -83,7 +91,9 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { listComments } from '../api/comment.js';
+import { listComments, deleteComment } from '../api/comment.js';
+import { useUserStore } from '../stores/user.js';
+import { ElMessageBox } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 import EmptyState from './EmptyState.vue';
 import Pagination from './Pagination.vue';
@@ -93,9 +103,16 @@ const props = defineProps({
     type: Number,
     required: true,
   },
+  // B1：文章作者 id 由父组件（ArticleDetail）传入，用于「文章作者也能删评论」的权限判定。
+  // 不在此组件内自查文章，避免与详情页重复请求（详情页已拉过 article）。
+  articleAuthorId: {
+    type: Number,
+    default: null,
+  },
 });
 
 const router = useRouter();
+const userStore = useUserStore();
 
 const list = ref([]);
 const total = ref(0);
@@ -145,6 +162,41 @@ function markAvatarBroken(item) {
 function goToProfile(id) {
   if (id == null) return;
   router.push({ name: 'user-profile', params: { id } });
+}
+
+// 删除权限：评论作者本人，或文章作者（文章未软删时）。
+// 注意先判 !me 返回 false —— 登录后刷新页面时 fetchMe() 异步，user 在其返回前是 null，
+// 此时删除按钮短暂不显示，属可接受行为（用户感知不到），等 fetchMe 完成按钮自然出现，非 bug。
+function canDelete(item) {
+  const me = userStore.user;
+  if (!me) return false;
+  if (item.author?.id === me.id) return true;                                  // 评论作者
+  if (props.articleAuthorId != null && props.articleAuthorId === me.id) return true; // 文章作者
+  return false;
+}
+
+// 二次确认 + 删除。
+// 直接 await deleteComment：request.js 拦截器约定 code !== 0 抛 Error（走外层 catch 统一提示），
+// 成功时 res 即 data（此处为 null），故不判 code（判 res.code 会访问 null.code 抛 TypeError 被吞）。
+// 等删除响应成功后才动本地 state（正常更新，非乐观更新），不重拉列表（避免非首页删除弹回第一页）。
+async function handleDelete(item) {
+  try {
+    await ElMessageBox.confirm('删除后评论将不再可见，确认删除？', '提示', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return; // 用户点取消
+  }
+  try {
+    await deleteComment(item.id);
+    const idx = list.value.findIndex((c) => c.id === item.id);
+    if (idx !== -1) list.value.splice(idx, 1);
+    total.value = Math.max(0, total.value - 1);
+  } catch (error) {
+    // 错误提示由 request.js 拦截器统一抛出；取消以外的异常也走这里，无需额外处理。
+  }
 }
 
 async function load() {
@@ -285,6 +337,11 @@ defineExpose({
   font-size: 12px;
   color: var(--text-muted);
   cursor: help; /* 方案 D：走 tooltip 看绝对时间 */
+}
+
+/* 删除按钮贴 .comment-item-head 行尾（head 是 flex，margin-left:auto 推右） */
+.comment-delete-btn {
+  margin-left: auto;
 }
 
 .comment-content {

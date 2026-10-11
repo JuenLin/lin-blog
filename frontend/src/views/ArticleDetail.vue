@@ -108,7 +108,7 @@
 
         <CommentEditor :article-id="articleId" @created="handleCommentCreated" />
 
-        <CommentList ref="commentListRef" :article-id="articleId" class="article-detail-comments" />
+        <CommentList ref="commentListRef" :article-id="articleId" :article-author-id="article?.author?.id" class="article-detail-comments" />
 
         <!-- ③ 上一篇/下一篇：拉 100 篇有序窗口（createdAt desc），定位当前篇取相邻两条。
              窗口内「上=更旧（下一条）、下=更新（上一条）」；边界时对应链接禁用；
