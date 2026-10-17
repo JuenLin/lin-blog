@@ -12,6 +12,9 @@ const ArticleDetailView = () => import('../views/ArticleDetail.vue');
 const ArticleEditorView = () => import('../views/ArticleEditor.vue');
 // 第一步 ①：个人主页，按 authorId 前端过滤现有列表，公开页不要求登录。
 const UserProfileView = () => import('../views/UserProfile.vue');
+// 第 4 批：粉丝 / 关注列表页。与 user-profile 分开一个页面，而不是塞成它的第四个 Tab ——
+// 「文章 / 点赞」是内容视图，「关注 / 粉丝」是关系列表，性质不同混在一张卡里视觉不稳。
+const UserFollowsView = () => import('../views/UserFollows.vue');
 // 第二步：修改密码，需登录，未登录由beforeEach 统一跳登录页（带 redirect）。
 const ChangePasswordView = () => import('../views/ChangePassword.vue');
 // 第十四批 A5：设置页壳（左侧导航 + 右侧子视图）。
@@ -68,6 +71,26 @@ const routes = [
     path: '/user/:id',
     name: 'user-profile',
     component: UserProfileView,
+  },
+  {
+    // 第 4 批：粉丝 / 关注列表。
+    //
+    // **注册顺序**：写在 `/user/:id` 之后仅为阅读顺序（父子关系读起来顺）。
+    // Vue Router 4 按**路径评分**匹配（静态段权重高于动态段），不依赖注册先后，
+    // 所以不存在「谁的写在前面就会吃掉谁」的问题。
+    //
+    // **type 白名单在 beforeEnter 拦**而不是进页面再判断：非法值（/follows/xxx）
+    // 压根不进组件，省得渲染一个空壳再闪错误消息。
+    path: '/user/:id/follows/:type',
+    name: 'user-follows',
+    component: UserFollowsView,
+    beforeEnter: (to) => {
+      if (to.params.type !== 'followers' && to.params.type !== 'following') {
+        return { name: 'user-profile', params: { id: to.params.id } };
+      }
+
+      return true;
+    },
   },
   {
     // 第十四批 A5：/settings 本身只是个壳，进来默认落在「编辑资料」。

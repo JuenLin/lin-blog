@@ -48,6 +48,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { AUTH_CLEARED_EVENT } from '../api/request.js';
 import { useUserStore } from '../stores/user.js';
 import { useLikedStore } from '../stores/liked.js';
+import { useFollowingStore } from '../stores/following.js';
 import SearchBar from './SearchBar.vue';
 import UserDropdown from './UserDropdown.vue';
 
@@ -55,6 +56,7 @@ const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
 const likedStore = useLikedStore();
+const followingStore = useFollowingStore();
 
 // 401 拦截器不流经 userStore（会引循环依赖），改为派发事件；这里监听并调 setToken('')。
 // 既把 token ref 置空（isLogin=false → 头部退回「登录」按钮），又触发 likedStore.reset()
@@ -112,6 +114,19 @@ onMounted(async () => {
     }
   }
 
+  // 第 4 批：「我关注的人」集合（用途：关注按钮初始态 + 自己主页那个免费计数）。
+  // ⚠️ 这里依赖的是 **userStore.user?.id 而不是 token** —— 拉的是 GET /users/{id}/following，
+  // 必须知道"我"的 id；而 user 是 fetchMe() 异步到位的，首屏大概率还是 null。
+  // 所以：这里能做就做（刷新页面且 token 还在时会先 await fetchMe），
+  // 做不了就交给下面那个 watch(user.id) 兜 —— user 一到立刻补拉。
+  if (userStore.isLogin && userStore.user) {
+    try {
+      await followingStore.ensureLoaded(userStore.user.id);
+    } catch (error) {
+      // 同 ensureLoaded：内部已兜住，这里只是别让失败冒泡。
+    }
+  }
+
   // 监听 401 拦截器派发的「登录态已失效」事件（request.js 为避免循环依赖改用事件而非直接调 store）。
   window.addEventListener(AUTH_CLEARED_EVENT, handleAuthCleared);
 });
@@ -135,6 +150,23 @@ watch(
       await likedStore.ensureLoaded();
     } catch (error) {
       // 同上：初始化失败只退化为「全是空心」，不影响页面。
+    }
+  },
+);
+
+// 第 4 批：换账号时补拉「我关注的人」。
+// source 用 `userStore.user?.id` 而不是 token：列表已按顺序清空（setToken 里 reset），
+// 但新账号那份必须等 user 到位才知道 id —— 用 token 会在 user 还是 null 时白跑一趟。
+// 登出时不处理：setToken('') 已清空，而 user 会被 setUser(null)，id 为空，这里自然不做事。
+watch(
+  () => (userStore.user ? userStore.user.id : null),
+  async (next) => {
+    if (!next) return;
+
+    try {
+      await followingStore.ensureLoaded(next);
+    } catch (error) {
+      // 同上：失败只退化为「按钮按未关注显示」，点了才知道已关注，不是错态。
     }
   },
 );

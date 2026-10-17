@@ -18,10 +18,48 @@
         />
         <span v-else class="profile-avatar" :style="{ backgroundColor: fallbackColor }">{{ fallbackText }}</span>
         <div class="profile-meta">
-          <h1 class="profile-name">{{ displayName }} 的主页</h1>
+          <!-- 昵称行：第 4 批把「关注 / 编辑资料」放在昵称右侧（margin-left:auto 推到行尾）。
+               不放“返回广场”旁边 —— 那是「退出页面」的导航，这是「与这个人建立关系」的动作，
+               两类不同性质的按钮并排会抢注意力。 -->
+          <div class="profile-nameline">
+            <h1 class="profile-name">{{ displayName }} 的主页</h1>
+
+            <!-- 三态互斥（v-if / v-else-if / v-else），不会有同时出现或都不出现的情况：
+                   isOwner → 编辑资料（自己不能关注自己，后端会 400，所以不放关注按钮）
+                   未关注（**含未登录**）→ 关注（未登录点击跳登录，带 redirect 回来）
+                   已关注 → 已关注（点击=取关，无二次确认：关系幂等，再关注回来只要一次点击） -->
+            <el-button v-if="isOwner" class="profile-action" @click="goEditProfile">编辑资料</el-button>
+            <el-button
+              v-else-if="!following"
+              class="profile-action"
+              type="primary"
+              :loading="followPending"
+              @click="toggleFollow"
+            >
+              关注
+            </el-button>
+            <el-button v-else class="profile-action" :loading="followPending" @click="toggleFollow">
+              已关注
+            </el-button>
+          </div>
+
           <p class="profile-sub">
             <template v-if="detail">
-              {{ detail.articleCount }} 篇文章 · {{ detail.receivedLikeCount }} 获赞 · {{ detail.receivedCommentCount }} 收到评论
+              {{ detail.articleCount }} 篇文章 · {{ detail.receivedLikeCount }} 获赞 ·
+              {{ detail.receivedCommentCount }} 收到评论
+
+              <!-- 粉丝 / 关注列表的**唯一入口**。刻意做成不带数字的纯文字链接：
+                   显示数字就得为每个主页多打两个请求（followers / following 各一次），
+                   而这两个列表本身只是辅助视图，不值得在主页常驻成本。
+                   唯一例外是自己的主页那条「N 关注」——数字来自 followingStore，零成本。 -->
+              ·
+              <router-link class="profile-stat" :to="{ name: 'user-follows', params: { id: targetId, type: 'following' } }">
+                {{ followingLinkText }}
+              </router-link>
+              ·
+              <router-link class="profile-stat" :to="{ name: 'user-follows', params: { id: targetId, type: 'followers' } }">
+                {{ followersLinkText }}
+              </router-link>
             </template>
             <template v-else-if="detailError">该用户不存在或已注销</template>
             <template v-else>加载中…</template>
@@ -100,9 +138,10 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { getUser, listMyLikes, listUserArticles } from '../api/user.js';
+import { getUser, listMyLikes, listUserArticles, followUser, unfollowUser } from '../api/user.js';
 import { getAvatarColor, getAvatarText, resolveAvatar } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
+import { useFollowingStore } from '../stores/following.js';
 import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import Pagination from '../components/Pagination.vue';
@@ -122,6 +161,7 @@ const SKELETON_COUNT = 5;
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
+const followingStore = useFollowingStore();
 
 // 路由参数可能是非数字；非法时记 null，命中逻辑直接返回空（不至于 NaN 串进 UI）。
 const targetId = computed(() => {
@@ -162,6 +202,84 @@ const isOwner = computed(() => {
   if (!me || id === null) return false;
   return Number(me.id) === id;
 });
+
+// ---- 第 4 批：关注按钮 + 粉丝/关注列表入口 ----
+
+// 是否已关注：**「我关注的人」集合是唯一真相来源**。
+// 现有接口里没有任何一个返回这个布尔值（GET /users/:id 只有文章维度的三个计数），
+// 所以只能靠 followingStore。集合未拉取或拉失败时为 false，
+// 表现为「点了才知道已关注」——这是降级，不是错态。
+const following = computed(() => followingStore.has(targetId.value));
+
+// 请求中：按钮 :loading + 禁用，避免连点打出两个相反的请求。
+const followPending = ref(false);
+
+// 链接文案：别人的主页一律纯文字；自己的主页第一条**带免费数字** ——
+// followingStore 登录后已经拉过自己的关注列表，这个数字不需要额外请求。
+// 集合还没就绪时退化成「我的关注」，不闪 undefined、不占位跳动。
+const followingLinkText = computed(() => {
+  if (!isOwner.value) return '他关注';
+
+  return followingStore.initialized ? `${followingStore.myFollowingCount} 关注` : '我的关注';
+});
+
+// 自己主页显示「我的粉丝」，别人主页显示「他的粉丝」。
+// 都不带数字：我的粉丝数没有免费数据源，拿它要为个人主页常驻一个请求，不划算。
+const followersLinkText = computed(() => (isOwner.value ? '我的粉丝' : '他的粉丝'));
+
+/**
+ * 关注 / 取关。
+ *
+ * 两个接口都**幂等**：重复关注、取消没关注过的都返回 200 / code 0，
+ * 所以这里不需要 catch 任何「已关注 / 没关注」的错误码 —— 不存在。
+ * （与 like 那两个接口的 409 / 404 刻意相反，别照着那里的写法改。）
+ */
+async function toggleFollow() {
+  const id = targetId.value;
+
+  if (id === null) return;
+
+  // 未登录：先去登录，带 redirect 回来继续对话。不等后端返回 401 再处理 ——
+  // 那已经是一次注定失败的请求了。
+  if (!userStore.isLogin) {
+    goLogin();
+    return;
+  }
+
+  if (followPending.value) return;
+
+  followPending.value = true;
+
+  try {
+    const data = following.value ? await unfollowUser(id) : await followUser(id);
+
+    // 集合只在请求成功后改（不做乐观更新）——失败路径都要回滚，收益却不划算。
+    if (data && data.following) {
+      followingStore.add(id);
+    } else {
+      followingStore.remove(id);
+    }
+
+    // ⚠️ 响应里的 followerCount 属于「这个人」，followingCount 属于「我」。
+    // 本页不显示对方的关注 / 粉丝数（需要额外请求），所以这两个值**都不落到 UI**，不是漏写；
+    // 自己主页那个「N 关注」由 followingStore 的 ±1 维护。
+  } catch (error) {
+    ElMessage.error(error.message || '操作失败，请稍后重试');
+  } finally {
+    followPending.value = false;
+  }
+}
+
+function goLogin() {
+  router.push({ name: 'login', query: { redirect: route.fullPath } });
+}
+
+// 编辑资料：跳 /settings/profile（route name 是 settings-profile，见 router/index.js）。
+// 这是**第三个**入口 —— 另外两个是右上角 UserDropdown 的「设置」与 Settings 侧栏的
+// 「编辑资料」，两者都不改，这里只是补一条「从自己的主页直接改资料」的直觉路径。
+function goEditProfile() {
+  router.push({ name: 'settings-profile' });
+}
 
 const displayName = computed(() => {
   const d = detail.value;
@@ -402,6 +520,33 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 第 4 批：昵称行 —— 名字在左，动作按钮贴行尾。
+   min-width:0 让长昵称不把按钮顶出容器。 */
+.profile-nameline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.profile-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* 第 4 批：粉丝 / 关注列表入口。视觉上就是普通弱化文字，hover 才给出可点提示 ——
+   它是入口而不是主要信息，不该在副标题里抢「文章 / 获赞 / 评论」的注意力。 */
+.profile-stat {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.profile-stat:hover,
+.profile-stat:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .profile-back {

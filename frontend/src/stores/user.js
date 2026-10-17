@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { getMe, login as loginApi, register as registerApi } from '../api/auth.js';
 import { useLikedStore } from './liked.js';
+import { useFollowingStore } from './following.js';
 
 const TOKEN_KEY = 'token';
 
@@ -21,6 +22,10 @@ export const useUserStore = defineStore('user', () => {
     // 这里只清空，不重新拉取：拉取由 AppHeader 的 watch(token) 触发，
     // 那个 watch 在注销时不满足 isLogin 条件，自然不会给已登出的人打接口。
     useLikedStore().reset();
+
+    // 第 4 批：同一个道理 ——「我关注的人」集合也必须跟着换人。
+    // 漏了就会串号：A 关注过的人，在 B 的主页上显示成「已关注」，且 B 的关注数跟着错。
+    useFollowingStore().reset();
 
     if (token.value) {
       localStorage.setItem(TOKEN_KEY, token.value);

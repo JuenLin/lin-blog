@@ -5,12 +5,16 @@
 // docs/API.md 已把 GET/POST/PUT/DELETE /api/users（列表 / 新增 / 更新 / 删除）全部登记为「未实现」，
 // 文章与评论的作者信息通过内嵌 author 对象返回，不依赖用户列表接口。
 //
-// **已实现的 user 接口共五个**：
+// **已实现的 user 接口共九个**：
 //   - PUT  /api/users/me            改资料（第九批）
 //   - POST /api/users/me/avatar     传头像（第十一批）
 //   - GET  /api/users/:id           公开详情 + 三个计数（第 2 批）
 //   - GET  /api/users/:id/articles  该用户文章列表，真后端分页（第 2 批）
 //   - GET  /api/users/me/likes      当前用户点赞列表，仅本人（第 2 批）
+//   - POST /api/users/:id/follow    关注（第 4 批）
+//   - DELETE /api/users/:id/follow  取消关注（第 4 批）
+//   - GET  /api/users/:id/followers 粉丝列表（第 4 批）
+//   - GET  /api/users/:id/following 关注列表（第 4 批）
 //
 // 保留本文件而不删除：契约第 3 节声明了api/ 下的文件划分（契约 §3 有清单）。
 import request from './request.js';
@@ -155,6 +159,86 @@ export function listUserArticles(id, params) {
  */
 export function listMyLikes(params) {
   return request.get('/users/me/likes', { params });
+}
+
+// ---------- 第 4 批：关注相关 4 接口 ----------
+
+/**
+ * 关注某用户。对应 docs/API.md 的 POST /api/users/:id/follow。
+ *
+ * **需要登录**（后端 auth 中间件，未登录 40100）。被关注者身份来自路径 id，
+ * 关注者身份来自 token，**请求体不收任何身份字段**。
+ *
+ * ⚠️ **这是幂等写，不是「重复报错」**：已关注时**仍然返回 200 / code 0**，
+ * 与 `POST /api/articles/:id/like`（重复点赞返回 40900）**刻意相反**。
+ * 原因：follows 的唯一约束 `follows_follower_id_following_id_key` 会拦住并发重复写入，
+ * 应用层「先查再插」有竞态，只能由数据库兜底，兜到之后语义上就是「已关注」这个状态达成。
+ * 前端不要在这里 catch 任何"已关注"错误码 —— 不存在。
+ *
+ * 响应 data：{ following: true, followerCount, followingCount }
+ *   - `followerCount` 属于**路径 :id 这个人**（他的粉丝数）
+ *   - `followingCount` 属于**我自己**（我的关注数）
+ *   两者归属对象不同，别拿混（见 stores/following.js 顶部注释）。
+ *
+ * @param {number|string} id 被关注者 id
+ * @returns {Promise<{following: boolean, followerCount: number, followingCount: number}>}
+ * @throws {Error} 401（未登录）/ 400（id 非法，或关注自己）/ 404（目标不存在或已软删）
+ */
+export function followUser(id) {
+  return request.post(`/users/${id}/follow`);
+}
+
+/**
+ * 取消关注。对应 docs/API.md 的 DELETE /api/users/:id/follow。
+ *
+ * **需要登录**。与 follow 同为**幂等**：本来就没关注时**也返回 200 / code 0**，
+ * 与 `DELETE /api/articles/:id/like`（取消没赞过的返回 40400）**刻意相反**。
+ * 语义是「确认关系不存在」——没关注本来就是这个状态，所以是成功而非错误。
+ *
+ * 响应与 follow 同形，只是 `following: false`。
+ *
+ * @param {number|string} id 被关注者 id
+ * @returns {Promise<{following: boolean, followerCount: number, followingCount: number}>}
+ * @throws {Error} 401（未登录）/ 400（id 非法）/ 404（目标不存在或已软删）
+ */
+export function unfollowUser(id) {
+  return request.delete(`/users/${id}/follow`);
+}
+
+/**
+ * 某用户的粉丝列表。对应 docs/API.md 的 GET /api/users/:id/followers。
+ *
+ * **无需登录**（公开只读），真后端分页。
+ *
+ * `list[]` 是**公开用户资料**（id / username / nickname / avatar / bio / createdAt）
+ * 再加一个虚拟字段 `followedAt`（= follows.createdAt，关注发生时间）。
+ *
+ * ⚠️ **两个时间的区别（最容易拿错）**：
+ *   - `createdAt` 来自 PUBLIC_FIELDS，是**该用户的注册时间**
+ *   - `followedAt` 才是**关注发生时间**
+ * 列表上要展示的是后者。
+ *
+ * sortBy 白名单 followedAt / id，默认 followedAt desc。前端页面**不暴露排序控件**。
+ * 用户不存在 / 已软删 → 404；存在但 0 粉丝 → 200 + list:[] + total:0（据此渲染空态）。
+ *
+ * @param {number|string} id 用户 id
+ * @param {object} [params] { page, pageSize, sortBy, order }
+ * @returns {Promise<{list: object[], page: number, pageSize: number, total: number, totalPages: number}>}
+ */
+export function listFollowers(id, params) {
+  return request.get(`/users/${id}/followers`, { params });
+}
+
+/**
+ * 某用户主动关注的列表。与 listFollowers 完全对称（换 querying 端），
+ * 详见 docs/API.md 的 GET /api/users/:id/following。
+ *
+ * @param {number|string} id 用户 id
+ * @param {object} [params] { page, pageSize, sortBy, order }
+ * @returns {Promise<{list: object[], page: number, pageSize: number, total: number, totalPages: number}>}
+ */
+export function listFollowing(id, params) {
+  return request.get(`/users/${id}/following`, { params });
 }
 
 // 将来的形状示例（未启用）：
