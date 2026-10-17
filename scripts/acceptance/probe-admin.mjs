@@ -5,7 +5,8 @@
 //   B 组 管理员（19）   —— stats / users / PATCH / articles / comments 全流程，
 //                          含「封禁 ADMIN → 40000 且 status 未变」的防呆断言
 //   C 组 role 透出（3） —— users/167、users/2、auth/me 均为 ADMIN
-//   D 组 Chrome（3）    —— /admin 路由守卫（非 admin 回首页）+ 统计卡渲染 + 金色徽章
+//   D 组 Chrome（6）    —— /admin 路由守卫（非 admin 回首页）+ 统计卡渲染 + 金色徽章
+//                          + 下拉「管理后台」入口可见性（admin/lin 可见、普通用户不可见，拆 D4a/b/c）
 //   E 组 代码块/TOC（6）—— hljs 高亮 / TOC 数量与滚动 / XSS 净化（script 与 onerror）
 //
 // 账号策略：admin(2) / lin(167) 是真实账号，用 mintToken 铸 token（不碰密码），
@@ -243,6 +244,25 @@ async function clickElement(session, selector, index = 0) {
   }
 }
 
+// 登录某 token 后打开页面、点开右上角下拉菜单，返回菜单项文本数组（trim 后）。
+// 供 D4 验证「管理后台」入口只对 ADMIN 可见：admin / lin 应含该文本，普通用户不应含。
+// 注意：注入 token 后必须再导航一次，才能触发路由守卫重读 token（否则页面仍用注入前的登录态）。
+async function dropdownItemsFor(session, token) {
+  await openPage(session, CONFIG.frontend + '/');
+  await waitForPageReady(session);
+  await injectToken(session, token);
+  await openPage(session, CONFIG.frontend + '/admin'); // 注入后再导航，触发守卫读 token；tempB 会被弹回首页，但头部全局渲染
+  const triggerReady = await waitForSelector(session, '.user-dropdown', 15000);
+  if (!triggerReady) return [];
+  await clickElement(session, '.user-dropdown');
+  const menuReady = await waitForSelector(session, '.el-dropdown-menu__item', 15000);
+  if (!menuReady) return [];
+  const items = await session.evaluate(
+    `Array.from(document.querySelectorAll('.el-dropdown-menu__item')).map((el) => el.textContent.trim())`
+  );
+  return Array.isArray(items) ? items : [];
+}
+
 /* ---------- 主流程 ---------- */
 
 async function main() {
@@ -477,6 +497,15 @@ async function main() {
   } else {
     check('D3', '文章详情页渲染「管理员」徽章', false, '找不到 admin 的未软删文章');
   }
+
+  // D4：下拉菜单「管理后台」入口只对 ADMIN 可见（第 5 批验收补）。
+  // admin / lin 是 ADMIN → 菜单含「管理后台」；普通 tempB 是 USER → 菜单不含。
+  const adminMenu = await dropdownItemsFor(state.session, adminToken);
+  check('D4a', 'admin 下拉菜单含「管理后台」', adminMenu.includes('管理后台'), JSON.stringify(adminMenu));
+  const linMenu = await dropdownItemsFor(state.session, linToken);
+  check('D4b', 'lin 下拉菜单含「管理后台」', linMenu.includes('管理后台'), JSON.stringify(linMenu));
+  const tempMenu = await dropdownItemsFor(state.session, state.tempB.token);
+  check('D4c', '普通用户下拉菜单不含「管理后台」', !tempMenu.includes('管理后台'), JSON.stringify(tempMenu));
 
   /* ===== E 组浏览器断言（E0 发文章 + E1-E6） ===== */
   console.log('---- E 组：代码块 / TOC / XSS ----');

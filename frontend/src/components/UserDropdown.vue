@@ -26,6 +26,9 @@
              两项都还在，只是从「菜单里选一个」变成「进设置页再选」，
              将来加第三个设置项时菜单不再变长。 -->
         <el-dropdown-item command="settings">设置</el-dropdown-item>
+        <!-- 第 5 批验收补：管理员专属入口，仅 ADMIN 可见（userStore.user.role === 'ADMIN'）。
+             放在「设置」与「退出登录」之间，点击跳 /admin。普通用户（role=USER）不渲染此项。 -->
+        <el-dropdown-item v-if="isAdmin" command="admin">管理后台</el-dropdown-item>
         <el-dropdown-item command="logout">退出登录</el-dropdown-item>
       </el-dropdown-menu>
     </template>
@@ -72,6 +75,11 @@ watch(
 // 避免拼出 /user/undefined 这种死链。
 const myProfileId = computed(() => (userStore.user && userStore.user.id) || null);
 
+// 管理员专属入口（第 5 批验收补）：仅 ADMIN 角色可见。
+// 与后端 requireAdmin 守卫同源判断（role 实时来自 userStore.user，后端每次请求也实时查库），
+// JWT 不缓存 role，所以这里用 store 里的实时 role，不读 localStorage / token 解析。
+const isAdmin = computed(() => (userStore.user && userStore.user.role) === 'ADMIN');
+
 // 登出是纯前端清理：契约第 5 节没有 /api/auth/logout，后端也没这个路由，
 // 不新增接口，只清 Pinia 与 localStorage 并回首页。
 function handleCommand(command) {
@@ -85,6 +93,12 @@ function handleCommand(command) {
   // 真要手工兜一道，路由的 meta.requiresAuth 也会把未登录者弹去登录页。
   if (command === 'settings') {
     router.push({ name: 'settings' });
+    return;
+  }
+
+  // 第 5 批验收补：管理员专属入口，跳 /admin（路由名 'admin'，带 requireAdmin 守卫）。
+  if (command === 'admin') {
+    router.push({ name: 'admin' });
     return;
   }
 
