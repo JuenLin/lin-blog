@@ -149,6 +149,17 @@ async function main() {
   ensureDirs();
   await preflight();
 
+  /* ---------- 记录基线（相对写法：跑前快照，不关心绝对值） ---------- */
+  const prismaBaseline = await getPrisma();
+  try {
+    baseline.users = await prismaBaseline.user.count();
+    baseline.follows = await prismaBaseline.follow.count();
+  } finally {
+    await prismaBaseline.$disconnect();
+    prismaClient = null;
+  }
+  console.log(`\n基线快照（跑前）：users=${baseline.users} follows=${baseline.follows}`);
+
   /* ---------- 造 2 个账号 ---------- */
 
   state.A = await makeAccount('A');
@@ -610,6 +621,7 @@ function summarize() {
   return fail === 0 ? 0 : 1;
 }
 
+let baseline = { users: -1, follows: -1 };
 let exitCode = 1;
 
 try {
@@ -668,7 +680,7 @@ try {
     const usernames = [state.A.username, state.B.username].filter(Boolean);
     const deletedUsers = usernames.length ? await cleanupProbeAccounts(usernames) : 0;
 
-    // 3. 复核回到基线：follows 总数 0、users 总数 4（当前库基线）。
+    // 3. 复核回到基线（相对写法：跑完应等于跑前快照，不关心基线绝对值）。
     const prisma2 = await getPrisma();
     try {
       followsLeft = await prisma2.follow.count();
@@ -678,11 +690,17 @@ try {
       prismaClient = null;
     }
 
+    const usersOk = usersLeft === baseline.users;
+    const followsOk = followsLeft === baseline.follows;
     console.log(
-      `\n清理：follows 行 ${deletedFollows} / 探针账号 ${deletedUsers}；复核 follows=${followsLeft}（应 0） users=${usersLeft}（应 4）`
+      `\n清理：follows 行 ${deletedFollows} / 探针账号 ${deletedUsers}；` +
+        `复核 users 跑前=${baseline.users} → 跑后=${usersLeft}（${usersOk ? 'OK' : 'DELTA=' + (usersLeft - baseline.users)}） ` +
+        `follows 跑前=${baseline.follows} → 跑后=${followsLeft}（${followsOk ? 'OK' : 'DELTA=' + (followsLeft - baseline.follows)}）`
     );
-    if (followsLeft !== 0 || usersLeft !== 4) {
-      console.error('⚠️ 复核未回到基线，需手动处理');
+    if (!usersOk || !followsOk) {
+      console.error(
+        `⚠️ 复核未回到基线（跑前→跑后）：users ${baseline.users}→${usersLeft}，follows ${baseline.follows}→${followsLeft}；需手动处理`
+      );
       exitCode = 1;
     }
   } catch (error) {
