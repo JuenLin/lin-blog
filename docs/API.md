@@ -15,6 +15,7 @@
 | 0     | 成功            |
 | 40000 | 参数错误          |
 | 40100 | 未登录或 token 无效 |
+| 40101 | 账号已封禁         |
 | 40300 | 无权限           |
 | 40400 | 资源不存在         |
 | 40900 | 资源冲突          |
@@ -143,6 +144,8 @@ JWT payload：
 
 失败：用户名不存在或密码错误一律返回 **HTTP 401 / code 40100**，message 统一为「用户名或密码错误」，不区分具体原因。
 
+**封禁账号的登录**（第 5 批）：密码校验**通过后**发现 `status = BANNED` → **HTTP 401 / code 40101**「账号已封禁」。判断顺序刻意放在密码比对之后：输错密码只得到「用户名或密码错误」，输对才提示封禁（轻微泄露「此账号已封禁」，但攻击者需已知用户名 + 正确密码，换取正常用户的封禁提示，值）。
+
 ---
 
 ### GET /api/auth/me
@@ -167,18 +170,20 @@ Authorization: Bearer <token>
     "nickname": "Demo",
     "avatar": null,
     "bio": null,
+    "role": "USER",
     "createdAt": "2026-09-29T12:49:05.911Z"
   }
 }
 ```
 
-`avatar` / `bio` 为第九批新增字段，**本接口现已稳定返回这两个键**（示例中为 `null`）。必须返回，否则前端无法在登录后立即拿到用户资料。
+`avatar` / `bio` 为第九批新增字段，**本接口现已稳定返回这两个键**（示例中为 `null`）。必须返回，否则前端无法在登录后立即拿到用户资料。`role` 为第 5 批新增（`USER` / `ADMIN`），供前端渲染管理员徽章与管理端入口；**`status` 不透出**，封禁态只通过 401 / 40101 表现。
 
 失败：
 
 | HTTP | code  | 场景                                |
 | ---- | ----- | --------------------------------- |
 | 401  | 40100 | 未提供 token、token 格式错、token 过期或签名无效 |
+| 401  | 40101 | 账号已封禁（token 本身有效，但 `status = BANNED`，旧 token 即刻失效） |
 | 404  | 40400 | token 有效但用户不存在（已删除等）              |
 
 ---
@@ -267,7 +272,8 @@ Authorization: Bearer <token>
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
 - **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。已登录用户想拿 `liked`，另调 `GET /api/articles/:id/liked`（需登录），列表 / 详情的返回结构不受影响。它同时也是 `sortBy` 的合法值（「热门」Tab 按它倒序），语义见 `GET /api/articles`。
-- 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。
+- 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar` / `role`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。`role` 为第 5 批新增（`USER` / `ADMIN`），供前端渲染管理员徽章与管理端入口；**`status` 不在 `author` 内**，封禁态只通过 401 / 40101 表现。
+- **`role` 透出（第 5 批）**：`role` 同时进入 `toPublicUser`（`auth.service.js` 与 `user.service.js` 两份重复定义都加）与 `AUTHOR_SELECT`（`article.service.js` 与 `comment.service.js` 两份都加），因此 `GET /api/auth/me`、`GET /api/users/:id`、登录 / 注册响应的 `user`、所有文章 / 评论列表项的内嵌 `author` 都带 `role`。沿用第九批 `avatar` 的「只加字段、不做重构」先例，两份重复定义的抽取单独排批。
 - **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
   - 演变史（三批）：第九批引入 `avatar` 时是「用户自填的外链 URL」；第十一批加上传能力，**两种并存**；**本次把外链下线**，只留站内上传。`avatar` 的**列定义**（`VARCHAR(255) NULL`）与 `null`（未设头像）语义**三批都没变过**。
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
@@ -300,6 +306,13 @@ Authorization: Bearer <token>
 | DELETE | /api/users/:id/follow      | 取消关注（需登录，幂等；未关注也返回 200）                         | 是  |
 | GET    | /api/users/:id/followers   | 粉丝列表（关注 :id 的人，公开）                                  | 否  |
 | GET    | /api/users/:id/following   | 关注列表（:id 关注的人，公开）                                   | 否  |
+| GET    | /api/admin/stats           | 管理端数据概览（6 个实时 COUNT，需 ADMIN）                          | 是  |
+| GET    | /api/admin/users           | 管理端用户列表（分页 / 搜索 / 状态筛选，需 ADMIN）                      | 是  |
+| PATCH  | /api/admin/users/:id/status | 封禁 / 解禁用户（幂等；ADMIN 不可操作，需 ADMIN）                     | 是  |
+| GET    | /api/admin/articles        | 管理端文章列表（含软删，可筛选，需 ADMIN）                          | 是  |
+| DELETE | /api/admin/articles/:id     | 管理端删除文章（软删，无视作者，需 ADMIN）                          | 是  |
+| GET    | /api/admin/comments        | 管理端评论列表（含软删，可筛选，需 ADMIN）                          | 是  |
+| DELETE | /api/admin/comments/:id     | 管理端删除评论（软删，无视作者，需 ADMIN）                          | 是  |
 
 ---
 
@@ -1118,6 +1131,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
     "nickname": "Demo",
     "avatar": "/uploads/avatars/1/1730000000000-ab12cd34.png",
     "bio": "写点东西，也看点东西。",
+    "role": "USER",
     "createdAt": "2026-09-29T14:00:00.000Z",
     "articleCount": 11,
     "receivedLikeCount": 7,
@@ -1133,6 +1147,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 | nickname          | string \| null  | 昵称；未设置时为 `null`（前端按 `nickname \|\| username` 回退）                          |
 | avatar            | string \| null  | 头像，语义与 `PUT /api/users/me` 一致：**只有 `/uploads/` 站内路径一种形态**（可能为 `null`）。前端渲染前必须补后端 origin，规则见「前端调用约定」 |
 | bio               | string \| null  | 个人简介；未设置时为 `null`                                                         |
+| role              | string          | 角色，第 5 批新增。枚举 `USER` / `ADMIN`；前端据此渲染管理员徽章与管理端入口                |
 | createdAt         | string          | 注册时间，ISO 8601 UTC                                                         |
 | articleCount      | number          | 该用户**未软删**的文章数                                                            |
 | receivedLikeCount | number          | 该用户**未软删**文章收到的点赞总数（实时 `COUNT(*)`）                                       |
@@ -1147,7 +1162,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 - **`receivedLikeCount` 含本人给自己文章的赞**：`POST /api/articles/:id/like` 允许给自己的文章点赞（接口清单已注明），所以「获赞数」不排除自赞。与 `likeCount`（某篇文章的赞数）口径一致，都是 all-time 累计、不做时间窗衰减。
 - **不含 `likeGivenCount`（我赞过多少篇）**：那个数字由 `GET /api/users/me/likes` 的 `total` 提供，本接口不重复给 —— 同一个数字两个来源，将来口径不一致时无法判断哪个对。
 
-**刻意不含**：`password`（永不进 select）、`updatedAt`、`email`（表里没有）、关注数 / 粉丝数（第 4 批 `follows` 表的事）。
+**刻意不含**：`password`（永不进 select）、`updatedAt`、`email`（表里没有）、关注数 / 粉丝数（第 4 批 `follows` 表的事）、`status`（第 5 批起表里有此列，但**刻意不透出**——封禁态只通过 401 / 40101 表现，不作为公开字段）。
 
 失败：
 
@@ -1600,9 +1615,137 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 ---
 
+### 管理端接口（第 5 批）
+
+> 本批为管理员后台新增 7 个接口，前缀 `/api/admin`。schema 变更（`users` 加 `role` / `status` 两列）与依赖特批（marked / highlight.js / dompurify）的豁免登记见 `docs/AI_CONTRACT.md` §2 与 `docs/DB.md`「第 5 批」小节。
+
+**统一约定**：
+
+- 全部需要「已登录 + ADMIN」双条件：先过 `auth` 中间件（验签 + 封禁检查），再过 `requireAdmin` 中间件（查 `role`）。
+- 未登录 / token 无效 → 401 / 40100；已登录但账号被封禁 → 401 / 40101（**旧 token 即刻失效**，不需要任何额外机制）；已登录非 ADMIN → 403 / 40300「需要管理员权限」。
+- 分页、排序、keyword 沿用契约 §7 与本文「通用约定」；管理端列表的 `sortBy` 白名单与对应公开列表一致。
+- 删除一律**软删**，与公开接口语义一致；**不提供物理硬删**（FK 全 RESTRICT，硬删需先清 `likes` → `comments`，超出 MVP，留 `?force` 查询参数作演进位）。
+- 管理端列表**可以看到已软删的内容**（`articles` / `comments`），这是管理页的职责；公开广场永远只返回未软删。
+
+#### GET /api/admin/stats
+
+数据概览。**无需参数**。成功返回 6 个实时 `COUNT(*)`：
+
+| 字段 | 口径 |
+|---|---|
+| users | 未软删用户数 |
+| articles | 未软删文章数 |
+| comments | 未软删评论数 |
+| likes | `likes` 表总行数（点赞者软删不排除，同 `likeCount` 口径） |
+| follows | `follows` 表总行数 |
+| deletedArticles | 已软删文章数（管理端专属，公开接口不返回） |
+
+> **不含「待办举报数」**：举报系统尚未建设（第 7 批储备项），此时返回该字段只能是假数据，等举报落地后再加，不预留占位。
+
+失败：401 / 40100（未登录）、401 / 40101（已封禁）、403 / 40300（非 ADMIN）。
+
+#### GET /api/admin/users
+
+用户列表。需要「登录 + ADMIN」。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| page | number | 否 | 默认 1 |
+| pageSize | number | 否 | 默认 20，上限 100 |
+| sortBy | string | 否 | `createdAt` / `id`，默认 `createdAt` |
+| order | string | 否 | `asc` / `desc`，默认 `desc` |
+| keyword | string | 否 | 模糊匹配 `username` + `nickname` |
+| status | string | 否 | `ACTIVE` / `BANNED`，不传 = 全部 |
+
+`list[]` 字段：`id` / `username` / `nickname` / `avatar` / `role` / `status` / `createdAt`（**无 `password`**）。
+
+- **不含软删用户**：与所有用户只读接口口径一致（软删用户对任何接口都是 404），`PATCH` 对软删用户同样 404。
+- 分页 meta：`{ list, page, pageSize, total, totalPages }`。
+
+失败：401 / 40100、401 / 40101、403 / 40300、400 / 40000（`status` 非法值）。
+
+#### PATCH /api/admin/users/:id/status
+
+封禁 / 解禁用户。请求体：
+
+```json
+{ "status": "BANNED" }
+```
+
+| 字段 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| status | string | 是 | 枚举 `ACTIVE` / `BANNED`，非法值 400 / 40000 |
+
+行为：
+
+- **幂等 200**：目标已是该状态也返回 200（状态机 set，非动作计数，与「重复关注 200」同族）。
+- 成功返回**更新后的 public user**（含 `role` / `status`）。
+- **目标用户不存在或已软删 → 404 / 40400**。
+- **目标用户是 ADMIN → 400 / 40000**「不能封禁或解禁管理员账号」（见下方「管理员不能被管理端操作」）。
+- 封禁效果（`status` 置 `BANNED` 后立即生效）：该用户**所有已签发的 token 即刻失效**（`auth` 中间件实时查 `status`），登录接口对该账号返回 401 / 40101「账号已封禁」。解禁后同一枚旧 token**自动恢复有效**——拦截判据是 `status` 本身，不是 token 黑名单。
+
+**管理员不能被管理端操作**（防呆规则，一刀切）：
+
+> `PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接拒绝，400 / 40000「不能封禁或解禁管理员账号」，**不计算「是不是最后一个管理员」**。理由：① 算「最后一个」要在封禁请求里做管理员计数，并发下仍有窗口；② 一刀切的规则简单、可预期、探针可断言；③ 管理员权限变更（任命 / 罢免 / 封禁管理员）只由开发者直接在数据库操作，不走管理端界面——这是有意的运维边界，不是功能缺失。
+
+#### GET /api/admin/articles
+
+文章列表（管理视角）。查询参数在广场列表基础上增加 `deleted`：
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| deleted | string | 不传 = **全部（含软删）**；`true` = 只要已软删；`false` = 只要未软删 |
+| keyword | string | 命中标题 + 正文（同广场） |
+| sortBy | string | `createdAt` / `updatedAt` / `id` / `likeCount`（同广场） |
+
+`list[]` 与广场列表**逐字同形**（同一份 `toArticleListItem` 塑形），**附加 `deletedAt` 字段**（map 之后单独附加，同 `likedAt` 机制，不污染公开塑形函数）。
+
+失败：401 / 40100、401 / 40101、403 / 40300、400 / 40000。
+
+#### DELETE /api/admin/articles/:id
+
+删除文章（软删），**无视作者权限**。已软删或不存在 → 404 / 40400。成功 200，`data: null`（与 `DELETE /api/articles/:id` 响应一致）。
+
+> 为什么不复用 `DELETE /api/articles/:id` 加 admin 分支：那是修改现有接口的权限语义（契约禁止），且会动到已全绿的公开接口探针回归面。管理端走独立路由，公开接口语义零改动。
+
+#### GET /api/admin/comments
+
+评论列表（管理视角）。查询参数：`page` / `pageSize` / `sortBy`（`createdAt` / `id`）/ `order` / `keyword`（命中 `content`）/ `deleted`（同管理端文章）。
+
+`list[]` 字段：`id` / `content` / `author`（5 字段内嵌对象，含 `role`）/ `articleId` / `articleTitle` / `createdAt` / `deletedAt`。
+
+> `articleTitle` 让管理端知道评论归属哪篇文章（一条关联查询，分页量级可接受）；公开评论列表不带它。
+
+失败：401 / 40100、401 / 40101、403 / 40300、400 / 40000。
+
+#### DELETE /api/admin/comments/:id
+
+删除评论（软删），**无视作者权限**（公开接口的「评论作者 ∨ 文章作者」规则不适用）。已软删或不存在 → 404 / 40400。成功 200，`data: null`。
+
+#### role / status 透出（第 5 批改动的现有响应体）
+
+- `role` 进入三处形状（两份重复定义都改，不做重构）：
+  - `toPublicUser`：`backend/src/services/auth.service.js` 与 `backend/src/services/user.service.js` 各一份；
+  - `AUTHOR_SELECT`：`backend/src/services/article.service.js` 与 `backend/src/services/comment.service.js` 各一份。
+- 影响面：`GET /api/auth/me`、`GET /api/users/:id`、登录 / 注册响应的 `user`、所有文章 / 评论列表项的内嵌 `author`。
+- `status` **不透出**：封禁态只通过 401 / 40101 表现，不作为任何接口的公开字段。
+- 模式同第九批 `avatar`：「只加字段、不做重构」，两份重复定义的抽取单独排批。
+
+#### 封禁语义（为什么是 401 而不是 403）
+
+封禁的本质是**凭证作废**，属 401 语义；403 是「凭证有效但没权限」。具体理由：
+
+1. 前端 `request.js` 已有成熟的 401 链路（清 token → `AUTH_CLEARED_EVENT` → 跳登录），**零成本复用**；走 403 会把用户留在「每个请求都撞墙」的状态，还要给 403 新开清 token 分支。
+2. 401 / **40101** 让登录页能提示「账号已封禁」，不把封禁和「没登录」混为一谈。
+3. JWT payload **不放** `role` / `status`：放了能省一次查询，但改角色 / 封禁后旧 token 不失效——安全上不可接受。必须 DB 实时查，代价是每个已鉴权请求多一次主键查询，项目规模可接受。
+
+---
+
 ### MVP 范围外（明确不做）
 
-收藏、标签、评论删除、「只看我的文章」筛选。
+收藏、标签、「只看我的文章」筛选。
 
 > 说明 0：**点赞已实现**（第十批，`POST` / `DELETE /api/articles/:id/like`，列表与详情返回 `likeCount`），已从上表移出。原遗留项「`liked`（当前用户是否已赞）不在列表 / 详情返回，刷新详情页后按钮态会显示为『未赞』」**已解决**（第十四批）：新增需登录的 `GET /api/articles/:id/liked`，列表 / 详情的返回结构与 `auth` 中间件**均未改动**。
 >
@@ -1613,6 +1756,8 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 > 说明 3：**头像上传已实现**（第十一批，`POST /api/users/me/avatar`，文件落 `backend/uploads/`），已从上表移出。**图片外链已下线** —— `PUT /api/users/me` 的 `avatar` 不再接受 `http(s)://`，只接受 `/uploads/` 站内路径（正常只用于传 `null` 清空），**上传成为设置头像的唯一入口**。遗留项：不做图片压缩 / 缩略图、不做孤儿文件定时对账、不校验 magic bytes，均登记在 `docs/DB.md`。
 >
 > 说明 4：**文章分类已实现**（分类功能，`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，经用户明确批准；豁免登记见 `docs/AI_CONTRACT.md` 第 2 节）。`POST` / `PUT` 文章可传可选 `category`（枚举 技术/生活/随笔/未分类），`GET /api/articles` 新增可选 `category` 筛选参数（与 `keyword` 正交、可叠加）。**未新增 `GET /api/categories` 接口**——前端枚举写死这 4 个字符串，无需后端枚举接口。遗留项：暂不为 `category` 建索引（低基数列，MVP 数据量下无需），理由见 `docs/DB.md`。
+>
+> 说明 5：**评论删除已实现**（第 3 批，`DELETE /api/comments/:id`，评论作者或文章作者，软删），已从上表移出。原清单中的「评论删除」是第 3 批之前的遗留文字，第 5 批顺手清理。
 
 ---
 

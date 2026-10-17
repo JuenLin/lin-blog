@@ -73,8 +73,8 @@
 以下五项均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5 项是「禁止改 schema」的四条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注），  
-第 3 项是「禁止引入新依赖」的例外（第十一批）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
+**注意**：第 1、2、4、5、6 项是「禁止改 schema」的五条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status），  
+第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
    - **批准内容**：`users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列。
@@ -101,6 +101,16 @@
    - **范围**：**仅限新建 `follows` 一张表**。不含修改 `users` / `articles` / `comments` / `likes` 任何一列，也不含给已建表补 `deleted_at`（`follows` 刻意不做软删除，理由见 `docs/DB.md`「follows（关注表）→ 为什么没有软删除列」）。
    - **依据**：见 `docs/DB.md`「follows（关注表）」小节的「schema 变更已获批准（豁免登记 · 第 5 项）」，决策过程见 `docs/API.md` 的 4 个关注接口章节。
    - **是否援引前例**：无，与第九批 / 第十批 / 第十一批 / 分类功能各自独立。
+6. **第 5 批 · schema 变更（role / status，2026-10-17 批准）**
+   - **批准内容**：`users` 表新增 `role` 与 `status` 两列（Prisma enum `UserRole { USER, ADMIN }` / `UserStatus { ACTIVE, BANNED }`，均 `NOT NULL DEFAULT`），迁移名 `add_user_role_status`。
+   - **范围**：仅限这两列。不含索引、不含其他表任何变更、不含改列名 / 类型 / 删列。
+   - **依据**：见 `docs/DB.md`「第 5 批：role / status」小节与 `docs/API.md`「管理端接口（第 5 批）」章节。
+   - **是否援引前例**：无，与第九批 / 第十批 / 分类功能 / 第 4 批各自独立。
+7. **第 5 批 · 新增依赖（2026-10-17 批准）**
+   - **批准内容**：前端引入 `marked ^18.1.1` / `highlight.js ^11.12.0` / `dompurify ^3.4.17` 三包（作为一组），仅用于文章详情页的 Markdown 渲染、代码高亮与 XSS 净化。
+   - **依据**：版本为 2026-10-17 `npm view` 实测当前稳定版；`dompurify` 是 `v-html` 渲染面的必需净化组件，与渲染不可拆开；目录用 element-plus 2.14.6 自带 `el-anchor`，零新增。
+   - **范围**：仅限这三个包（不含 `marked-highlight` 等衍生包）；后端零新增。
+   - **是否援引前例**：援引第十一批 multer 特批的流程先例（内容上是两次独立批准）。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -291,6 +301,13 @@ DELETE /api/comments/:id       删除评论（评论作者或文章作者，软�
 POST   /api/articles/:id/like       点赞
 DELETE /api/articles/:id/like       取消点赞
 GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
+GET    /api/admin/stats             管理端数据概览（需 ADMIN）
+GET    /api/admin/users             管理端用户列表（需 ADMIN）
+PATCH  /api/admin/users/:id/status  封禁/解禁用户（需 ADMIN）
+GET    /api/admin/articles          管理端文章列表（需 ADMIN，含软删）
+DELETE /api/admin/articles/:id      管理端删除文章（需 ADMIN，软删）
+GET    /api/admin/comments          管理端评论列表（需 ADMIN，含软删）
+DELETE /api/admin/comments/:id      管理端删除评论（需 ADMIN，软删）
 ```
 
 > `/api/users` 系列**已实现 9 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）、`POST /api/users/:id/follow`（关注）、`DELETE /api/users/:id/follow`（取消关注）、`GET /api/users/:id/followers`（粉丝列表）、`GET /api/users/:id/following`（关注列表）。
@@ -300,6 +317,10 @@ GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登�
 > 三个已实现接口的字段与失败码以 `docs/API.md` 为准。`GET /api/users/me`（不带 `/likes`）会命中 `/:id` 并由 zod 回 400（`id='me'` 不是数字），这是第 2 批登记过的预期行为，**不是 bug**，不要为此新增 `GET /api/users/me` 别名。
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
+>
+> **第 5 批起管理端接口共 7 个，接口总数 25 → 32**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
+>
+> **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 
 ---
 
@@ -330,7 +351,7 @@ GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登�
 - 200：成功
 - 201：创建成功
 - 400：请求参数错误
-- 401：未登录或 token 无效
+- 401：未登录 / token 无效 / **账号已封禁（40101，旧 token 即刻失效）**
 - 403：无权限
 - 404：资源不存在
 - 409：资源冲突
@@ -342,6 +363,7 @@ GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登�
 0       成功
 40000   参数错误
 40100   未登录或 token 无效
+40101   账号已封禁
 40300   无权限
 40400   资源不存在
 40900   资源冲突
@@ -421,6 +443,14 @@ Authorization: Bearer <token>
 ```
 
 - 后端鉴权中间件解析 token，失败返回 40100。
+
+### 封禁拦截（第 5 批）
+
+- **登录接口**：密码比对**通过后**查 `users.status`，`BANNED` → 401 / 40101「账号已封禁」（输错密码仍只得到「用户名或密码错误」，不额外泄露信息）。
+- **`auth` 中间件**：验签通过后按 `userId` 主键查 `status`，`BANNED` → 401 / 40101，**该用户所有已签发的 token 即刻失效**；解禁后同一枚旧 token**自动恢复有效**——拦截判据是 `status` 本身，不是 token 黑名单。
+- **JWT payload 不放 `role` / `status`**：放了能省一次查询，但封禁 / 改角色后旧 token 不失效——安全上不可接受，必须 DB 实时查。代价是每个已鉴权请求多一次主键查询，项目规模可接受。
+- **管理员判定**在 `requireAdmin` 中间件（`auth` 之后查 `role`），非 ADMIN → 403 / 40300；`/api/admin/*` 全部走 `auth → requireAdmin` 链。
+- **防呆规则**：`PATCH /api/admin/users/:id/status` 目标为 ADMIN 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，不计算「是不是最后一个管理员」）；管理员权限变更只由开发者直接改数据库。
 
 ---
 

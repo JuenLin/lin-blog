@@ -28,7 +28,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 
 | 表名 | 说明 | 状态 |
 |---|---|---|
-| `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`） |
+| `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`），第 5 批新增 `role` / `status` 两列（迁移 `add_user_role_status`） |
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
@@ -212,6 +212,8 @@ Prisma 模型名 `User`，`@@map("users")`。
 | createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
+| role | role | ENUM('USER','ADMIN') | 否 | USER | 角色，第 5 批新增。管理端接口（`/api/admin/*`）与管理员徽章的判据 |
+| status | status | ENUM('ACTIVE','BANNED') | 否 | ACTIVE | 账号状态，第 5 批新增。`BANNED` 时登录与 `auth` 中间件均返回 401 / 40101，旧 token 即刻失效 |
 
 `User` 模型上的 `articles Article[]` / `comments Comment[]` 是**反向关系字段，Prisma 虚拟字段，不产生任何列**，因此加它们不会 ALTER `users` 表（已实测确认）。
 
@@ -293,6 +295,32 @@ DB 存路径、磁盘存文件，两者**没有事务保护**：
 | 写库成功、删旧文件前崩溃 | **孤儿文件**（磁盘上有，DB 不指向它） | 不处理，登记在「已知限制」第 4 条 |
 | 手工删了磁盘文件、DB 还指着它 | **悬空引用**（前端渲染破图） | 前端按 `img` 的 `error` 回退文字头像，不崩 |
 | 上传成功、写库失败 | 服务端**反向删除**刚落盘的文件 | 已处理（见 `docs/API.md` 的处理顺序） |
+
+### 第 5 批：role / status 两列（schema 变更已获批准，迁移已执行）
+
+> **本节是一次「禁止修改数据库 schema」例外的书面登记。**
+> 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 批准范围：**仅限给 `users` 新增 `role` 与 `status` 两列**，
+> 不含索引、不含其他表任何变更、不含改列名 / 类型 / 删列。
+> 批准依据与决策过程见 `docs/API.md`「管理端接口（第 5 批）」章节；迁移与管理员赋值见下方「第 5 批」顶层小节与「迁移记录」。
+
+**为什么用 Prisma enum 而不是 category 式的 String + zod 白名单**（与分类列的模式差异，登记备查）：
+
+| | `role` / `status`（本批） | `category`（分类功能） |
+|---|---|---|
+| 值域 | `USER` / `ADMIN`、`ACTIVE` / `BANNED`——**机器判据的封闭集**，永远不需要新值 | 技术 / 生活 / 随笔 / 未分类——面向展示的中文串，未来可能加 |
+| 强制层 | **DB 层**（MySQL ENUM），应用写不进去非法值 | 应用层 zod 白名单，DB 只是 VARCHAR(20) |
+| 判定方 | 后端中间件 + 前端徽章，语义不能漂 | 前端展示 + 筛选 |
+
+结论：封闭值域 + 机器判据 → enum 由 DB 层强制，比「应用层自觉」稳。`category` 保持原样，不回头改。
+
+**加列机制**：两列均 `NOT NULL` + `DEFAULT`，MySQL 8 INSTANT 算法自动回填既有行（与 `category` 列同一先例，见「articles」小节的分类列说明），零 NULL、零回填脚本。存量 5 行全部回填 `USER` / `ACTIVE`。
+
+**不建索引**：基数 2 + 表现存 5 行，管理端状态筛选全表扫描无压力。与 `category` 不建索引同一理由。
+
+**管理员赋值不走迁移**：迁移文件保持纯净（只加列）。`admin` / `lin` 两个账号的 ADMIN 角色由迁移后手动 `UPDATE` 设置，SQL 与 SELECT 自证登记在下方「第 5 批」顶层小节。
+
+**物理删序不变**：`users` 加两列不影响既有硬删顺序（likes → follows → comments → articles → users）。
 
 ### 索引
 
@@ -840,6 +868,58 @@ ALTER TABLE `follows` ADD CONSTRAINT `follows_following_id_fkey` FOREIGN KEY (`f
 
 ---
 
+## 第 5 批：role / status（users 表加两列）
+
+管理端接口 7 个（规格见 `docs/API.md`「管理端接口（第 5 批）」章节）：
+
+| 接口 | 用途 | schema 影响 |
+| --- | --- | --- |
+| `GET /api/admin/stats` | 数据概览（6 个实时 COUNT） | **无** |
+| `GET /api/admin/users` | 用户列表（分页 / 搜索 / 状态筛选） | **无** |
+| `PATCH /api/admin/users/:id/status` | 封禁 / 解禁（幂等；ADMIN 不可操作） | **无** |
+| `GET /api/admin/articles` | 文章列表（含软删） | **无** |
+| `DELETE /api/admin/articles/:id` | 删文章（软删，无视作者） | **无** |
+| `GET /api/admin/comments` | 评论列表（含软删） | **无** |
+| `DELETE /api/admin/comments/:id` | 删评论（软删，无视作者） | **无** |
+
+**本批唯一的 schema 变更 = `users` 加 `role` / `status` 两列**；7 个接口本身零 schema 影响（计数全部实时 `COUNT(*)`，不加冗余列，与 `likeCount` / 用户主页计数同一纪律）。
+
+### 与「已批准的例外」的关系（例外由 5 项升为 7 项）
+
+契约第 2 节的「已批准的例外」由 **5 项升为 7 项**（`docs/AI_CONTRACT.md` §2 已同步登记）：
+
+| # | 批次 | 例外内容 | 归属禁令 |
+|---|------|----------|---------|
+| 1 | 第九批 | 新增 `users.avatar` / `users.bio` | schema 禁令 |
+| 2 | 第十批 | 新建 `likes` 表 | schema 禁令 |
+| 3 | 第十一批 | 引入 `multer` 依赖 | 依赖禁令 |
+| 4 | 分类功能 | 新增 `articles.category` | schema 禁令 |
+| 5 | 第 4 批 | 新建 `follows` 表（两条外键 + 两个索引，无软删列） | schema 禁令 |
+| 6 | **第 5 批** | 新增 `users.role` / `users.status` 两列（enum，均带默认值） | schema 禁令 |
+| 7 | **第 5 批** | 引入 `marked` / `highlight.js` / `dompurify` 三包（前端，一组，仅用于文章详情页渲染 / 高亮 / 净化） | 依赖禁令 |
+
+> 第 4 批小节里的 5 项表是当时的历史快照，保持不动；**以本表与 `docs/AI_CONTRACT.md` §2 为准**。
+
+### 迁移与管理员赋值
+
+1. 迁移 `add_user_role_status`：`users` 加 `role` / `status` 两列，`NOT NULL DEFAULT`，INSTANT 自动回填既有行。
+2. 迁移后手动执行（**不写进迁移文件**，保持迁移纯净）：
+
+```sql
+UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
+```
+
+3. SELECT 自证：`admin`（id=2）与 `lin`（id=167）迁移后 `role = 'ADMIN'`，其余用户 `role = 'USER'`、全部用户 `status = 'ACTIVE'`。
+4. 赋值用 `username IN (...)` **不写死 id**：id 是环境相关值（不同库自增进度不同），username 是稳定业务键。
+
+### 封禁语义（DB 侧只定性）
+
+- DB 只存 `status` 一列，**拦截逻辑全在应用层**：登录接口（密码比对后查一次）与 `auth` 中间件（验签后查一次）双拦截。
+- 封禁即「所有旧 token 即刻失效」：JWT payload **不放** `role` / `status`（放了则封禁 / 改角色后旧 token 不失效，安全上不可接受），代价是每个已鉴权请求多一次主键查询。
+- **ADMIN 不能被管理端操作**：`PATCH /api/admin/users/:id/status` 目标为 ADMIN 时 service 层直接 400 / 40000「不能封禁或解禁管理员账号」，规则全文见 `docs/API.md`「管理员不能被管理端操作」。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -963,6 +1043,7 @@ const summary = [...content].slice(0, 100).join('');
 | `20261003140221_add_user_likes` | 新建 `likes` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键 + `likes_user_id_article_id_key` 唯一约束 + `likes_article_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，理由见「likes」小节） | **已应用** |
 | `20261004145107_add_article_category` | `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列（枚举 技术/生活/随笔/未分类）；INSTANT 算法自动回填既有 11 行，零 NULL、零回填脚本；**不含新增表 / 外键 / 索引**（MVP 阶段不按 category 建索引，理由见对应小节） | **已应用** |
 | `20261011083029_add_follows` | 新建 `follows` 表（`id` / `follower_id` / `following_id` / `created_at`）+ 两条外键（`follower_id` → `users.id`、`following_id` → `users.id`，均 `ON DELETE RESTRICT ON UPDATE CASCADE`）+ `follows_follower_id_following_id_key` 唯一约束 + `follows_following_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，与 likes 同构，理由见「follows（关注表）」小节） | **已应用** |
+| `20261017063642_add_user_role_status` | `users` 表新增 `role` 与 `status` 两列（Prisma enum `UserRole` { USER, ADMIN } / `UserStatus` { ACTIVE, BANNED }，均 `NOT NULL DEFAULT`）；INSTANT 算法自动回填既有行，零 NULL、零回填脚本；**不含索引**（低基数，理由见「users」小节「第 5 批」）。迁移后手工执行 `UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin')`（不写进迁移文件，见「第 5 批」顶层小节） | **已应用** |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
