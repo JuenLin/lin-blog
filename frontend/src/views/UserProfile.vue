@@ -85,10 +85,13 @@
       <template v-else>
         <el-tabs v-model="activeTab" class="profile-tabs" @tab-change="handleTabChange">
           <el-tab-pane label="文章" name="articles" />
-          <!-- 点赞 Tab 仅本人可见：查的是 /users/me/likes，接口只允许查自己。
+          <!-- 点赞 / 草稿 Tab 仅本人可见：查的是 /users/me/*，接口只允许查自己。
                isOwner 是 computed，userStore.user 到位后（AppHeader 的 fetchMe 返回）
                Tab 自动出现，不需要刷新页面。首屏 user 还没到位时会短暂只有文章 Tab。 -->
           <el-tab-pane v-if="isOwner" label="点赞" name="likes" />
+          <!-- 第 6 批：草稿箱。草稿不进公开详情（DRAFT 详情一律 404），所以列表行
+               不能复用 ArticleCard（它会跳详情页），用自定义行 + 「继续编辑」入口。 -->
+          <el-tab-pane v-if="isOwner" label="草稿" name="drafts" />
         </el-tabs>
 
         <!-- 刷新条 + 半透明列表：只在「initialized 之后的再次加载」出现（翻页 / 改每页条数）。
@@ -121,8 +124,31 @@
           class="profile-list"
           :class="{ 'is-refreshing': currentState.loading }"
         >
-          <!-- 空态按 Tab 分开：0 篇与 0 赞是两件事，共用一句会让用户以为数据丢了 -->
+          <!-- 空态按 Tab 分开：0 篇 / 0 赞 / 0 草稿是三件事，共用一句会让用户以为数据丢了 -->
           <EmptyState v-if="!currentState.list.length" :description="currentState.emptyText" />
+
+          <!-- 第 6 批：草稿列表。自定义行（不复用 ArticleCard）：
+               草稿没有公开详情页，卡片点击会跳 404；行内直接给「继续编辑 / 删除」。 -->
+          <template v-else-if="activeTab === 'drafts'">
+            <div v-for="item in currentState.list" :key="item.id" class="draft-row">
+              <div class="draft-main">
+                <span class="draft-title">{{ item.title || '（无标题）' }}</span>
+                <span class="draft-summary">{{ item.summary }}</span>
+                <span class="draft-time">更新于 {{ formatRelativeTime(item.updatedAt) }}</span>
+              </div>
+              <div class="draft-actions">
+                <el-button link type="primary" @click="goEditDraft(item.id)">继续编辑</el-button>
+                <el-button link type="danger" @click="handleDeleteDraft(item)">删除</el-button>
+              </div>
+            </div>
+
+            <Pagination
+              :page="currentState.page"
+              :page-size="currentState.pageSize"
+              :total="currentState.total"
+              @change="handlePageChange"
+            />
+          </template>
 
           <template v-else>
             <ArticleCard v-for="item in currentState.list" :key="item.id" :article="item" />
@@ -146,9 +172,15 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { getUser, listMyLikes, listUserArticles, followUser, unfollowUser } from '../api/user.js';
-import { getAvatarColor, getAvatarText, resolveAvatar } from '../utils/format.js';
+import { deleteDraft, listMyDrafts } from '../api/article.js';
+import {
+  formatRelativeTime,
+  getAvatarColor,
+  getAvatarText,
+  resolveAvatar,
+} from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import { useFollowingStore } from '../stores/following.js';
 import ArticleCard from '../components/ArticleCard.vue';
@@ -199,8 +231,13 @@ function makeTabState(emptyText) {
 
 const articlesState = makeTabState('还没有发布文章');
 const likesState = makeTabState('还没有点赞过任何文章');
+const draftsState = makeTabState('还没有草稿，去写一篇吧');
 
-const currentState = computed(() => (activeTab.value === 'likes' ? likesState : articlesState));
+const currentState = computed(() => {
+  if (activeTab.value === 'likes') return likesState;
+  if (activeTab.value === 'drafts') return draftsState;
+  return articlesState;
+});
 
 // 是否是「自己的主页」：点赞 Tab 只对本人可见（接口只允许查自己）。
 // 必须是 computed —— userStore.user 是异步到位的（AppHeader 调 fetchMe），
@@ -323,6 +360,7 @@ function resetTabState(state) {
 function resetAll() {
   resetTabState(articlesState);
   resetTabState(likesState);
+  resetTabState(draftsState);
   activeTab.value = 'articles';
 }
 
@@ -379,6 +417,56 @@ async function loadLikes() {
   }
 }
 
+// 第 6 批：草稿箱列表。默认 updatedAt 倒序（最近编辑的在前），Tab 不暴露排序控件。
+// list[] 每条带 content 全文（回填编辑器用），本页只渲染 summary，不浪费渲染。
+async function loadDrafts() {
+  draftsState.loading = true;
+  try {
+    const data = await listMyDrafts({
+      page: draftsState.page,
+      pageSize: draftsState.pageSize,
+    });
+    draftsState.list = (data && data.list) || [];
+    draftsState.total = (data && data.total) || 0;
+  } catch (error) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    draftsState.loading = false;
+    draftsState.initialized = true;
+  }
+}
+
+/** 继续编辑草稿：进编辑器（同组件会识别出这是草稿并回填全文）。 */
+function goEditDraft(id) {
+  router.push({ name: 'editor-edit', params: { id } });
+}
+
+/** 删除草稿（物理删除，草稿无评论/点赞/版本，可安全硬删）。 */
+async function handleDeleteDraft(item) {
+  try {
+    await ElMessageBox.confirm('草稿删除后不可恢复，确认删除？', '提示', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return; // 用户取消
+  }
+
+  try {
+    await deleteDraft(item.id);
+    ElMessage.success('草稿已删除');
+
+    // 当前页删空且不是第一页时回退一页，避免停在空页上。
+    if (draftsState.list.length === 1 && draftsState.page > 1) {
+      draftsState.page -= 1;
+    }
+    loadDrafts();
+  } catch (error) {
+    ElMessage.error(error.message || '删除失败，请稍后重试');
+  }
+}
+
 /**
  * 切 Tab。三个要点：
  * 1. **必须把目标 Tab 的 page 重置为 1**。文章停在第 3 页时切到点赞（可能只有 1 页），
@@ -398,7 +486,7 @@ async function loadLikes() {
  *    initialized 只用于「首次加载才显示骨架屏」，不承担跳过请求的职责。
  */
 function handleTabChange(name) {
-  const state = name === 'likes' ? likesState : articlesState;
+  const state = name === 'likes' ? likesState : name === 'drafts' ? draftsState : articlesState;
   state.page = 1;
   state.list = [];
   state.total = 0;
@@ -406,6 +494,7 @@ function handleTabChange(name) {
   state.initialized = false;
 
   if (name === 'likes') loadLikes();
+  else if (name === 'drafts') loadDrafts();
   else loadArticles();
 }
 
@@ -418,6 +507,7 @@ function handlePageChange({ page, pageSize }) {
   state.page = page;
   state.pageSize = pageSize;
   if (activeTab.value === 'likes') loadLikes();
+  else if (activeTab.value === 'drafts') loadDrafts();
   else loadArticles();
 }
 
@@ -623,5 +713,55 @@ onMounted(() => {
 .profile-list.is-refreshing {
   opacity: 0.5;
   pointer-events: none;
+}
+
+/* 第 6 批：草稿列表行。视觉密度比 ArticleCard 高（草稿是待办不是内容），
+   标题 + 摘要一行省略 + 更新时间，右侧操作按钮。 */
+.draft-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.draft-row:last-of-type {
+  border-bottom: none;
+}
+
+.draft-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.draft-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-summary {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-time {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.draft-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
 }
 </style>

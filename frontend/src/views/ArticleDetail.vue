@@ -81,8 +81,10 @@
             <span class="article-detail-like-count">{{ likeCount }}</span>
           </span>
 
-          <!-- 编辑 / 删除只对作者本人显示，其余人看不到入口。 -->
+          <!-- 编辑 / 删除 / 历史版本只对作者本人显示，其余人看不到入口。
+               第 6 批新增「历史版本」：打开版本抽屉（revisions 接口仅作者可用）。 -->
           <template v-if="isAuthor">
+            <el-button link type="primary" @click="openRevisions">历史版本</el-button>
             <el-button link type="primary" @click="goEdit">编辑</el-button>
             <el-button link type="danger" @click="handleDelete">删除</el-button>
           </template>
@@ -137,6 +139,53 @@
         </nav>
       </template>
     </div>
+
+    <!-- 第 6 批：历史版本抽屉（仅作者入口，接口本身也仅作者可用，403 由接口兜底）。
+         revisions 是「每次更新前」的快照（倒序），当前线上版本置顶作对照。
+         每条带全量 content（方案 A），滚动预览，无需二次请求。 -->
+    <el-drawer v-model="revisionsVisible" title="历史版本" size="520px" :append-to-body="true">
+      <div v-if="revisionsLoading">
+        <el-skeleton :rows="6" animated />
+      </div>
+
+      <EmptyState
+        v-else-if="!revisions.length"
+        description="还没有历史版本。编辑已发布文章并保存后，这里会出现每次更新前的快照"
+      />
+
+      <template v-else>
+        <!-- 当前版本置顶对照（不是 revisions 成员，不可回滚到它自己） -->
+        <div class="revision-item is-current">
+          <div class="revision-head">
+            <span class="revision-tag">当前版本</span>
+            <span class="revision-title">{{ article.title }}</span>
+          </div>
+          <p class="revision-meta">{{ article.category }} · 线上正在展示的内容</p>
+        </div>
+
+        <div v-for="rev in revisions" :key="rev.id" class="revision-item">
+          <div class="revision-head">
+            <span class="revision-title">{{ rev.title || '（无标题）' }}</span>
+            <el-tooltip :content="formatAbsoluteTime(rev.createdAt)" placement="top">
+              <span class="revision-time">{{ formatRelativeTime(rev.createdAt) }}</span>
+            </el-tooltip>
+          </div>
+          <p class="revision-meta">{{ rev.category }}</p>
+          <pre class="revision-content">{{ rev.content }}</pre>
+          <div class="revision-foot">
+            <el-button
+              size="small"
+              type="warning"
+              plain
+              :loading="restoringId === rev.id"
+              @click="handleRestore(rev)"
+            >
+              回滚到此版本
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -144,7 +193,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { deleteArticle, getArticle, listArticles } from '../api/article.js';
+import { deleteArticle, getArticle, listArticles, listRevisions, restoreArticle } from '../api/article.js';
 import { likeArticle, unlikeArticle, getArticleLiked } from '../api/like.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
@@ -397,6 +446,62 @@ function handleCommentCreated() {
   }
 }
 
+/* --------------------------------------------------------------------------
+ * 第 6 批：历史版本 / 回滚
+ * ------------------------------------------------------------------------ */
+
+const revisionsVisible = ref(false);
+const revisionsLoading = ref(false);
+const revisions = ref([]);
+const restoringId = ref(null);
+
+/** 打开抽屉并拉取版本历史。每次打开都重拉（刚保存过的话列表会变）。 */
+async function openRevisions() {
+  revisionsVisible.value = true;
+  revisionsLoading.value = true;
+
+  try {
+    const data = await listRevisions(articleId.value);
+    revisions.value = (data && data.revisions) || [];
+  } catch (error) {
+    ElMessage.error(error.message || '版本历史加载失败');
+    revisionsVisible.value = false;
+  } finally {
+    revisionsLoading.value = false;
+  }
+}
+
+/**
+ * 回滚到指定版本。后端「先快照当前版、后覆盖」，回滚本身也可再回滚，
+ * 所以确认框不用吓唬用户 —— 说清「当前内容会存为新版本」即可。
+ * 成功后关闭抽屉并整页重载（正文 / 阅读时长 / TOC 都要跟着变）。
+ */
+async function handleRestore(rev) {
+  try {
+    await ElMessageBox.confirm('回滚后当前内容会先存为一个新版本，确认回滚到所选版本？', '提示', {
+      type: 'warning',
+      confirmButtonText: '回滚',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return; // 用户取消
+  }
+
+  restoringId.value = rev.id;
+
+  try {
+    await restoreArticle(articleId.value, rev.id);
+
+    ElMessage.success('已回滚到所选版本');
+    revisionsVisible.value = false;
+    load();
+  } catch (error) {
+    ElMessage.error(error.message || '回滚失败，请稍后重试');
+  } finally {
+    restoringId.value = null;
+  }
+}
+
 onMounted(load);
 
 // ③：从上一篇/下一篇用 router-link 客户端跳转时，同组件被复用，必须重新加载。
@@ -524,6 +629,88 @@ onBeforeUnmount(() => {
 .article-detail-missing-foot {
   margin-top: 16px;
   text-align: center;
+}
+
+/* 第 6 批：历史版本抽屉内部 */
+.revision-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.revision-item.is-current {
+  background: var(--bg-subtle);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border-bottom: none;
+}
+
+.revision-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.revision-tag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--chip-radius);
+  background: var(--chip-bg-accent);
+  border: 1px solid var(--chip-border-accent);
+  color: var(--chip-text-accent);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.revision-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.revision-time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: help;
+}
+
+.revision-meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 全量 content 滚动预览（方案 A：响应里就带全文，不再二次请求）。
+   pre 保留换行与空格；max-height 兜住超长正文，避免一条版本撑爆抽屉。 */
+.revision-content {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-regular);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+.revision-foot {
+  margin-top: 8px;
+  text-align: right;
 }
 
 /* ② 作者其他文章 */
