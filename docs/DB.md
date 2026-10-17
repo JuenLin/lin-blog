@@ -71,6 +71,7 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
 | category | category | VARCHAR(20) | 否 | '未分类' | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单校验，非法值返回 400/40000；老文章由迁移 `NOT NULL DEFAULT '未分类'` 自动回填，零 NULL |
+| status | status | ENUM('DRAFT','PUBLISHED') | 否 | 'PUBLISHED' | 发布状态；`DRAFT`=草稿（仅作者本人「草稿箱」可见，不进广场 / 不进公开详情）；`PUBLISHED`=已发布（进广场）。默认 PUBLISHED，INSTANT 回填零 NULL |
 
 ### `category` 分类列（分类功能，经用户批准新增）
 
@@ -116,6 +117,7 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 | articles_deleted_at_created_at_idx | 普通 | deleted_at, created_at | 广场列表默认 `createdAt desc` |
 | articles_deleted_at_updated_at_idx | 普通 | deleted_at, updated_at | 列表 `sortBy=updatedAt`（不建会 filesort） |
 | articles_author_id_fkey | 普通（外键自动创建） | author_id | 外键索引 |
+| articles_status_created_at_idx | 普通 | status, created_at | 已发布文章列表默认过滤 `status='PUBLISHED' ORDER BY created_at`，覆盖广场列表主查询 |
 
 > **搜索（`keyword`）没有索引，是刻意为之**：`GET /api/articles` 的 `keyword` 走 `LIKE '%kw%'`（前缀带 `%`），B-tree 索引在这种模式下用不上，加普通索引只会成为**死索引**（白白占写入开销却从不命中）。真正的提速方案是 MySQL `FULLTEXT` 全文索引（需 `ngram` 解析器支持中文分词），但那要先确认 MySQL 版本与分词器可用性，属独立需求。
 >
@@ -140,6 +142,60 @@ CREATE TABLE `articles` (
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 ALTER TABLE `articles` ADD CONSTRAINT `articles_author_id_fkey` FOREIGN KEY (`author_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+> 第 6 批迁移 `add_article_status` 在上述表基础上新增 `status` 列（ENUM + 默认 PUBLISHED）与索引 `(status, created_at)`，INSTANT 回填。完整 DDL 见本文件「迁移记录」与「第 6 批」小节。
+
+---
+
+## article_revisions（文章版本历史表）
+
+Prisma 模型名 `ArticleRevision`，`@@map("article_revisions")`。存文章每次「更新前」的快照，支撑版本历史与回滚（第 6 批）。
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键 |
+| articleId | article_id | INT | 否 | 无 | 所属文章 id，外键 → `articles.id` |
+| title | title | VARCHAR(100) | 否 | 无 | 快照时的标题 |
+| content | content | MEDIUMTEXT | 否 | 无 | 快照时的正文 |
+| category | category | VARCHAR(20) | 否 | '未分类' | 快照时的分类 |
+| authorId | author_id | INT | 否 | 无 | 快照归属作者 id，外键 → `users.id` |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 快照时间 |
+
+### 外键与级联
+
+- `article_id` → `articles.id` `ON DELETE CASCADE`：文章被硬删（草稿删除、或未来管理端硬删）时，其版本记录一并清理。
+- `author_id` → `users.id` `ON DELETE RESTRICT`（与 `articles.author_id` 一致，作者软删不影响快照可读性）。
+
+> **为什么单独建表而不是给 articles 加 `version` 列**：版本历史是多对一（一篇文章多个历史版本），是独立实体；且快照要保留「被改掉之前的旧值」，无法用单表的几个列表达。单独表 + `article_id` 索引是标准做法。
+
+### 索引
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | id | |
+| article_revisions_article_id_created_at_idx | 普通 | article_id, created_at | 按文章拉版本历史，倒序取最新 |
+
+### 建表 SQL（迁移生成，未手工改写）
+
+```sql
+CREATE TABLE `article_revisions` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `article_id` INTEGER NOT NULL,
+    `title` VARCHAR(100) NOT NULL,
+    `content` MEDIUMTEXT NOT NULL,
+    `category` VARCHAR(20) NOT NULL DEFAULT '未分类',
+    `author_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `article_revisions_article_id_created_at_idx`(`article_id`, `created_at`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+ALTER TABLE `article_revisions` ADD CONSTRAINT `article_revisions_article_id_fkey` FOREIGN KEY (`article_id`) REFERENCES `articles`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `article_revisions` ADD CONSTRAINT `article_revisions_author_id_fkey` FOREIGN KEY (`author_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 ```
 
 ---
@@ -884,9 +940,9 @@ ALTER TABLE `follows` ADD CONSTRAINT `follows_following_id_fkey` FOREIGN KEY (`f
 
 **本批唯一的 schema 变更 = `users` 加 `role` / `status` 两列**；7 个接口本身零 schema 影响（计数全部实时 `COUNT(*)`，不加冗余列，与 `likeCount` / 用户主页计数同一纪律）。
 
-### 与「已批准的例外」的关系（例外由 5 项升为 7 项）
+### 与「已批准的例外」的关系（例外现共 9 项：schema 7 + 依赖 2）
 
-契约第 2 节的「已批准的例外」由 **5 项升为 7 项**（`docs/AI_CONTRACT.md` §2 已同步登记）：
+契约第 2 节的「已批准的例外」现共 **9 项（schema 七项 + 依赖两项）**（`docs/AI_CONTRACT.md` §2 已同步登记）：
 
 | # | 批次 | 例外内容 | 归属禁令 |
 |---|------|----------|---------|
@@ -897,6 +953,8 @@ ALTER TABLE `follows` ADD CONSTRAINT `follows_following_id_fkey` FOREIGN KEY (`f
 | 5 | 第 4 批 | 新建 `follows` 表（两条外键 + 两个索引，无软删列） | schema 禁令 |
 | 6 | **第 5 批** | 新增 `users.role` / `users.status` 两列（enum，均带默认值） | schema 禁令 |
 | 7 | **第 5 批** | 引入 `marked` / `highlight.js` / `dompurify` 三包（前端，一组，仅用于文章详情页渲染 / 高亮 / 净化） | 依赖禁令 |
+| 8 | **第 6 批** | 新增 `articles.status` 列（enum，默认 PUBLISHED） | schema 禁令 |
+| 9 | **第 6 批** | 新建 `article_revisions` 表（版本快照，两条外键 + 索引） | schema 禁令 |
 
 > 第 4 批小节里的 5 项表是当时的历史快照，保持不动；**以本表与 `docs/AI_CONTRACT.md` §2 为准**。
 
@@ -917,6 +975,39 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 - DB 只存 `status` 一列，**拦截逻辑全在应用层**：登录接口（密码比对后查一次）与 `auth` 中间件（验签后查一次）双拦截。
 - 封禁即「所有旧 token 即刻失效」：JWT payload **不放** `role` / `status`（放了则封禁 / 改角色后旧 token 不失效，安全上不可接受），代价是每个已鉴权请求多一次主键查询。
 - **ADMIN 不能被管理端操作**：`PATCH /api/admin/users/:id/status` 目标为 ADMIN 时 service 层直接 400 / 40000「不能封禁或解禁管理员账号」，规则全文见 `docs/API.md`「管理员不能被管理端操作」。
+
+---
+
+## 第 6 批：草稿 / 自动保存 / 版本历史 / 回滚（articles 加 status 列 + article_revisions 表）
+
+### schema 变更
+
+1. `articles` 表新增 `status` 列：`ArticleStatus` enum（`DRAFT` / `PUBLISHED`），`NOT NULL DEFAULT PUBLISHED`，迁移 `add_article_status`；INSTANT 自动回填既有文章为 `PUBLISHED`，零 NULL。并新增索引 `(status, created_at)` 覆盖广场列表主查询。
+2. 新建 `article_revisions` 表（`id` / `article_id` / `title` / `content` / `category` / `author_id` / `created_at`），存文章「更新前」快照，迁移 `add_article_revisions`；含 `article_id → articles.id ON DELETE CASCADE` 与 `author_id → users.id ON DELETE RESTRICT` 两条外键，及索引 `(article_id, created_at)`。
+
+### 设计要点（详见 `docs/API.md` 对应接口）
+
+- **草稿是完整的 articles 行**：`status = DRAFT` 的文章仅在作者「草稿箱」可见，不进广场列表、不进公开详情（详情遇 DRAFT 返回 404，与软删同口径）、不计入个人主页计数。
+- **公开面默认只认 PUBLISHED**：`GET /api/articles`（广场）、`GET /api/articles/:id`（详情）、`GET /api/users/:id`（articleCount）、`GET /api/users/:id/articles`（文章 Tab）全部过滤 / 计数 `status = PUBLISHED`。
+- **自动保存**走 `POST /api/articles/auto-save`：无 `draftId` 新建、有 `draftId` 更新；编辑已发布文章时前端先建独立草稿（`sourceArticleId` 仅校验不落库），发布时 `PUT /:原id` 覆盖并快照、再删临时草稿（补丁 1）。
+- **版本快照**：`PUT /api/articles/:id` 在目标当前为 PUBLISHED 时，先把它当前版存入 `article_revisions` 再应用更新；草稿翻成发布不快照。**回滚**（`POST /api/articles/:id/restore`）先快照当前版、再覆盖为目标版本，保证回滚本身可再回滚。
+- **防脏草稿**：建草稿有「门槛」——`title` 为空且 `content < 10` 字时不创建（补丁 3 第一道闸）；进入草稿态后任何变化都必须保存（含清空到 0 字，补丁 3 第二道闸）；草稿可被 `DELETE /api/users/me/drafts/:id` 物理删除（坑 2）。
+
+### 与「已批准的例外」的关系（例外现共 9 项：schema 7 + 依赖 2）
+
+| # | 批次 | 例外内容 | 归属禁令 |
+|---|------|----------|---------|
+| 1 | 第九批 | 新增 `users.avatar` / `users.bio` | schema 禁令 |
+| 2 | 第十批 | 新建 `likes` 表 | schema 禁令 |
+| 3 | 第十一批 | 引入 `multer` 依赖 | 依赖禁令 |
+| 4 | 分类功能 | 新增 `articles.category` | schema 禁令 |
+| 5 | 第 4 批 | 新建 `follows` 表 | schema 禁令 |
+| 6 | 第 5 批 | 新增 `users.role` / `users.status` 两列 | schema 禁令 |
+| 7 | 第 5 批 | 引入 `marked` / `highlight.js` / `dompurify` 三包 | 依赖禁令 |
+| 8 | **第 6 批** | 新增 `articles.status` 列（enum，默认 PUBLISHED） | schema 禁令 |
+| 9 | **第 6 批** | 新建 `article_revisions` 表（版本快照，两条外键 + 索引） | schema 禁令 |
+
+> 以本表与 `docs/AI_CONTRACT.md` §2 为准；第 4 / 5 批小节里的历史快照表保持不动。
 
 ---
 
@@ -1044,6 +1135,9 @@ const summary = [...content].slice(0, 100).join('');
 | `20261004145107_add_article_category` | `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列（枚举 技术/生活/随笔/未分类）；INSTANT 算法自动回填既有 11 行，零 NULL、零回填脚本；**不含新增表 / 外键 / 索引**（MVP 阶段不按 category 建索引，理由见对应小节） | **已应用** |
 | `20261011083029_add_follows` | 新建 `follows` 表（`id` / `follower_id` / `following_id` / `created_at`）+ 两条外键（`follower_id` → `users.id`、`following_id` → `users.id`，均 `ON DELETE RESTRICT ON UPDATE CASCADE`）+ `follows_follower_id_following_id_key` 唯一约束 + `follows_following_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，与 likes 同构，理由见「follows（关注表）」小节） | **已应用** |
 | `20261017063642_add_user_role_status` | `users` 表新增 `role` 与 `status` 两列（Prisma enum `UserRole` { USER, ADMIN } / `UserStatus` { ACTIVE, BANNED }，均 `NOT NULL DEFAULT`）；INSTANT 算法自动回填既有行，零 NULL、零回填脚本；**不含索引**（低基数，理由见「users」小节「第 5 批」）。迁移后手工执行 `UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin')`（不写进迁移文件，见「第 5 批」顶层小节） | **已应用** |
+| `20261017125847_add_article_status` | `articles` 表新增 `status` 列（`ENUM('DRAFT','PUBLISHED') NOT NULL DEFAULT 'PUBLISHED'`）；INSTANT 算法自动回填既有 17 行（第 5 批后文章数）为 `PUBLISHED`，零 NULL、零回填脚本；**不含索引 / 新增表 / 外键**（索引见下条） | **已应用** |
+| `20261017130010_add_article_revisions` | 新建 `article_revisions` 表（版本快照）+ `article_id` 外键（`ON DELETE CASCADE`）+ `author_id` 外键（`ON DELETE RESTRICT`）+ 索引 `(article_id, created_at)`；**不含数据回填**（新表无既有数据） | **已应用** |
+| `20261017130223_add_article_status_idx` | `articles` 表新增索引 `(status, created_at)`（命名 `articles_status_created_at_idx`），覆盖广场列表主查询（`WHERE status='PUBLISHED' ORDER BY created_at`）；**独立小迁移**，与 `status` 列分离以便回滚 | **已应用** |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
@@ -1086,6 +1180,12 @@ prisma/migrations/
 │  └─ migration.sql
 ├─ 20261011083029_add_follows/
 │  └─ migration.sql
+├─ 20261017125847_add_article_status/
+│  └─ migration.sql
+├─ 20261017130010_add_article_revisions/
+│  └─ migration.sql
+├─ 20261017130223_add_article_status_idx/
+│  └─ migration.sql
 └─ migration_lock.toml
 ```
 
@@ -1110,6 +1210,56 @@ ALTER TABLE `articles` ADD COLUMN `category` VARCHAR(20) NOT NULL DEFAULT '未�
 | 既有 11 行 `category` 值 | 全部为 `未分类`（INSTANT 自动回填，零 NULL） |
 | `_prisma_migrations` 新增一行 `finished=Y` | ✅ `migrate status` 显示 6 个迁移全部 applied |
 | `prisma generate` 是否成功 | ⚠️ 引擎 DLL 被 3000 端口后端进程占用报 EPERM；但实测 `prisma.article.findMany({ select: { category: true } })` 已能正常返回 category，DMMF 已更新、功能不受影响，generate 可暂缓至后端释放后补跑 |
+
+### 第 6 批的迁移 SQL（实际生成，已执行 3 个迁移：`20261017125847_add_article_status` / `20261017130010_add_article_revisions` / `20261017130223_add_article_status_idx`）
+
+> 下方为**实际生成并已应用**的迁移 SQL（`migrate dev` 生成，未手工改写）。`SHOW CREATE TABLE` 已核对：列 / 索引 / 外键与下方一致。
+
+**`20261017125847_add_article_status`**（在既有 `articles` 表追加 `status` 列）：
+
+```sql
+-- AlterTable
+ALTER TABLE `articles` ADD COLUMN `status` ENUM('DRAFT', 'PUBLISHED') NOT NULL DEFAULT 'PUBLISHED';
+```
+
+**`20261017130010_add_article_revisions`**（新建版本历史表）：
+
+```sql
+-- CreateTable
+CREATE TABLE `article_revisions` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `article_id` INTEGER NOT NULL,
+    `title` VARCHAR(100) NOT NULL,
+    `content` MEDIUMTEXT NOT NULL,
+    `category` VARCHAR(20) NOT NULL DEFAULT '未分类',
+    `author_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `article_revisions_article_id_created_at_idx`(`article_id`, `created_at`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `article_revisions` ADD CONSTRAINT `article_revisions_article_id_fkey` FOREIGN KEY (`article_id`) REFERENCES `articles`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `article_revisions` ADD CONSTRAINT `article_revisions_author_id_fkey` FOREIGN KEY (`author_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+**`20261017130223_add_article_status_idx`**（补建 `status` 索引，独立迁移便于回滚）：
+
+```sql
+-- CreateIndex
+CREATE INDEX `articles_status_created_at_idx` ON `articles`(`status`, `created_at`);
+```
+
+**执行后核对（2026-10-17 实测）**：
+
+| 核对项 | 实际 |
+|---|---|
+| `articles` 含 `status` 列（`ENUM('DRAFT','PUBLISHED') NOT NULL DEFAULT 'PUBLISHED'`） | ✅ 已核对 |
+| `articles` 含索引 `articles_status_created_at_idx`(`status`, `created_at`) | ✅ 已核对 |
+| `article_revisions` 含两外键（`ON DELETE CASCADE` / `ON DELETE RESTRICT`）与索引 | ✅ 已核对 |
+| 既有 17 篇文章 `status` 全部为 `PUBLISHED` | ✅ INSTANT 自动回填，零 NULL |
+| `_prisma_migrations` 新增 3 行 `finished=Y` | ✅ `migrate status` 显示全部 applied |
 
 ### 常用命令
 

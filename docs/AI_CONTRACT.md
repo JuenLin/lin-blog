@@ -64,16 +64,16 @@
 
 - 禁止擅自更换框架、ORM、数据库。
 - 禁止擅自升级依赖大版本。
-- 禁止擅自引入新依赖。**例外见「已批准的例外」第 3 项**。
+- 禁止擅自引入新依赖。**例外见「已批准的例外」第 3、7 项**。
 - 禁止修改接口契约。
-- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4 项**。
+- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9 项**。
 
 ### 已批准的例外
 
-以下五项均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下九项（schema 七项：第 1、2、4、5、6、8、9 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6 项是「禁止改 schema」的五条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status），  
+**注意**：第 1、2、4、5、6、8、9 项是「禁止改 schema」的七条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -111,6 +111,17 @@
    - **依据**：版本为 2026-10-17 `npm view` 实测当前稳定版；`dompurify` 是 `v-html` 渲染面的必需净化组件，与渲染不可拆开；目录用 element-plus 2.14.6 自带 `el-anchor`，零新增。
    - **范围**：仅限这三个包（不含 `marked-highlight` 等衍生包）；后端零新增。
    - **是否援引前例**：援引第十一批 multer 特批的流程先例（内容上是两次独立批准）。
+
+8. **第 6 批 · schema 变更（articles.status，2026-10-17 批准）**
+   - **批准内容**：`articles` 表新增 `status` 列（Prisma enum `ArticleStatus { DRAFT, PUBLISHED }`，`NOT NULL DEFAULT PUBLISHED`），并新增索引 `(status, created_at)`。迁移名 `add_article_status`。
+   - **范围**：仅限此一列一索引。不含其他表结构变更、不含改列名 / 类型 / 删列、不含给 `article_revisions` 等加列。
+   - **依据**：见 `docs/DB.md`「articles（文章表）」的 `status` 字段与「第 6 批」小节，决策过程见 `docs/API.md` 文章相关接口章节（草稿 / 发布状态）。
+   - **是否援引前例**：无，与第九批 / 第十批 / 分类功能 / 第 4 批 / 第 5 批各自独立。
+9. **第 6 批 · schema 变更（article_revisions，2026-10-17 批准）**
+   - **批准内容**：新建 `article_revisions` 表一张（`id` / `article_id` / `title` / `content` / `category` / `author_id` / `created_at`），存文章每次「更新前」的版本快照；含一条外键（`article_id` → `articles.id`，`ON DELETE CASCADE`）与一个索引 `(article_id, created_at)`。迁移名 `add_article_revisions`。
+   - **范围**：**仅限新建 `article_revisions` 一张表**。不含修改 `users` / `articles` / `comments` / `likes` / `follows` 任何一列，也不含给已建表补列。
+   - **依据**：见 `docs/DB.md`「article_revisions（文章版本历史表）」小节与 `docs/API.md` 的 `GET /api/articles/:id/revisions` / `POST /api/articles/:id/restore` 章节。
+   - **是否援引前例**：无，与前述各批各自独立。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -308,6 +319,11 @@ GET    /api/admin/articles          管理端文章列表（需 ADMIN，含软�
 DELETE /api/admin/articles/:id      管理端删除文章（需 ADMIN，软删）
 GET    /api/admin/comments          管理端评论列表（需 ADMIN，含软删）
 DELETE /api/admin/comments/:id      管理端删除评论（需 ADMIN，软删）
+POST   /api/articles/auto-save       自动保存草稿（需登录，第 6 批）
+GET    /api/users/me/drafts          我的草稿箱（需登录，第 6 批）
+DELETE /api/users/me/drafts/:id      删除草稿（需登录，第 6 批）
+GET    /api/articles/:id/revisions   文章版本历史（需登录，仅作者，第 6 批）
+POST   /api/articles/:id/restore     回滚版本（需登录，仅作者，第 6 批）
 ```
 
 > `/api/users` 系列**已实现 9 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）、`POST /api/users/:id/follow`（关注）、`DELETE /api/users/:id/follow`（取消关注）、`GET /api/users/:id/followers`（粉丝列表）、`GET /api/users/:id/following`（关注列表）。
@@ -318,7 +334,7 @@ DELETE /api/admin/comments/:id      管理端删除评论（需 ADMIN，软删�
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个，接口总数 25 → 32**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口（非管理端），接口总数 25 → 37**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 

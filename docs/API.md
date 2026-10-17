@@ -277,6 +277,8 @@ Authorization: Bearer <token>
 - **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
   - 演变史（三批）：第九批引入 `avatar` 时是「用户自填的外链 URL」；第十一批加上传能力，**两种并存**；**本次把外链下线**，只留站内上传。`avatar` 的**列定义**（`VARCHAR(255) NULL`）与 `null`（未设头像）语义**三批都没变过**。
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
+
+- **文章发布状态 `status`（第 6 批）**：枚举 `DRAFT` / `PUBLISHED`，默认 `PUBLISHED`。**草稿（`DRAFT`）是完整的 `articles` 行**，仅在作者自己的「草稿箱」（`GET /api/users/me/drafts`）可见；公开广场列表（`GET /api/articles`）默认只返回 `PUBLISHED`，已软删与草稿一律不出现。公开详情（`GET /api/articles/:id`）遇 `DRAFT` **一律返回 `404`**（不分作者与否，草稿不通过公开详情暴露）——刻意与软删同口径（404 而非 403），避免泄露草稿存在性。个人主页计数与文章列表（`GET /api/users/:id`、`GET /api/users/:id/articles`）**只统计 `PUBLISHED`**。管理端文章列表可额外按 `status` 筛选（含草稿）。
 - **用户主页接口（第 2 批）**：`GET /api/users/:id`（详情 + 计数）、`GET /api/users/:id/articles`（文章 Tab）、`GET /api/users/me/likes`（点赞 Tab，仅本人）。**前两个无需登录，第三个必须登录**。用户不存在或已软删一律 `404 / 40400`。
 - **用户主页的计数一律实时 `COUNT(*)`**：`articleCount` / `receivedLikeCount` / `receivedCommentCount` 三个数字都不落 `users` 冗余列，与文章 `likeCount` 同一纪律；且**只统计未软删的文章及其上的记录**（作者删文后计数下降是预期行为）。**本批零 schema 变更**。
 - **「用户不存在」与「用户没发过文章」是两个状态**：用户存在但 0 篇文章时，`GET /api/users/:id/articles` 返回 `200` + 空 `list` + `total: 0`，**不是 404**。前端据此渲染空态，不要把整页判成不存在。
@@ -313,6 +315,11 @@ Authorization: Bearer <token>
 | DELETE | /api/admin/articles/:id     | 管理端删除文章（软删，无视作者，需 ADMIN）                          | 是  |
 | GET    | /api/admin/comments        | 管理端评论列表（含软删，可筛选，需 ADMIN）                          | 是  |
 | DELETE | /api/admin/comments/:id     | 管理端删除评论（软删，无视作者，需 ADMIN）                          | 是  |
+| POST   | /api/articles/auto-save     | 自动保存草稿（新建 / 更新；可带 sourceArticleId 校验归属，需登录）           | 是  |
+| GET    | /api/users/me/drafts        | 我的草稿箱列表（仅本人草稿，需登录）                                    | 是  |
+| DELETE | /api/users/me/drafts/:id    | 删除指定草稿（仅作者，需登录）                                      | 是  |
+| GET    | /api/articles/:id/revisions | 文章版本历史（全量 content；仅作者，需登录）                           | 是  |
+| POST   | /api/articles/:id/restore   | 回滚到指定版本（先快照当前版，仅作者，需登录）                           | 是  |
 
 ---
 
@@ -327,6 +334,7 @@ Authorization: Bearer <token>
 | title    | string | 是  | 1–100 字符，trim，不能为纯空格                                              |
 | content  | string | 是  | 1–20000 字符                                                        |
 | category | string | 否  | 枚举 `技术` / `生活` / `随笔` / `未分类`；**省略时默认 `未分类`**；非法值返回 `400 / 40000` |
+| status   | string | 否  | 枚举 `DRAFT` / `PUBLISHED`；**省略时默认 `PUBLISHED`**（即「发布」）；传 `DRAFT` 则创建一篇仅作者可见的草稿 |
 
 > 备注：`content` 的数据库类型为 `MEDIUMTEXT`（见 `docs/DB.md`），不影响本接口契约。
 
@@ -339,6 +347,8 @@ Authorization: Bearer <token>
 ```
 
 > `category` 省略时后端填入默认值 `未分类`；`"category": "未分类"` 与省略等价。
+
+> `status` 省略或传 `PUBLISHED` 都是发布；传 `DRAFT` 创建草稿（仅作者「草稿箱」可见，不进广场）。自动保存草稿请走 `POST /api/articles/auto-save`，本接口是「直接发布」入口。
 
 
 成功：HTTP 201
@@ -411,6 +421,8 @@ Authorization: Bearer <token>
 - **与分页 / 排序正交**：分类筛选结果同样参与分页与排序，`total` 是「该分类 + 该 keyword」的命中总数。
 - **非法值**：不在枚举内（如 `category=美食`、`category=tech`）返回 `400 / 40000`，message 形如 `category 不合法，可选值：技术, 生活, 随笔, 未分类`。**大小写敏感**（`技术` 是全角中文，不存在大小写问题；但若日后扩展英文枚举需注意）。
 - **不建索引**：`category` 是低基数列，MVP 数据量下全表扫描无感，筛选在 service 层拼 `where.category = x`，不引入索引（理由见 `docs/DB.md`「category 分类列」小节）。
+
+- **只返回已发布（`status = PUBLISHED`）**：本接口是公开广场，**不暴露 `status` 过滤参数**，永远只返回 `PUBLISHED` 的文章；草稿（`DRAFT`）与已软删文章都不出现。这是第 6 批新增的默认过滤，不影响现有调用方（它们 `POST` 文章时不带 `status`，默认即 `PUBLISHED`）。
 
 成功：HTTP 200
 
@@ -488,6 +500,9 @@ Authorization: Bearer <token>
 | ---- | ----- | ---------- |
 | 400  | 40000 | id 非正整数    |
 | 404  | 40400 | 文章不存在或已软删除 |
+| 404  | 40400 | 文章是草稿（`DRAFT`），公开详情不暴露草稿 |
+
+> 第 6 批起：草稿（`DRAFT`）通过公开详情返回 **404**（与「不存在」同口径），不区分请求者是否为作者——草稿只通过 `GET /api/users/me/drafts` 暴露给作者本人。
 
 ---
 
@@ -495,7 +510,7 @@ Authorization: Bearer <token>
 
 编辑文章。**需要登录，且必须是作者本人**。全量更新，`title` 与 `content` 都必填。
 
-路径参数：`id`，正整数。请求体同 `POST /api/articles`（含可选 `category`）。
+路径参数：`id`，正整数。请求体同 `POST /api/articles`（含可选 `category` 与可选 `status`）。`status` 省略=保留原值；传 `DRAFT`/`PUBLISHED` 显式切换。
 
 **`category` 在 PUT 下的三态语义**（与 `PUT /api/users/me` 的 `avatar`/`bio` 区分「不传 / 传非法值 / 传合法值」逻辑一致，但语义更简单）：
 
@@ -507,6 +522,8 @@ Authorization: Bearer <token>
 
 > 与 `POST` 的「省略默认 `未分类`」不同：`PUT` 的省略是**保留原值**（因为文章已经有分类了，不该因没传就被改回 `未分类`）。实现上：`category` 用 zod `.optional()` —— 缺失时得到 `undefined`，**跳过该字段**；传入时再按枚举白名单校验。
 > 成功响应（`data` 结构同「文章详情」）会带更新后的 `category`。
+
+> **版本快照（第 6 批）**：当目标文章**更新前**的状态为 `PUBLISHED` 时，后端会先把它的当前 `title`/`content`/`category` 存入 `article_revisions` 表（生成一条版本历史），再应用本次更新——这就是「版本历史 / 回滚」的数据来源。若目标更新前是 `DRAFT`（例如把一篇草稿 `PUT` 成 `PUBLISHED` 来「发布」），则**不快照**（草稿本身不进版本历史）。详见 `GET /api/articles/:id/revisions` 与 `POST /api/articles/:id/restore`。
 
 成功：HTTP 200，`data` 结构同「文章详情」（更新后的内容）。
 
@@ -1149,7 +1166,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 | bio               | string \| null  | 个人简介；未设置时为 `null`                                                         |
 | role              | string          | 角色，第 5 批新增。枚举 `USER` / `ADMIN`；前端据此渲染管理员徽章与管理端入口                |
 | createdAt         | string          | 注册时间，ISO 8601 UTC                                                         |
-| articleCount      | number          | 该用户**未软删**的文章数                                                            |
+| articleCount      | number          | 该用户**未软删且已发布（`status = PUBLISHED`）**的文章数                                    |
 | receivedLikeCount | number          | 该用户**未软删**文章收到的点赞总数（实时 `COUNT(*)`）                                       |
 | receivedCommentCount | number | 该用户**未软删**文章下**未软删**的评论数（即「收到的评论数」，非他发出的评论数）                    |
 
@@ -1158,7 +1175,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 **计数口径（四条，逐条都要写清）**：
 
 - **全部实时 `COUNT(*)`，不加冗余列**：与文章 `likeCount` 同一纪律（本文件「通用约定」/ 契约 §11）。三个计数都不进 `users` 表，**本批零 schema 变更**。
-- **只数未软删的内容**：`articleCount` 排除 `deletedAt IS NOT NULL` 的文章；`receivedLikeCount` / `receivedCommentCount` 也只统计未软删文章上的记录。作者删文后计数下降是**预期行为**，不是 bug。
+- **只数未软删且已发布的内容**：`articleCount` 排除 `deletedAt IS NOT NULL` **且排除 `status = DRAFT`** 的文章（草稿不计入个人主页文章数）；`receivedLikeCount` / `receivedCommentCount` 也只统计未软删文章上的记录。作者删文后计数下降是**预期行为**，不是 bug。
 - **`receivedLikeCount` 含本人给自己文章的赞**：`POST /api/articles/:id/like` 允许给自己的文章点赞（接口清单已注明），所以「获赞数」不排除自赞。与 `likeCount`（某篇文章的赞数）口径一致，都是 all-time 累计、不做时间窗衰减。
 - **不含 `likeGivenCount`（我赞过多少篇）**：那个数字由 `GET /api/users/me/likes` 的 `total` 提供，本接口不重复给 —— 同一个数字两个来源，将来口径不一致时无法判断哪个对。
 
@@ -1178,6 +1195,8 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 ### GET /api/users/:id/articles
 
 该用户发布的文章列表，**真后端分页**（个人主页「文章」Tab）。**无需登录**。
+
+> 第 6 批起：本列表**只返回 `status = PUBLISHED` 的文章**，草稿不出现（草稿只作者本人在「草稿箱」可见）。`total` 也只数已发布文章。
 
 查询参数：
 
@@ -1697,6 +1716,7 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 | 参数 | 类型 | 说明 |
 |---|---|---|
 | deleted | string | 不传 = **全部（含软删）**；`true` = 只要已软删；`false` = 只要未软删 |
+| status | string | 不传 = **全部（含草稿）**；`PUBLISHED` = 只要已发布；`DRAFT` = 只要草稿 |
 | keyword | string | 命中标题 + 正文（同广场） |
 | sortBy | string | `createdAt` / `updatedAt` / `id` / `likeCount`（同广场） |
 
@@ -1743,6 +1763,164 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 ---
 
+---
+
+### POST /api/articles/auto-save
+
+自动保存草稿。**需要登录**。作者取 token 中的 `userId`。草稿是 `status = DRAFT` 的完整文章行，只在作者「草稿箱」可见，不进广场、不进公开详情。
+
+请求体：
+
+| 字段              | 类型     | 必填 | 校验                                                                               |
+| --------------- | ------ | -- | -------------------------------------------------------------------------------- |
+| title           | string | 否  | 字符串；更新时允许为空（清空草稿标题）；新建时若为空且 content 过短则不创建（见「建草稿门槛」）                               |
+| content         | string | 否  | 字符串；允许为空                                                                        |
+| category        | string | 否  | 枚举 `技术` / `生活` / `随笔` / `未分类`；省略默认 `未分类`；非法值 `400 / 40000`                         |
+| draftId         | number | 否  | 已有草稿 id；传了就更新该草稿，不传则新建                                                          |
+| sourceArticleId | number | 否  | 编辑已发布文章时的来源文章 id；仅作归属校验，**不落库**（见「编辑已发布文章的完整流程」）                                       |
+
+行为分两种：
+
+- **有 `draftId`（更新草稿）**：该 `draftId` 必须是 `status = DRAFT` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`（**坑 1：越权校验**，草稿不给他人碰）。更新其 `title` / `content` / `category`，`status` 保持 `DRAFT`。返回 `{ id: draftId, status: "DRAFT", saved: true }`。
+- **无 `draftId`（新建草稿）**：先过「建草稿门槛」（**补丁 3 第一道闸**）——若 `title` 为空（或纯空白）**且** `content` 长度 `< 10`，**不创建任何草稿**，直接返回 `200 { id: null, status: "IDLE", saved: false }`（前端保持 idle 态，不再发更多请求）。门槛通过后再看 `sourceArticleId`：若传了，校验它指向 `status = PUBLISHED` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`（防越权编辑他人文章）；校验通过仅作放行，**不把 sourceArticleId 写进草稿**。然后新建 `status = DRAFT` 的文章，返回 `{ id: 新草稿id, status: "DRAFT", saved: true }`。
+
+> 注意：新建草稿后，后续所有改动都走「有 draftId」分支。**补丁 3 第二道闸**：一旦进入草稿态（已持有 draftId），**任何内容变化都必须发请求**——包括把内容清空到 0 字——不再受建草稿门槛限制（保证「清空内容后保存」不丢）。
+
+失败：
+
+| HTTP | code  | 场景                                       |
+| ---- | ----- | ---------------------------------------- |
+| 400  | 40000 | `category` 非法，或 draftId / sourceArticleId 非正整数 |
+| 401  | 40100 | 未登录或 token 无效                            |
+| 404  | 40400 | draftId 指向非草稿 / 非本人草稿；或 sourceArticleId 不存在 / 非本人 / 非 PUBLISHED |
+
+### 编辑已发布文章的完整流程（补丁 1）
+
+前端编辑一篇 `PUBLISHED` 文章时，**绝不直接在线上文章上 auto-save**，而是走「独立草稿」隔离：
+
+1. 进入编辑页，立刻 `POST /api/articles/auto-save` 带 `sourceArticleId = 原文章id`、不带 `draftId` → 后端新建一篇独立 `DRAFT`（归属当前用户），前端缓存 `draftId`。
+2. 用户在编辑器里打字，每次触发防抖后 `auto-save` 带 `draftId` 更新这篇草稿（线上原文完全不受影响，广场上这篇文章内容不变）。
+3. 用户点「发布」：前端 `PUT /api/articles/:原文章id`（带最终标题/正文/分类）→ 后端**先快照原文章当前版到 `article_revisions`，再覆盖更新**，状态保持 `PUBLISHED`（文章不掉广场、URL 不变）。随后 `DELETE /api/users/me/drafts/:draftId` 删掉临时草稿。
+4. 用户点「存草稿 / 退出」：不触发 PUT，临时草稿留在「草稿箱」，下次可从草稿箱继续编辑。
+
+> 新文章（从空白新建）则没有 `sourceArticleId`：auto-save 建草稿 → 编辑 → 发布时 `PUT /api/articles/:draftId` 带 `status = "PUBLISHED"` 把草稿翻成已发布（因目标是 DRAFT，后端**不快照**，草稿本身即文章）。
+
+---
+
+### GET /api/users/me/drafts
+
+我的草稿箱。**需要登录，仅本人**。返回当前用户所有 `status = DRAFT` 的文章（不含已发布、不含已软删）。
+
+查询参数：
+
+| 字段       | 类型     | 必填 | 校验                                    |
+| -------- | ------ | -- | ------------------------------------- |
+| page     | number | 否  | 默认 1                                  |
+| pageSize | number | 否  | 默认 10，最大 100                          |
+| keyword  | string | 否  | 按 `title` 模糊搜索；空串 / 纯空白 / 不传 = 不过滤         |
+
+成功：HTTP 200，结构与 `GET /api/articles` 同形（`{ list, page, pageSize, total, totalPages }`）。`list[]` 字段：`id` / `title` / `summary`（正文前 100 字）/ `content`（**全文**，供「继续编辑」回填——草稿无法通过公开详情获取，这是全文唯一来源）/ `category` / `createdAt` / `updatedAt`。
+
+失败：401 / 40100（未登录）。
+
+---
+
+### DELETE /api/users/me/drafts/:id
+
+删除指定草稿。**需要登录，仅作者**。物理删除（草稿无点赞 / 评论 / 版本记录，可安全硬删；其 `article_revisions` 若有也随 `ON DELETE CASCADE` 清理，但草稿本身不产版本）。
+
+路径参数：`id`，正整数，必须是 `status = DRAFT` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`。
+
+成功：HTTP 200，`data: null`。
+
+失败：
+
+| HTTP | code  | 场景                |
+| ---- | ----- | ----------------- |
+| 400  | 40000 | id 非正整数           |
+| 401  | 40100 | 未登录或 token 无效     |
+| 404  | 40400 | 文章不存在 / 非草稿 / 非本人 |
+
+---
+
+### GET /api/articles/:id/revisions
+
+文章版本历史。**需要登录，仅作者本人**（管理员走管理端）。返回该文章历次「更新前快照」的全量列表（**方案 A：每条都带完整 `content`**，供前端抽屉直接预览，无需二次请求）。
+
+路径参数：`id`，正整数。必须指向 `status = PUBLISHED` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`（非作者返回 `403 / 40300` 以区分「无权」与「不存在」——此处统一 `404` 与公开详情口径一致，简化前端）。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "articleId": 1,
+    "revisions": [
+      {
+        "id": 3,
+        "articleId": 1,
+        "title": "旧标题",
+        "content": "这一版的正文全文……",
+        "category": "技术",
+        "authorId": 1,
+        "createdAt": "2026-10-17T10:00:00.000Z"
+      }
+    ],
+    "total": 1
+  }
+}
+```
+
+- `revisions` 按 `createdAt` **倒序**（最新快照在前）。
+- 每条即一次「更新前」的快照；要回滚时选其中一条 `id` 调 `POST /api/articles/:id/restore`。
+- 当前线上版本不在 `revisions` 里（它就是 `GET /api/articles/:id` 返回的内容）；抽屉里可把「当前版本」作为置顶对照展示。
+
+失败：
+
+| HTTP | code  | 场景                     |
+| ---- | ----- | ---------------------- |
+| 400  | 40000 | id 非正整数                |
+| 401  | 40100 | 未登录或 token 无效            |
+| 403  | 40300 | 文章存在但当前用户不是作者           |
+| 404  | 40400 | 文章不存在 / 已软删 / 非 PUBLISHED |
+
+> 注：草稿（`DRAFT`）没有版本历史，故非 PUBLISHED 一律 `404`。
+
+---
+
+### POST /api/articles/:id/restore
+
+回滚到指定版本。**需要登录，仅作者本人**。
+
+路径参数：`id`，正整数（目标文章，必须是 `PUBLISHED` 且作者本人）。请求体：
+
+```json
+{ "revisionId": 3 }
+```
+
+| 字段         | 类型     | 必填 | 校验                             |
+| ---------- | ------ | -- | ------------------------------ |
+| revisionId | number | 是  | 必须是该文章的版本 id，否则 `404 / 40400` |
+
+行为（**先快照、后覆盖**，保证回滚本身也可再回滚）：
+
+1. 先把目标文章**当前的** `title` / `content` / `category` 存入 `article_revisions`（生成一条新快照，记录「回滚前」的状态）。
+2. 再把文章更新为 `revisionId` 对应快照的 `title` / `content` / `category`，`status` 保持 `PUBLISHED`。
+3. 返回更新后的文章（结构同「文章详情」）。
+
+失败：
+
+| HTTP | code  | 场景                                         |
+| ---- | ----- | ------------------------------------------ |
+| 400  | 40000 | id / revisionId 非法，或 revisionId 缺失            |
+| 401  | 40100 | 未登录或 token 无效                                |
+| 403  | 40300 | 文章存在但当前用户不是作者                              |
+| 404  | 40400 | 文章不存在 / 已软删 / 非 PUBLISHED；或 revisionId 不属于该文章 |
+
+---
+
 ### MVP 范围外（明确不做）
 
 收藏、标签、「只看我的文章」筛选。
@@ -1758,6 +1936,8 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 > 说明 4：**文章分类已实现**（分类功能，`articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列，经用户明确批准；豁免登记见 `docs/AI_CONTRACT.md` 第 2 节）。`POST` / `PUT` 文章可传可选 `category`（枚举 技术/生活/随笔/未分类），`GET /api/articles` 新增可选 `category` 筛选参数（与 `keyword` 正交、可叠加）。**未新增 `GET /api/categories` 接口**——前端枚举写死这 4 个字符串，无需后端枚举接口。遗留项：暂不为 `category` 建索引（低基数列，MVP 数据量下无需），理由见 `docs/DB.md`。
 >
 > 说明 5：**评论删除已实现**（第 3 批，`DELETE /api/comments/:id`，评论作者或文章作者，软删），已从上表移出。原清单中的「评论删除」是第 3 批之前的遗留文字，第 5 批顺手清理。
+
+> 说明 6：**草稿 / 自动保存 / 版本历史 / 回滚（第 6 批）已实现**：`articles` 表新增 `status` 列（`DRAFT` / `PUBLISHED`，默认 `PUBLISHED`，INSTANT 回填），新增 `article_revisions` 表存版本快照；新增 5 个接口（`POST /api/articles/auto-save`、`GET /api/users/me/drafts`、`DELETE /api/users/me/drafts/:id`、`GET /api/articles/:id/revisions`、`POST /api/articles/:id/restore`）。公开列表 / 详情 / 个人主页默认只认 `PUBLISHED`。豁免登记见 `docs/AI_CONTRACT.md` §2 与 `docs/DB.md`「第 6 批」小节。
 
 ---
 
