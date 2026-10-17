@@ -10,6 +10,7 @@ const PUBLIC_FIELDS = {
   nickname: true,
   avatar: true,
   bio: true,
+  role: true,
   createdAt: true,
 };
 
@@ -20,6 +21,7 @@ function toPublicUser(user) {
     nickname: user.nickname,
     avatar: user.avatar,
     bio: user.bio,
+    role: user.role,
     createdAt: user.createdAt,
   };
 }
@@ -58,6 +60,8 @@ export async function login({ username, password }) {
       password: true,
       avatar: true,
       bio: true,
+      role: true,
+      status: true,
       createdAt: true,
     },
   });
@@ -70,6 +74,13 @@ export async function login({ username, password }) {
 
   if (!matched) {
     throw httpError(401, CODE.UNAUTHORIZED, '用户名或密码错误');
+  }
+
+  // 第 5 批：封禁拦截（登录侧）。刻意放在密码比对**之后**——
+  // 输错密码只得到「用户名或密码错误」，输对才提示封禁
+  // （docs/API.md 的 POST /api/auth/login 失败段）。
+  if (record.status === 'BANNED') {
+    throw httpError(401, CODE.ACCOUNT_BANNED, '账号已封禁');
   }
 
   const user = toPublicUser(record);

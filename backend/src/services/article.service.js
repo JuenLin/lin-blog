@@ -16,6 +16,8 @@ export const ARTICLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'id', 'likeCount']
 //   LEFT JOIN (SELECT article_id, COUNT(*) FROM likes GROUP BY article_id) ON articles.id = ...
 //   ORDER BY COALESCE(..., 0) DESC, articles.id DESC
 // 代价与取舍见 docs/DB.md「按点赞数排序」小节。
+// 第 5 批起由 admin.service.js 复用（管理端文章列表的 sortBy 与广场一致），
+// 走文件末尾的 export { } 块导出。
 const ARTICLE_SORT_MAP = {
   likeCount: (order) => ({ likes: { _count: order } }),
 };
@@ -24,7 +26,8 @@ const ARTICLE_SORT_MAP = {
 const SUMMARY_LENGTH = 100;
 
 // 内嵌 author 的查询字段。
-// avatar 为第九批新增（可空）。bio **刻意不加**：简介只在个人主页展示，
+// avatar 为第九批新增（可空），role 为第 5 批新增（USER / ADMIN，供前端渲染
+// 管理员徽章与管理端入口）。bio **刻意不加**：简介只在个人主页展示，
 // 塞进每条列表项的 author 里是纯粹的响应体浪费。
 // 注意：comment.service.js 里有一份**内容相同**的重复定义，
 // 本期按「只加字段、不做重构」处理，抽取公共定义单独排一批。
@@ -33,10 +36,13 @@ const AUTHOR_SELECT = {
   username: true,
   nickname: true,
   avatar: true,
+  role: true,
 };
 
 // 显式 select，不使用 SELECT *（契约第 11 节）。
 // author 直接内嵌查询，作者即使被软删除也照常返回（docs/API.md 通用约定）。
+// 第 5 批起由 admin.service.js 复用（管理端文章列表 = 本 select + deletedAt），
+// 走文件末尾的 export { } 块导出。
 const ARTICLE_DETAIL_SELECT = {
   id: true,
   title: true,
@@ -78,6 +84,7 @@ function toAuthor(author) {
     username: author.username,
     nickname: author.nickname,
     avatar: author.avatar,
+    role: author.role,
   };
 }
 

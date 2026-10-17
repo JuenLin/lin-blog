@@ -22,6 +22,7 @@ const PUBLIC_FIELDS = {
   nickname: true,
   avatar: true,
   bio: true,
+  role: true,
   createdAt: true,
 };
 
@@ -57,6 +58,7 @@ function toPublicUser(user) {
     nickname: user.nickname,
     avatar: user.avatar,
     bio: user.bio,
+    role: user.role,
     createdAt: user.createdAt,
   };
 }

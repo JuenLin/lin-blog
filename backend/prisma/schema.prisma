@@ -11,6 +11,21 @@ datasource db {
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
+// 第 5 批（已获用户批准）：用户角色与账号状态。
+// 封闭值域由 DB 层（MySQL ENUM）强制，不走 category 式的 String + zod 白名单
+// （理由见 docs/DB.md「第 5 批：role / status 两列」）。均 NOT NULL + 默认值，
+// INSTANT 算法自动回填既有行。封禁拦截在应用层（登录接口 + auth 中间件双查），
+// JWT payload 不放这两列——放了封禁后旧 token 不失效。
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BANNED
+}
+
 model User {
   id        Int       @id @default(autoincrement())
   username  String    @unique @db.VarChar(50)
@@ -24,6 +39,10 @@ model User {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
+  // 第 5 批（已获用户批准）：角色与账号状态。管理员赋值不走迁移文件，
+  // 迁移后手动 UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin')。
+  role      UserRole   @default(USER)
+  status    UserStatus @default(ACTIVE)
   articles  Article[]
   comments  Comment[]
   likes     Like[]
