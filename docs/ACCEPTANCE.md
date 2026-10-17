@@ -56,10 +56,10 @@ SKIP | A3-1 | 分页翻页 | 总条数 1 ≤ 每页 10，无第 2 页
 scripts/acceptance/
 ├── run.mjs              # 主脚本：前置检查 → 造数据 → 起浏览器 → 跑 50 条 → 清理 → 出报告
 ├── cleanup.mjs          # 单独清理临时数据（脚本被中断时用它兜底）
-├── probe-*.mjs          # 各批次的量化探针（21 个：search / search-ui / password / profile /
+├── probe-*.mjs          # 各批次的量化探针（22 个：search / search-ui / password / profile /
 │                        #   profile-edit / like / liked / upload / dark / styles / batch2 /
 │                        #   batch3 / card-visual / card-liked / prevnext / author-others / entries /
-│                        #   category / user-detail / profile-tabs / comment-delete）
+│                        #   category / user-detail / profile-tabs / comment-delete / follow）
 ├── shot-*.mjs           # 截图辅助脚本（3 个：hover / before / detail-title，不改源码，仅 CDP 注入）
 └── lib/
     ├── config.mjs       # 路径与配置，全部相对脚本位置推算，和 cwd 无关
@@ -257,6 +257,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-user-detail.mjs` | 第 2 批 用户主页三个接口的**后端**探针：`GET /users/:id` public user 恰 6 个字段且**不含** `password` / `updatedAt` / `email`、字段名是 `receivedCommentCount` 而**非** `commentCount`（防回归）、三个计数实时 COUNT 且口径为「别人给我的」（`receivedLikeCount` **含自赞**；别人在我文章上评论才算我收到的）、跨用户隔离（A 给 B 点赞是「给出去的赞」，不计入 A 的 `receivedLikeCount`）；`GET /users/:id/articles` 存在但 0 篇返 200 空列表、**软删文章不计入**、`pageSize=2` 翻两页 2+1 无重复；`GET /users/me/likes` 每条带 `likedAt` 且**与文章 `createdAt` 不同**（证明取的是 `likes.createdAt`）、软删文章上的赞不计入、未登录 401；D 组验路由注册顺序与**既有接口不回归**，并把 `GET /api/users/me`（不带 `/likes`）回 400 登记为预期行为以防将来当 bug 修（**纯 API，不启 Chrome，共 88 项**） |
 | `node scripts/acceptance/probe-profile-tabs.mjs [截图目录]` | 第 2 批 用户主页重构 `GET /users/:id` + `/users/:id/articles` + `/users/me/likes`：头部三计数与详情接口**逐字一致**、**0 篇用户头部不退化成「用户 #id」**（旧实现靠列表反推 author，0 篇就丢昵称/头像）、文章 Tab 第一页 10 张且**两页无重复**（证明是真后端分页不是前端切片）、total 走后端 COUNT、不再出现「仅显示最近 100 篇」、点赞 Tab **仅本人主页可见**、软删文章不计入、每条都带 `likedAt` 且**与文章 `createdAt` 不同**（证明取的是 `likes.createdAt` 而非文章时间，符合契约「不得改 `toArticleListItem()`、须在 map 之后另行附加」）；切 Tab 页码重置为 1 且**每次都重新发请求**、**反复切 3 轮每次列表都有数据**（修的真 bug：曾被 `initialized` 短路，切回历史 Tab 只清空不加载 → 全变空）、首屏骨架只给当前激活 Tab、翻页 `is-refreshing` 期间旧卡片仍在（含浅色/暗色截图，**启 Chrome + Network 域，共 29 项**） |
 | `node scripts/acceptance/probe-comment-delete.mjs` | 第 3 批 评论删除 `DELETE /api/comments/:id`：评论作者删自己 / 文章作者删他人（文章未软删）/ 第三人删他人→403（且评论未被删）/ 重复删→404 / 未登录→401 / 非法 id→400；A 组纯 API（10 项）+ B 组 Chrome 交互（4 项）：B 视角下删除按钮、二次确认框、删除后列表消失、空态出现；A10 文章作者软删收口（**共 14 项**） |
+| `node scripts/acceptance/probe-follow.mjs` | 第 4 批 关注功能 `POST` / `DELETE /api/users/:id/follow` 与 `GET /api/users/:id/followers` / `following`：A 组纯 API（7 项）：首关 200 且 **`followerCount` 属于路径 `:id` 这个人、`followingCount` 属于操作者本人**（计数归属断言，两者不是同一个对象）、**重复关注 200 幂等（非 409）**、关注自己 400、关注不存在的人 404、取消关注 200、**取消未关注的 200 no-op（非 404）**、跑完 A/B 之间 follows 行数归零（给 B 组干净起点）；B 组 Chrome（B1-B9 + B5b + B10 拆 5 条，共 15 项）：自己主页按钮是「编辑资料」而非关注且文案「N 关注 + 我的粉丝」、别人主页按钮三态（关注 / 已关注）与文案「他关注 / 他的粉丝」（纯文字链接，零额外请求）、点关注切「已关注」且自己主页计数 +1、取关回「关注」且计数 -1 且**无二次确认框**、粉丝 / 关注列表页（标题带昵称 / 40px 头像 / **不含 bio** / `followedAt` 相对时间且悬停出绝对时间 / 点整行进主页）、双空态文案分开、非法 type 重定向回 `/user/:id`、**换账号 followingStore 已 reset 不串号**（全程客户端路由，不用整页刷新）（**启 Chrome + Network 域，共 22 项**） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 | `node scripts/acceptance/shot-detail-title.mjs` | 详情页标题随文章变 + 复原 |

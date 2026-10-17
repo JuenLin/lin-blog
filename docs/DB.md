@@ -32,6 +32,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
+| `follows` | 关注关系表（第 4 批） | 待建（迁移待执行，草案见下方「follows（关注表）」小节） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
 
 ---
@@ -407,7 +408,7 @@ Prisma 模型名 `Like`，`@@map("likes")`。**第十批新增，迁移已执行
 | 文章软删 | `likes` 行**保留**，不连带删除。`GET /api/articles` / `/:id` 已按 `deleted_at IS NULL` 过滤，文章不可见→ `likeCount` 不会外泄 |
 | 对已软删的文章调 `POST /like` | **404**。service 层先复用 `requireArticleForWrite(id)` 判定存在性（与发表评论完全同一条路径） |
 | 用户软删 | 该用户的 `likes` 行保留。**注意：仍会计入 `likeCount`** —— 计数只按 `article_id` 过滤，不过滤点赞者。当前 MVP 无用户删除功能故不触发，已登记在「已知限制」第 3 条 |
-| 将来物理清理（硬删除） | 顺序必须是 `likes → comments → articles → users`，`likes` 是最上游 |
+| 将来物理清理（硬删除） | 顺序必须是 `likes → follows → comments → articles → users`，`likes` 与 `follows` 是最上游（均可能被软删用户的残留行悬挂） |
 
 **这与评论的现有处理完全一致**（`deleteArticle` 的注释原文：「只 UPDATE deleted_at，物理行保留，因此不触发外键」）。点赞行残留**不是 bug**，与评论行残留是同一个设计取舍。
 
@@ -537,6 +538,163 @@ LIMIT 10 OFFSET 0
 
 ---
 
+## follows（关注表）
+
+Prisma 模型名 `Follow`，`@@map("follows")`。**第 4 批新建，迁移待执行（草案已确认，但 `migrate dev` 尚未跑）。**
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键（代理键，无业务含义） |
+| followerId | follower_id | INT | 否 | 无 | **主动关注者** id，外键 → `users.id` |
+| followingId | following_id | INT | 否 | 无 | **被关注者** id，外键 → `users.id` |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 关注时间 |
+
+**本表刻意不设 `updated_at` 与 `deleted_at`**，与 `likes` 同构，原因见下方「为什么没有软删除列」。
+
+### schema 变更已获批准（豁免登记 · 第 5 项）
+
+> **本节是一次「禁止修改数据库 schema」例外的书面登记（契约 §2「已批准的例外」第 5 项）。**
+> 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 批准范围：**仅限新建 `follows` 一张表**（含其两条外键与两个索引），
+> **不含修改 `users` / `articles` / `comments` / `likes` 任何一列**。
+> 批准依据与决策过程见 `docs/API.md` 的 4 个关注接口章节（`POST` / `DELETE` / `GET followers` / `GET following`）。
+>
+> 注意：本项是**独立的一次批准**，不是援引前面任何一项（第九批 / 第十批 / 第十一批 / 分类功能各自独立）。
+> 契约 `AI_CONTRACT.md` 第 2 节「禁止事项」里的 schema 禁令**本批不修改其他条目**（按用户要求，豁免只登记在本书与契约 §2 第 5 项）。
+
+### 为什么必须有独立表（不能复用现有表加列）
+
+| 理由 | 说明 |
+|---|---|
+| 多对多 | 一个用户关注 N 个用户，一个用户被 M 个用户关注，是标准的多对多关系，`users` 表自己放不下 |
+| 不能在 `users` 加冗余列存 id 列表 | 用 `VARCHAR` 存逗号分隔的 user_id 列表，无法索引、无法保证原子性、并发下必然错乱 |
+| 不能靠 `comments` / `likes` 标记 | 语义完全不同（关注不是评论也不是点赞），混用会让「粉丝数」「关注数」统计掺入无关数据 |
+
+### 唯一约束是防重复关注的唯一真相
+
+`@@unique([followerId, followingId])`（`follows_follower_id_following_id_key`）。
+
+应用层「先查 `findUnique` 再 `create`」**存在竞态窗口**：两个并发请求都在对方写入前查到「未关注」，然后都执行 INSERT，产生两条重复记录。只有 DB 唯一约束能真正防住 —— service 层捕获 Prisma 的 `P2002` 转成 **`200 { following: true }`（幂等成功）**，与 `likes` 的 `409 / 40900` 刻意**不同**（见下方「与 likes 的 DELETE 语义分歧」）。
+
+**这意味着实现层不允许「先查后写」当作正确性保障**，它只能用来给出更友好的提示；真正的拦截靠唯一约束。
+
+### 为什么 `following_id` 要单独建索引
+
+`@@index([followingId])`（`follows_following_id_idx`）支撑两处高频查询：
+
+1. **实时 `followerCount`**：`SELECT COUNT(*) FROM follows WHERE following_id = ?` —— 粉丝列表接口与「粉丝数」都要用
+2. **粉丝列表**：`WHERE following_id = ?` 取某用户的粉丝
+3. **关注列表**：`WHERE follower_id = ?` 取某用户关注了谁（由唯一约束左前缀承担，见下）
+
+`follower_id` 侧**不另建索引**：`follows_follower_id_following_id_key` 的左前缀已承担 `WHERE follower_id = ?`，MySQL 不会重复创建（同 `likes` 的 `user_id` 处理）。
+
+### 为什么没有软删除列
+
+`follows` 与 `likes` 一样是**不做软删除的业务表**，理由同构：
+
+- **关注是一个关系状态，不是一条可隐藏的内容**。`articles` / `comments` 软删是为了「从列表里消失但保留数据」，关注关系没有「隐藏但保留」的语义。
+- **软删会与唯一约束直接冲突**：若取消关注时置 `deleted_at` 而保留行，那么同一 `(follower_id, following_id)` 取消后再关注会撞唯一约束，只能改成 `UPDATE ... SET deleted_at = NULL`。这样一来「关注 = 该行存在且未删除」这个不变式不再直观，且每次查询都要额外带 `deleted_at IS NULL` 条件 —— 为一个没有语义需求的场景付出复杂度，不值。
+- **物理 DELETE 让不变式始终成立**：`follows` 表里存在一行 ⟺ A 关注了 B。计数只需 `COUNT(*)`，无需任何额外条件。
+
+### 软删除联动：被关注者 / 关注者软删后 follows 行会残留
+
+与其他表一致，**软删除不触发外键**，因此：
+
+| 场景 | 行为 |
+|---|---|
+| 被关注者被软删 | 其 `follows` 行**保留**，不连带删除。粉丝列表 / 关注列表 `JOIN users` 时该用户被滤掉，**不出现在任何列表、不计入 `total` / `followerCount` / `followingCount`**（见下方「计数口径」） |
+| 关注者被软删 | 其 `follows` 行**保留**；MVP 无用户删除功能故不触发 |
+| 将来物理清理（硬删除） | 顺序必须是 `likes → follows → comments → articles → users`，`follows` 接在 `likes` 之后（见「软删除与外键的交互」） |
+
+### 计数口径（与 API 一致：只统计未软删用户）
+
+**核心纪律**：凡是「粉丝数 / 关注数」相关的计数，口径必须两端一致 ——
+
+- `GET /api/users/:id/followers` 的 `total`（粉丝数）
+- `GET /api/users/:id/following` 的 `total`（关注数）
+- `POST /api/users/:id/follow` 返回的 `followerCount` / `followingCount`
+- `DELETE /api/users/:id/follow` 返回的 `followerCount` / `followingCount`
+
+**以上四者口径完全相同**：都只 `COUNT` `follows` 行中**另一端用户未软删**的记录。
+
+- 粉丝数 `followerCount`（`WHERE following_id = :id`）：只算 `follower` 端 `users.deleted_at IS NULL` 的。被软删的关注者不计入。
+- 关注数 `followingCount`（`WHERE follower_id = :id`）：只算 `following` 端 `users.deleted_at IS NULL` 的。被软删的被关注者不计入。
+- 实现：`JOIN users` 后带 `users.deleted_at IS NULL`，或子查询过滤。列表与计数**同源**（同一段 JOIN + 过滤），避免「列表 `total=5`、POST 返回 `followerCount=6`（含一个软删用户）」的数字跳变。
+- 与 `likeCount` 的已知限制第 3 条（点赞数含已软删点赞者）**刻意不同**：follows 的计数在 MVP 就要排除软删用户（因为粉丝列表已经排除了，计数若不排除会对不上）。`likeCount` 之所以不排，是因为文章软删后整篇不可见、不存在「列表与计数对不上」的展示场景；follows 则两端都暴露数字。
+
+### 次级排序（sortBy 的 id 是 follows.id）
+
+`GET /api/users/:id/followers|following` 的 `sortBy` 白名单仅 `followedAt`（`follows.created_at`）/ `id`，默认 `followedAt desc`，**次级补 `id`** 保证翻页稳定。
+
+- 这里的「次级 `id`」是 **`follows.id`**（关系行的代理主键），不是 `users.id`，也不是 `follows.follower_id` / `following_id`。与 `likes` 的「次级 `id` 是 `likes.id`」完全同构（API 层 `{ id: order }` 解析为 `likes.id`，此处解析为 `follows.id`）。
+- 实现：Prisma `orderBy` 主排序翻成 `{ createdAt: order }`，次级补 `{ id: order }`（即 `follows.id`）。**不要**写成 `{ followedUserId: order }` 之类 —— 表里没有这个列。
+
+### 与 likes 的 DELETE 语义分歧（幂等 200 vs 404）
+
+这是 follow 与 like 两处**刻意不同**的语义，写进 API.md 章节，DB 层只定性：
+
+- `DELETE /api/articles/:id/like`（取消没赞过的）→ **404**（likes 语义：「取消一个动作」，重复是错误）。
+- `DELETE /api/users/:id/follow`（取关没关注过的）→ **200 `{ following: false }`**（follows 语义：「确认关系不存在」，没关注本来就是这个状态，幂等成功）。
+- 同样 `POST` 端：重复点赞 → 409；重复关注 → 200（已关注状态）。
+- **唯一约束仍是并发下的唯一真相**：并发重复关注报 `1062`（Prisma `P2002`），但捕获后**转 200 幂等成功**，不转 409。
+- 理由（API.md 会明写）：likes 的取消是「取消一个动作」（重复是错误），follows 的取消是「确认关系不存在」（没关注也是这个状态），语义不同，故回 200。否则将来读代码的人会以为是 bug。
+
+### 建表 SQL（草案，待迁移生成后回填实际 DDL）
+
+```sql
+CREATE TABLE `follows` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `follower_id` int NOT NULL,
+  `following_id` int NOT NULL,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `follows_follower_id_following_id_key` (`follower_id`,`following_id`),
+  KEY `follows_following_id_idx` (`following_id`),
+  CONSTRAINT `follows_follower_id_fkey` FOREIGN KEY (`follower_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `follows_following_id_fkey` FOREIGN KEY (`following_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+> 外键命名：两个外键都指向 `users`，但角色分明（`follower_id` = 关注者、`following_id` = 被关注者），故用角色名而非笼统 `user_id`（见「外键命名规则」）。这与 `likes` 用 `user_id`（只有「点赞者」单一角色）是同一规则的两种合法情形，不是特例。
+
+### 索引（草案）
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | id | |
+| follows_follower_id_following_id_key | **唯一** | follower_id, following_id | **防重复关注的唯一真相**，并发下由 MySQL 最终拦截（重复插入报 `1062`） |
+| follows_following_id_idx | 普通 | following_id | 支撑 `followerCount` 的实时 `COUNT(*)` 与粉丝列表查询 |
+
+- 预期 MySQL **不会为 `follower_id` 额外补单列索引** —— 唯一索引左前缀已承担（与 `likes` 同，待迁移后 `SHOW INDEX FROM follows` 实测核实）。
+
+### 第 4 批的迁移 SQL（实际生成，已执行 `20261011083029_add_follows`）
+
+```sql
+-- CreateTable
+CREATE TABLE `follows` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `follower_id` INTEGER NOT NULL,
+    `following_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `follows_following_id_idx`(`following_id`),
+    UNIQUE INDEX `follows_follower_id_following_id_key`(`follower_id`, `following_id`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `follows` ADD CONSTRAINT `follows_follower_id_fkey` FOREIGN KEY (`follower_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `follows` ADD CONSTRAINT `follows_following_id_fkey` FOREIGN KEY (`following_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+> 下方为**实际生成并已应用**的 `migration.sql` 内容。`SHOW CREATE TABLE follows` / `SHOW INDEX FROM follows` 已核对：`UNIQUE KEY follows_follower_id_following_id_key`（`follower_id`, `following_id`）、`KEY follows_following_id_idx`（`following_id`）、两条外键均 `ON DELETE RESTRICT ON UPDATE CASCADE` —— 与本块及「建表 SQL」小节一致。**新表无既有数据，不涉及任何回填**。
+
+---
+
 ## 第 2 批：用户主页接口（零 schema 变更）
 
 新增三个接口（`docs/API.md` 有完整规格）：
@@ -590,7 +748,7 @@ LIMIT 10 OFFSET 0
 | 3 | 第十一批 | 引入 `multer` 依赖                 | 依赖禁令     |
 | 4 | 分类功能 | 新增 `articles.category`           | schema 禁令   |
 
-**本批零 schema 变更、零新依赖，因此不构成例外** —— 不需要审批，也不需要改契约。例外数会在**第 4 批（`follows` 新建表）**变成 5 项，那时才动契约第 2 节。
+**本批零 schema 变更、零新依赖，因此不构成例外** —— 不需要审批，也不需要改契约。例外数已在**第 4 批（`follows` 新建表）**变成 5 项（见契约第 2 节第 5 项）。
 
 ---
 
@@ -637,6 +795,51 @@ LIMIT 10 OFFSET 0
 
 ---
 
+## 第 4 批：关注（follows 表）
+
+新增四个接口（规格见 `docs/API.md` 第 4 批关注章节，按本批流程在写后端前落地）：
+
+| 接口 | 用途 | schema 影响 |
+| --- | --- | --- |
+| `POST /api/users/:id/follow` | 关注某用户（幂等） | **新建 `follows` 表**（本批唯一 schema 变更） |
+| `DELETE /api/users/:id/follow` | 取消关注（幂等） | **无**（物理 DELETE `follows` 行） |
+| `GET /api/users/:id/followers` | 某用户的粉丝列表（公开、分页） | **无**（只读 `follows` + `users`） |
+| `GET /api/users/:id/following` | 某用户关注的列表（公开、分页） | **无**（只读 `follows` + `users`） |
+
+### 与「已批准的例外」的关系（**本批新增第 5 项**）
+
+契约第 2 节的「已批准的例外」由 **4 项升为 5 项**，新增的第 5 项即本批的 `follows` 表（`docs/AI_CONTRACT.md` §2 已登记）：
+
+| # | 批次 | 例外内容 | 归属禁令 |
+|---|------|----------|---------|
+| 1 | 第九批 | 新增 `users.avatar` / `users.bio` | schema 禁令 |
+| 2 | 第十批 | 新建 `likes` 表 | schema 禁令 |
+| 3 | 第十一批 | 引入 `multer` 依赖 | 依赖禁令 |
+| 4 | 分类功能 | 新增 `articles.category` | schema 禁令 |
+| 5 | 第 4 批 | 新建 `follows` 表（两条外键 + 两个索引，无软删列） | schema 禁令 |
+
+**本批唯一的 schema 变更就是新建 `follows` 一张表**，不含修改任何已建表；不构成依赖禁令（B 方案：存记录不推送，不引入 notifications / 未读数 / 轮询 / SSE 相关任何新依赖）。
+
+### 计数口径（本批核心纪律，两端一致）
+
+`followerCount` / `followingCount`（POST/DELETE 返回）与 `followers` / `following` 列表的 `total` **必须同口径**：都只统计**未软删**用户。详见「follows（关注表）→ 计数口径」。这是与 `likeCount`（含已软删点赞者）刻意不同的取舍，理由是该数字两端都暴露给用户，必须对得上。
+
+### 次级排序的 id 是 follows.id
+
+`sortBy` 次级补 `id` = `follows.id`（关系行代理主键），不是 `users.id`。详见「follows（关注表）→ 次级排序」。
+
+### 与 likes 的 DELETE 语义分歧（幂等 200）
+
+`DELETE /api/users/:id/follow` 取关未关注者返回 **200**（幂等），与 `DELETE /api/articles/:id/like` 返回 **404** 刻意不同。理由与 API.md 章节须明写，详见「follows（关注表）→ 与 likes 的 DELETE 语义分歧」。
+
+### 边界与交互（跨文档登记，DB 层只定性）
+
+- **不能关注自己**：`POST /api/users/:id/follow` 且 `:id === 当前用户` → `400 / 40000`（判断顺序在存在性检查之前）。`DELETE` 自己的关注态视为 no-op，返回 200。
+- **软删用户不出现在列表、不计入计数**：粉丝 / 关注列表 `JOIN users` 过滤软删，`total` 与返回计数同步排除。
+- **B 方案（用户已裁决）**：只写 `follows` 一行，不建 `notifications` 表、不加未读数、不做铃铛 UI、不做轮询 / SSE。粉丝列表能查到、粉丝数会 +1，但被关注者收不到任何提示。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -650,18 +853,18 @@ LIMIT 10 OFFSET 0
 
 ## 软删除与外键的交互
 
-> 第十批起共**五条**外键（原有三条 + `likes` 表的两条），全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`（Prisma 默认值，schema 中未显式声明 `onDelete`，已在迁移 SQL 中核对确认）。
+> 关注表（第 4 批）起共**七条**外键（原有五条 + `follows` 表的两条），全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`（Prisma 默认值，schema 中未显式声明 `onDelete`，已在迁移 SQL 中核对确认）。
 
 - **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 与 `likes.article_id` 的引用依然有效，因此**评论与点赞都不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
 - 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。点赞同理。
 - **将来若要物理清理**（硬删除），顺序必须是：
 
 ```text
-likes → comments → articles → users
+likes → follows → comments → articles → users
 ```
 
-  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞会报错；`DELETE FROM articles` 若还有评论或点赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
-  特别注意**必须先清 `likes`**：它是唯一一张上游可能「悬挂」在被软删对象上的表。
+  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注会报错；`DELETE FROM articles` 若还有评论或点赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  特别注意**必须先清 `likes` 与 `follows`**：这两张关系表都可能「悬挂」在被软删对象上（`likes` 挂在文章 / 用户、`follows` 挂在用户），是硬删顺序的最上游。
 
 ---
 
@@ -759,6 +962,7 @@ const summary = [...content].slice(0, 100).join('');
 | `20261003080727_add_user_avatar_bio` | `users` 表新增 `avatar VARCHAR(255) NULL` 与 `bio VARCHAR(200) NULL` 两列，均 nullable、无默认、不需回填 | 已应用 |
 | `20261003140221_add_user_likes` | 新建 `likes` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键 + `likes_user_id_article_id_key` 唯一约束 + `likes_article_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，理由见「likes」小节） | **已应用** |
 | `20261004145107_add_article_category` | `articles` 表新增 `category VARCHAR(20) NOT NULL DEFAULT '未分类'` 一列（枚举 技术/生活/随笔/未分类）；INSTANT 算法自动回填既有 11 行，零 NULL、零回填脚本；**不含新增表 / 外键 / 索引**（MVP 阶段不按 category 建索引，理由见对应小节） | **已应用** |
+| `20261011083029_add_follows` | 新建 `follows` 表（`id` / `follower_id` / `following_id` / `created_at`）+ 两条外键（`follower_id` → `users.id`、`following_id` → `users.id`，均 `ON DELETE RESTRICT ON UPDATE CASCADE`）+ `follows_follower_id_following_id_key` 唯一约束 + `follows_following_id_idx` 索引；**不含数据回填**（新表无既有数据）。本表**无 `deleted_at` / `updated_at` 两列**（刻意设计，与 likes 同构，理由见「follows（关注表）」小节） | **已应用** |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
@@ -798,6 +1002,8 @@ prisma/migrations/
 ├─ 20261003140221_add_user_likes/
 │  └─ migration.sql
 ├─ 20261004145107_add_article_category/
+│  └─ migration.sql
+├─ 20261011083029_add_follows/
 │  └─ migration.sql
 └─ migration_lock.toml
 ```

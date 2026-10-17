@@ -70,10 +70,10 @@
 
 ### 已批准的例外
 
-以下四项均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下五项均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4 项是「禁止改 schema」的三条例外（第九批 / 第十批 / 分类功能），  
+**注意**：第 1、2、4、5 项是「禁止改 schema」的四条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注），  
 第 3 项是「禁止引入新依赖」的例外（第十一批）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -96,6 +96,11 @@
    - **范围**：**仅限此列**。不含其他表结构变更、不含新增 `categories` 表 / 外键 / 索引，也不含改 `category` 的类型 / 长度。
    - **依据**：见 `docs/DB.md`「category 分类列」与 `docs/API.md` 文章相关接口章节。
    - **是否援引前例**：无，与第九批 / 第十批 / 第十一批各自独立。
+5. **第 4 批 · schema 变更（关注功能，2026-10-11 批准）**
+   - **批准内容**：新建 `follows` 表一张（`id` / `follower_id` / `following_id` / `created_at`），含两条外键（均 → `users.id`，`ON DELETE RESTRICT ON UPDATE CASCADE`）与两个索引（`follows_follower_id_following_id_key` 唯一约束、`follows_following_id_idx` 普通索引），无 `deleted_at` / `updated_at` 列（物理 DELETE，与 `likes` 同构）。
+   - **范围**：**仅限新建 `follows` 一张表**。不含修改 `users` / `articles` / `comments` / `likes` 任何一列，也不含给已建表补 `deleted_at`（`follows` 刻意不做软删除，理由见 `docs/DB.md`「follows（关注表）→ 为什么没有软删除列」）。
+   - **依据**：见 `docs/DB.md`「follows（关注表）」小节的「schema 变更已获批准（豁免登记 · 第 5 项）」，决策过程见 `docs/API.md` 的 4 个关注接口章节。
+   - **是否援引前例**：无，与第九批 / 第十批 / 第十一批 / 分类功能各自独立。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -267,6 +272,10 @@ POST   /api/users/me/avatar    上传头像
 GET    /api/users/:id          用户详情（含文章数 / 获赞数 / 收到评论数）
 GET    /api/users/:id/articles 该用户的文章列表（分页）
 GET    /api/users/me/likes     我点赞过的文章（需登录，分页）
+POST   /api/users/:id/follow       关注用户（需登录，幂等；不能关注自己）
+DELETE /api/users/:id/follow       取消关注（需登录，幂等；未关注也返回 200）
+GET    /api/users/:id/followers    粉丝列表（关注 :id 的人，公开）
+GET    /api/users/:id/following    关注列表（:id 关注的人，公开）
 GET    /api/users              用户列表（未实现）
 POST   /api/users              新增用户（未实现）
 PUT    /api/users/:id          更新用户（未实现）
@@ -284,7 +293,7 @@ DELETE /api/articles/:id/like       取消点赞
 GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
 ```
 
-> `/api/users` 系列**已实现 5 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）。
+> `/api/users` 系列**已实现 9 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）、`POST /api/users/:id/follow`（关注）、`DELETE /api/users/:id/follow`（取消关注）、`GET /api/users/:id/followers`（粉丝列表）、`GET /api/users/:id/following`（关注列表）。
 >
 > 清单里标「未实现」的 4 个（列表 / 新增 / 改他人 / 删）保持未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
 >

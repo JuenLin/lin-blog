@@ -12,7 +12,7 @@
 
 - 禁止更换 Vue / Express / Prisma / MySQL
 - 禁止修改接口路径、请求/响应字段
-- 禁止修改 Prisma schema（**已批准的 schema 例外只有三项，见 `docs/AI_CONTRACT.md` §2「已批准的例外」**：① 第九批给 `users` 加 `avatar` / `bio` 两列；② 第十批新建 `likes` 一张表；③ 分类功能给 `articles` 加 `category` 一列。除此之外任何表结构变更都需重新向用户报批）
+- 禁止修改 Prisma schema（**已批准的 schema 例外只有四项，见 `docs/AI_CONTRACT.md` §2「已批准的例外」**：① 第九批给 `users` 加 `avatar` / `bio` 两列；② 第十批新建 `likes` 一张表；③ 分类功能给 `articles` 加 `category` 一列；④ 第 4 批新建 `follows` 一张表（含两条外键与两个索引，无软删列）。除此之外任何表结构变更都需重新向用户报批）
 - 禁止新增 npm 依赖（**已批准的依赖例外只有一项，见 `docs/AI_CONTRACT.md` §2「已批准的例外」第 3 项**：`multer ^2.4.0`，仅用于头像上传）
 - 禁止升级大版本依赖
 - 禁止明文存密码、生成真实密钥/token

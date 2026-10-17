@@ -296,6 +296,10 @@ Authorization: Bearer <token>
 | GET    | /api/users/:id             | 用户详情（含文章数 / 获赞数 / 评论数）                            | 否  |
 | GET    | /api/users/:id/articles    | 该用户发布的文章列表（真后端分页）                                 | 否  |
 | GET    | /api/users/me/likes        | 我点赞过的文章列表（分页，**仅本人**）                             | 是  |
+| POST   | /api/users/:id/follow      | 关注用户（需登录，幂等；不能关注自己）                            | 是  |
+| DELETE | /api/users/:id/follow      | 取消关注（需登录，幂等；未关注也返回 200）                         | 是  |
+| GET    | /api/users/:id/followers   | 粉丝列表（关注 :id 的人，公开）                                  | 否  |
+| GET    | /api/users/:id/following   | 关注列表（:id 关注的人，公开）                                   | 否  |
 
 ---
 
@@ -1341,7 +1345,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 
 ### 用户接口（其余未实现）
 
-契约第 5 节列出的 5 个用户管理接口中，**`GET /api/users/:id` 已实现**（第 2 批，只读公开详情，见「业务接口」一节）；**其余 4 个（列表 / 新增 / 更新 / 删除）全部未实现**。已实现的 user 接口共五个 —— `GET /api/users/:id`、`PUT /api/users/me`（改资料，第九批）、`POST /api/users/me/avatar`（上传头像，第十一批）、`GET /api/users/:id/articles`、`GET /api/users/me/likes`（后三个为第 2 批），都在「业务接口」一节，不在下表内。
+契约第 5 节列出的 5 个用户管理接口中，**`GET /api/users/:id` 已实现**（第 2 批，只读公开详情，见「业务接口」一节）；**其余 4 个（列表 / 新增 / 更新 / 删除）全部未实现**。已实现的 user 接口共九个 —— `GET /api/users/:id`、`PUT /api/users/me`（改资料，第九批）、`POST /api/users/me/avatar`（上传头像，第十一批）、`GET /api/users/:id/articles`、`GET /api/users/me/likes`（后三个为第 2 批），以及第 4 批的 4 个关注接口（`POST` / `DELETE /api/users/:id/follow`、`GET /api/users/:id/followers`、`GET /api/users/:id/following`），都在「业务接口」一节，不在下表内。
 
 MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 对象返回。
 
@@ -1355,6 +1359,246 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 > 将来若要做「查看他人资料」，优先考虑 `GET /api/users/:id`（只读），而不是开放 `PUT /api/users/:id`。写操作一律走 `/me`。
 
+
+### POST /api/users/:id/follow
+
+关注某用户。**需要登录**。关注者取 token 中的 `userId`（`followerId`），目标取路径 `:id`（`followingId`）。**无请求体**（传了也忽略，不校验、不报错）。
+
+路径参数：`id`，正整数。
+
+**判断顺序（5 步）**：
+
+1. 校验路径参数：`id` 非正整数 → `400 / 40000`
+2. 鉴权：`auth` 中间件先于 `validate`，未登录 / token 无效 → `401 / 40100`
+3. 自操作校验：`:id === 当前登录用户` → `400 / 40000`（不能关注自己，见下方「不能关注自己」）
+4. 目标存在性：用户不存在或已软删 → `404 / 40400`
+5. 幂等 / 写入：已关注 → 直接返回成功（`200`，不报错）；否则写入（`follows` 表 `create`）
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "following": true,
+    "followerCount": 12,
+    "followingCount": 5
+  }
+}
+```
+
+| 字段                 | 类型      | 说明                                                          |
+| ------------------ | ------- | ----------------------------------------------------------- |
+| data.following     | boolean | 恒为 `true`（关注后的状态）                                         |
+| data.followerCount | number  | **被关注者（`:id`）的粉丝数**，实时 `COUNT(*)`；见下方「计数口径」，只算未软删粉丝      |
+| data.followingCount | number | **当前用户**的关注数，实时 `COUNT(*)`；见下方「计数口径」，只算未软删被关注者           |
+
+> 两个计数均为实时 `COUNT(*)`，**不落 `users` 冗余列**（与 `articleCount` / `likeCount` 同一纪律）。前端拿到后直接更新本地「粉丝数 / 关注数」显示，不必重拉主页。
+
+失败：
+
+| HTTP | code  | message | 场景                                |
+| ---- | ----- | ------- | --------------------------------- |
+| 400  | 40000 | id 非正整数 | 路径参数非法                           |
+| 400  | 40000 | 不能关注自己 | `:id` 等于当前登录用户                    |
+| 401  | 40100 | —       | 未提供 token、token 格式错、token 过期或签名无效 |
+| 404  | 40400 | 用户不存在  | 目标用户不存在**或已软删除**                 |
+
+#### 幂等与并发：唯一约束是唯一真相
+
+`follows` 表有唯一约束 `follows_follower_id_following_id_key (follower_id, following_id)`。**并发下的重复关注只能由数据库拦截**，应用层的「先查是否已关注再插入」存在竞态窗口 —— 两个并发请求都在对方写入前查到「未关注」，然后都会执行 INSERT。
+
+因此实现必须是：
+
+1. 直接 `create`，捕获 Prisma 的 `P2002`（底层是 MySQL `1062`）→ **转 `200` 幂等成功**（返回 `{ following: true }`），**不转 409**。
+2. **不允许把「先查后写」当作正确性保障**。它最多用来给出更友好的提示，真正的拦截靠唯一约束。
+
+> 该约束已在数据库层实测：重复插入报 `1062 Duplicate entry '1-2' for key 'follows.follows_follower_id_following_id_key'`（见 `docs/DB.md`「follows（关注表）」小节的「约束实测」）。本接口要把这个错误翻译成**幂等成功**（而非 409），与 `POST /api/articles/:id/like` 的「转 409」刻意相反。
+
+#### 计数口径（与两个列表接口完全一致）
+
+`followerCount` / `followingCount` 的口径，与 `GET /api/users/:id/followers` 的 `total`、`GET /api/users/:id/following` 的 `total` **四者完全一致**：都只 `COUNT` `follows` 行中**另一端用户未软删**的记录。
+
+- 粉丝数 `followerCount`（`WHERE following_id = :id`）：只算 `follower` 端 `users.deleted_at IS NULL` 的。被软删的关注者不计入。
+- 关注数 `followingCount`（`WHERE follower_id = :id`）：只算 `following` 端 `users.deleted_at IS NULL` 的。被软删的被关注者不计入。
+- 实现：列表与计数**同源**（同一段 `JOIN users` + `users.deleted_at IS NULL` 过滤），避免「列表 `total=5`、POST 返回 `followerCount=6`（含一个软删用户）」的数字跳变。
+- 与 `likeCount`（含已软删点赞者）**刻意不同**：粉丝列表本身排除了软删用户，计数若不排除会对不上（详见 `docs/DB.md`「follows（关注表）→ 计数口径」）。
+
+#### 不能关注自己
+
+`:id === 当前登录用户` 在第 3 步（存在性检查之前）就拦截，避免把「自己」误判成「不存在」，也避免写入一条 `follower_id = following_id` 的自关注记录（唯一约束虽能拦住，但语义上应直接 400）。`DELETE` 自己的关注态视为 no-op（见下方「DELETE /api/users/:id/follow」），不单独报 400。
+
+---
+
+### DELETE /api/users/:id/follow
+
+取消关注。**需要登录**。物理 `DELETE`（与 `likes` 同构，无软删列）。**无请求体**。
+
+路径参数：`id`，正整数。
+
+**判断顺序（5 步）**：
+
+1. 校验路径参数：`id` 非正整数 → `400 / 40000`
+2. 鉴权：未登录 / token 无效 → `401 / 40100`
+3. 目标存在性：用户不存在或已软删 → `404 / 40400`（注意：未关注本身**不算失败**，见下方语义分歧）
+4. 查询是否已关注（`WHERE follower_id = me AND following_id = id`）
+5. 已关注 → 物理删除，返回 `200 { following: false, followerCount, followingCount }`；未关注 → **仍返回 `200 { following: false }`**（no-op 成功，不报 404、不报 409）
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": { "following": false, "followerCount": 11, "followingCount": 4 }
+}
+```
+
+| 字段                 | 类型      | 说明                                                   |
+| ------------------ | ------- | ---------------------------------------------------- |
+| data.following     | boolean | 恒为 `false`（取消关注后的状态）                                |
+| data.followerCount | number  | **被关注者（`:id`）的粉丝数**，删除后实时 `COUNT(*)`，只算未软删粉丝    |
+| data.followingCount | number | **当前用户**的关注数，删除后实时 `COUNT(*)`，只算未软删被关注者         |
+
+失败：
+
+| HTTP | code  | message | 场景                                |
+| ---- | ----- | ------- | --------------------------------- |
+| 400  | 40000 | id 非正整数 | 路径参数非法                           |
+| 401  | 40100 | —       | 未提供 token、token 格式错、token 过期或签名无效 |
+| 404  | 40400 | 用户不存在  | 目标用户不存在**或已软删除**（注意：未关注本身不算 404）    |
+
+#### 与 DELETE /articles/:id/like 的语义分歧（幂等 200 vs 404）
+
+这是 follow 与 like 两处**刻意不同**的语义：
+
+| 操作                                    | 已处于目标状态再操作      | 返回                    |
+| ------------------------------------- | --------------- | --------------------- |
+| `DELETE /api/articles/:id/like`（取消没赞过的）     | 本来就没赞           | **404**（`likeCount` 语义：「取消一个动作」，重复是错误） |
+| `DELETE /api/users/:id/follow`（取关没关注过的）   | 本来就没关注          | **200** `{ following: false }`（follows 语义：「确认关系不存在」，没关注本来就是这个状态，幂等成功） |
+
+**理由（必须写进代码注释，否则将来读代码的人会以为是 bug）**：likes 的取消是「取消一个动作」（重复是错误），follows 的取消是「确认关系不存在」（没关注也是这个状态），语义不同，故回 200。
+
+实现：用 `deleteMany({ where: { followerId: me, followingId: id } })`，`count === 0` 时仍返回 200（不抛 `P2025`），与 likes 的「用 `deleteMany` 而非 `delete`」同一手法。唯一约束仍是并发下的唯一真相（并发重复关注报 `1062`，但 `POST` 端捕获后转 200 幂等成功，不转 409）。
+
+---
+
+### GET /api/users/:id/followers
+
+某用户的**粉丝列表**（谁关注了 `:id`）。**无需登录**。
+
+路径参数：`id`，正整数。查询参数同 `GET /api/articles`（`page` / `pageSize` / `sortBy` / `order`）：
+
+| 字段       | 类型     | 必填 | 校验                                             |
+| -------- | ------ | -- | ---------------------------------------------- |
+| page     | number | 否  | 默认 1                                           |
+| pageSize | number | 否  | 默认 10，最大 100                                   |
+| sortBy   | string | 否  | 白名单 `followedAt` / `id`，默认 `followedAt`         |
+| order    | string | 否  | `asc` 或 `desc`，默认 `desc`                       |
+
+- `followedAt` = 关注时间（`follows.created_at`），**虚拟字段**（API 层 `map` 后附加，不建列，与 `likedAt` 同机制）。
+- **次级排序**：排序值并列时追加 `id`（同 `order` 方向）。这里的「次级 `id`」是 **`follows.id`**（关系行的代理主键），**不是 `users.id`** —— 见下方「次级排序用 follows.id」。
+- 数据来自 `follows` 表 `WHERE following_id = :id`，`JOIN users` 取粉丝资料；粉丝用户被软删时**不出现在列表**（见「计数口径」）。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      { "id": 3, "username": "alice", "nickname": "Alice", "avatar": null,
+        "followedAt": "2026-10-11T09:00:00.000Z" }
+    ],
+    "page": 1, "pageSize": 10, "total": 12, "totalPages": 2
+  }
+}
+```
+
+| 字段                 | 类型      | 说明                                                          |
+| ------------------ | ------- | ----------------------------------------------------------- |
+| list[].id          | number  | 粉丝用户 id                                                     |
+| list[].username    | string  | 粉丝用户名                                                       |
+| list[].nickname    | string  | 粉丝昵称（未设置时前端按 `nickname \|\| username` 回退）                |
+| list[].avatar      | string  | 粉丝头像，语义与 `GET /api/users/:id` 一致（仅 `/uploads/` 站内路径一种形态，可能为 `null`） |
+| list[].followedAt  | string  | 该粉丝**关注 `:id` 的时间**，虚拟字段 = `follows.created_at`，ISO 8601 UTC     |
+| **total**          | number  | **`:id` 的粉丝数**，实时 `COUNT(*)`，**只算未软删粉丝**（见下方「计数口径」）       |
+
+失败：
+
+| HTTP | code  | message | 场景                       |
+| ---- | ----- | ------- | ------------------------ |
+| 400  | 40000 | 见 `GET /api/articles` | 分页参数 / `sortBy` 非法，或 `id` 非正整数 |
+| 404  | 40400 | 用户不存在  | 用户不存在或已软删                |
+
+> 用户存在但 0 粉丝 ≠ 404：返回 `200` + 空 `list` + `total: 0`（同 `GET /api/users/:id/articles` 口径）。
+
+#### 计数口径（与 POST/DELETE 完全一致）
+
+`total`（粉丝数）的口径，与 `POST /api/users/:id/follow` 的 `followerCount`、`DELETE` 的 `followerCount`、`GET /api/users/:id/following` 的 `total` **四者完全一致**：都只 `COUNT` `follows` 行中**另一端用户未软删**的记录。
+
+- 本接口 `WHERE following_id = :id` `JOIN users` 带 `users.deleted_at IS NULL`：被软删的粉丝**不计入 `total`，也不出现在 `list`**。
+- 列表与计数**同源**：同一个 `JOIN + 过滤` 既出 `list` 又出 `total`，杜绝「列表 `total=5`、POST 返回 `followerCount=6`」的数字跳变。
+- 与 `likeCount`（含已软删点赞者）**刻意不同**：粉丝列表已排除软删用户，计数必须同步排除，否则两端对不上（详见 `docs/DB.md`「follows（关注表）→ 计数口径」）。
+
+#### 次级排序用 follows.id（不是 users.id）
+
+`sortBy: id` 与翻页并列时补的「次级 `id`」是 **`follows.id`**（关系行的代理主键），**不是 `users.id`**，也不是 `follows.follower_id` / `following_id`。与 `likes` 的「次级 `id` 是 `likes.id`」完全同构。
+
+- 实现：Prisma `orderBy` 主排序翻成 `{ createdAt: order }`，次级补 `{ id: order }`（即 `follows.id`）。**不要**写成 `{ followedUserId: order }` 之类 —— 表里没有这个列。
+- 本接口从 `follows` 表出发做分页（`follows.following_id = :id`），所以顶层 `{ id }` 解析成 `follows.id`；写成 `{ user: { id } }` 会切到 `users.id` —— 那是另一个语义（粉丝编号），恰好也能被 Prisma 接受，最容易混。
+- 理由同 `GET /api/users/me/likes` 的 `likedAt` 排序实测：查询主模型是谁，顶层 `{ id }` 就解析成谁的 id。
+
+---
+
+### GET /api/users/:id/following
+
+某用户**主动关注的列表**（`:id` 关注了谁）。**无需登录**。与 `followers` 完全对称，只是查询条件换成 `WHERE follower_id = :id`，`list[]` 是「被关注者」的摘要。
+
+路径参数：`id`，正整数。查询参数同 `GET /api/users/:id/followers`（`page` / `pageSize` / `sortBy` 白名单 `followedAt` / `id` / `order`）。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      { "id": 5, "username": "bob", "nickname": "Bob", "avatar": null,
+        "followedAt": "2026-10-10T08:00:00.000Z" }
+    ],
+    "page": 1, "pageSize": 10, "total": 4, "totalPages": 1
+  }
+}
+```
+
+| 字段                 | 类型      | 说明                                                   |
+| ------------------ | ------- | ---------------------------------------------------- |
+| list[].id          | number  | 被关注者用户 id                                            |
+| list[].username    | string  | 被关注者用户名                                              |
+| list[].nickname    | string  | 被关注者昵称                                               |
+| list[].avatar      | string  | 被关注者头像，语义同上                                         |
+| list[].followedAt  | string  | `:id` **关注该用户的时间**，虚拟字段 = `follows.created_at`         |
+| **total**          | number  | **`:id` 的关注数**，实时 `COUNT(*)`，**只算未软删被关注者**            |
+
+失败：
+
+| HTTP | code  | message | 场景                       |
+| ---- | ----- | ------- | ------------------------ |
+| 400  | 40000 | 见 `GET /api/articles` | 分页参数 / `sortBy` 非法，或 `id` 非正整数 |
+| 404  | 40400 | 用户不存在  | 用户不存在或已软删                |
+
+> 用户存在但 0 关注 ≠ 404：返回 `200` + 空 `list` + `total: 0`。
+
+#### 计数口径与次级排序
+
+- **计数口径**：`total`（关注数）与 `followers` 的 `total`、`POST`/`DELETE` 的 `followingCount` **完全一致**，只 `COUNT` 未被软删被关注者之外的记录（见 `GET /api/users/:id/followers` 的「计数口径」小节，机制同源）。
+- **次级排序**：同 `followers`，次级 `id` 是 **`follows.id`**（详见该节）。
+
+---
 
 ### MVP 范围外（明确不做）
 
