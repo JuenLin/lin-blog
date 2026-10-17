@@ -27,24 +27,6 @@
               <!-- 第 5 批：管理员徽章。role 来自 GET /api/users/:id（已透出）。 -->
               <UserBadge :role="detail?.role" />
             </h1>
-
-            <!-- 三态互斥（v-if / v-else-if / v-else），不会有同时出现或都不出现的情况：
-                   isOwner → 编辑资料（自己不能关注自己，后端会 400，所以不放关注按钮）
-                   未关注（**含未登录**）→ 关注（未登录点击跳登录，带 redirect 回来）
-                   已关注 → 已关注（点击=取关，无二次确认：关系幂等，再关注回来只要一次点击） -->
-            <el-button v-if="isOwner" class="profile-action" @click="goEditProfile">编辑资料</el-button>
-            <el-button
-              v-else-if="!following"
-              class="profile-action"
-              type="primary"
-              :loading="followPending"
-              @click="toggleFollow"
-            >
-              关注
-            </el-button>
-            <el-button v-else class="profile-action" :loading="followPending" @click="toggleFollow">
-              已关注
-            </el-button>
           </div>
 
           <p class="profile-sub">
@@ -70,7 +52,30 @@
           </p>
           <p v-if="detail && detail.bio" class="profile-bio">{{ detail.bio }}</p>
         </div>
-        <el-button class="profile-back" text @click="goHome">返回广场</el-button>
+
+        <!-- 第 5 批 fix：把动作按钮和「返回广场」放进同一个 flex 容器，
+             用 align-items: center 保证两者严格垂直居中对齐。
+             之前按钮嵌在 .profile-meta 内部，meta 因 bio 变高后中心线错位。 -->
+        <div class="profile-actions">
+          <!-- 三态互斥（v-if / v-else-if / v-else），不会有同时出现或都不出现的情况：
+               isOwner → 编辑资料（自己不能关注自己，后端会 400，所以不放关注按钮）
+               未关注（**含未登录**）→ 关注（未登录点击跳登录，带 redirect 回来）
+               已关注 → 已关注（点击=取关，无二次确认：关系幂等，再关注回来只要一次点击） -->
+          <el-button v-if="isOwner" class="profile-action" @click="goEditProfile">编辑资料</el-button>
+          <el-button
+            v-else-if="!following"
+            class="profile-action"
+            type="primary"
+            :loading="followPending"
+            @click="toggleFollow"
+          >
+            关注
+          </el-button>
+          <el-button v-else class="profile-action" :loading="followPending" @click="toggleFollow">
+            已关注
+          </el-button>
+          <el-button class="profile-back" text @click="goHome">返回广场</el-button>
+        </div>
       </div>
 
       <!-- 404：用户不存在 / 已软删。整页退化成一个提示。
@@ -536,9 +541,17 @@ onMounted(() => {
   min-width: 0;
 }
 
+/* 第 5 批 fix：动作按钮与「返回广场」共用同一个 flex 容器，严格垂直居中对齐。 */
+.profile-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
 .profile-action {
   flex: 0 0 auto;
-  margin-left: auto;
 }
 
 /* 第 4 批：粉丝 / 关注列表入口。视觉上就是普通弱化文字，hover 才给出可点提示 ——
