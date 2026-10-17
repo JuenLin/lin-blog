@@ -52,7 +52,11 @@
                 >
                   {{ commentAvatar(item).text }}
                 </span>
-                <span class="comment-author">{{ authorName(item) }}</span>
+                <span class="comment-author">
+                  {{ authorName(item) }}
+                  <!-- 第 5 批：管理员徽章挂在作者名旁（author.role 透出）。 -->
+                  <UserBadge :role="item.author?.role" />
+                </span>
               </span>
               <!-- 方案 D：评论时间同样改相对时间（列表里绝对时间又长又占位），
                    悬停 tooltip 给绝对时间。 -->
@@ -97,6 +101,7 @@ import { ElMessageBox } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 import EmptyState from './EmptyState.vue';
 import Pagination from './Pagination.vue';
+import UserBadge from './UserBadge.vue';
 
 const props = defineProps({
   articleId: {

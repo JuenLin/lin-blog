@@ -49,6 +49,7 @@ import { AUTH_CLEARED_EVENT } from '../api/request.js';
 import { useUserStore } from '../stores/user.js';
 import { useLikedStore } from '../stores/liked.js';
 import { useFollowingStore } from '../stores/following.js';
+import { initHljsTheme, applyHljsTheme } from '../utils/hljsTheme.js';
 import SearchBar from './SearchBar.vue';
 import UserDropdown from './UserDropdown.vue';
 
@@ -71,6 +72,9 @@ const isDark = ref(false);
 
 function applyTheme(dark) {
   document.documentElement.classList.toggle('dark', dark);
+  // 第 5 批：highlight.js 主题跟着切（github.css 白底 / github-dark.css 深底），
+  // 否则暗色下文章里的代码块会变成一块刺眼的亮斑。
+  applyHljsTheme(dark);
   try {
     localStorage.setItem('theme', dark ? 'dark' : 'light');
   } catch (e) {
@@ -91,6 +95,9 @@ function toggleTheme() {
 // 放列表页会漏点位，放 App.vue 则与已有的「登录态初始化」模式分散。
 onMounted(async () => {
   isDark.value = document.documentElement.classList.contains('dark');
+  // 第 5 批：刷新后直接落在文章详情页时，hljs 主题也要按当前模式就位
+  // （登录页是 blank 布局没有 AppHeader，但登录页没有代码块，不受影响）。
+  initHljsTheme();
 
   if (userStore.isLogin && !userStore.user) {
     try {

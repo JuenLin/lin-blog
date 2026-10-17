@@ -22,7 +22,11 @@
                不放“返回广场”旁边 —— 那是「退出页面」的导航，这是「与这个人建立关系」的动作，
                两类不同性质的按钮并排会抢注意力。 -->
           <div class="profile-nameline">
-            <h1 class="profile-name">{{ displayName }} 的主页</h1>
+            <h1 class="profile-name">
+              {{ displayName }} 的主页
+              <!-- 第 5 批：管理员徽章。role 来自 GET /api/users/:id（已透出）。 -->
+              <UserBadge :role="detail?.role" />
+            </h1>
 
             <!-- 三态互斥（v-if / v-else-if / v-else），不会有同时出现或都不出现的情况：
                    isOwner → 编辑资料（自己不能关注自己，后端会 400，所以不放关注按钮）
@@ -145,6 +149,7 @@ import { useFollowingStore } from '../stores/following.js';
 import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import Pagination from '../components/Pagination.vue';
+import UserBadge from '../components/UserBadge.vue';
 
 // 个人主页（第 2 批）：三个后端接口 + el-tabs + 真后端分页。
 // 旧实现是「拉全站最近 100 篇再前端过滤+ 前端切片假分页」，本批全部换掉：

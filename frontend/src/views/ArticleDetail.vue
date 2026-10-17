@@ -88,6 +88,10 @@
           </template>
         </div>
 
+        <!-- 第 5 批：右侧悬浮目录（el-anchor，零新增依赖）。
+             标题少于 2 个时组件自身不渲染。fixed 定位，DOM 位置不影响视觉。 -->
+        <ArticleToc v-if="article.content" :content="article.content" />
+
         <ArticleContent :content="article.content" />
 
         <AuthorCard v-if="article.author" :author="article.author" class="article-detail-author" />
@@ -145,6 +149,7 @@ import { likeArticle, unlikeArticle, getArticleLiked } from '../api/like.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
+import ArticleToc from '../components/ArticleToc.vue';
 import AuthorCard from '../components/AuthorCard.vue';
 import CommentEditor from '../components/CommentEditor.vue';
 import CommentList from '../components/CommentList.vue';

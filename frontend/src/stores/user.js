@@ -59,6 +59,28 @@ export const useUserStore = defineStore('user', () => {
     return data;
   }
 
+  /**
+   * 第 5 批：确保 user 已加载（没有才拉一次）。给 /admin 路由守卫用。
+   *
+   * 为什么需要它：刷新 /admin 时 AppHeader 的 fetchMe 是异步的，
+   * 守卫直接读 userStore.user.role 可能拿到 null 把管理员误弹。
+   * 守卫里 await 这个函数，user 到位后再判 role。
+   *
+   * 未登录返回 null（调用方自己决定跳登录还是回首页）。
+   * @returns {Promise<object|null>} 当前 user 或 null
+   */
+  async function ensureLoaded() {
+    if (user.value) {
+      return user.value;
+    }
+
+    if (!isLogin.value) {
+      return null;
+    }
+
+    return fetchMe();
+  }
+
   function logout() {
     setToken('');
     setUser(null);
@@ -73,6 +95,7 @@ export const useUserStore = defineStore('user', () => {
     login,
     register,
     fetchMe,
+    ensureLoaded,
     logout,
   };
 });

@@ -21,7 +21,11 @@
       <span v-else class="author-avatar" :style="{ backgroundColor: avatarInfo.color }">{{ avatarInfo.text }}</span>
 
       <span class="author-meta">
-        <span class="author-name">{{ displayName }}</span>
+        <span class="author-name">
+          {{ displayName }}
+          <!-- 第 5 批：管理员徽章。role 由 author.role 透出（AUTHOR_SELECT 已加）。 -->
+          <UserBadge :role="author.role" />
+        </span>
         <span class="author-username">@{{ author.username }}</span>
       </span>
     </span>
@@ -32,6 +36,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { resolveAvatar } from '../utils/format.js';
+import UserBadge from './UserBadge.vue';
 
 const props = defineProps({
   author: {
@@ -130,6 +135,12 @@ function goToProfile() {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-strong);
+}
+
+/* 徽章与名字同一行：名字是 span，徽章（el-tag）垂直居中贴合。 */
+.author-name :deep(.user-badge) {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 .author-username {

@@ -22,6 +22,13 @@ const ChangePasswordView = () => import('../views/ChangePassword.vue');
 // 各自的 name 都**没变**，变的只是「多了一层壳」和下拉菜单的入口合并成一个。
 const SettingsView = () => import('../views/Settings.vue');
 const ProfileEditView = () => import('../views/ProfileEdit.vue');
+// 第 5 批：管理后台（/admin）。壳 + 4 个子页，模式同 /settings。
+// 进入权限在 beforeEnter 守卫里判（非 ADMIN 回首页），组件内部不做角色判断。
+const AdminLayoutView = () => import('../views/AdminLayout.vue');
+const AdminStatsView = () => import('../views/AdminStats.vue');
+const AdminUsersView = () => import('../views/AdminUsers.vue');
+const AdminArticlesView = () => import('../views/AdminArticles.vue');
+const AdminCommentsView = () => import('../views/AdminComments.vue');
 
 // meta.layout 决定 App.vue 是否渲染 Header / Footer：
 // - 默认（不写）：带 Header + Footer
@@ -130,6 +137,54 @@ const routes = [
         meta: {
           requiresAuth: true,
         },
+      },
+    ],
+  },
+  {
+    // 第 5 批：管理后台。与 /settings 同构（壳 + children + redirect）。
+    //
+    // **守卫顺序**：全局 beforeEach 先跑（requiresAuth 未登录 → 带 redirect 跳登录），
+    // 再到本 beforeEnter：await userStore.ensureLoaded() 补拉 /auth/me
+    // （刷新时 Pinia 里的 user 还是空的，直接判 role 会把管理员误弹），
+    // 然后 role !== 'ADMIN' → 回首页。判定用 role（DB 实时值），不用 token。
+    path: '/admin',
+    name: 'admin',
+    component: AdminLayoutView,
+    redirect: { name: 'admin-stats' },
+    meta: {
+      requiresAuth: true,
+    },
+    beforeEnter: async () => {
+      const userStore = useUserStore();
+
+      await userStore.ensureLoaded();
+
+      if (userStore.user?.role !== 'ADMIN') {
+        return { name: 'home' };
+      }
+
+      return true;
+    },
+    children: [
+      {
+        path: 'stats',
+        name: 'admin-stats',
+        component: AdminStatsView,
+      },
+      {
+        path: 'users',
+        name: 'admin-users',
+        component: AdminUsersView,
+      },
+      {
+        path: 'articles',
+        name: 'admin-articles',
+        component: AdminArticlesView,
+      },
+      {
+        path: 'comments',
+        name: 'admin-comments',
+        component: AdminCommentsView,
       },
     ],
   },
