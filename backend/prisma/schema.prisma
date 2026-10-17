@@ -27,6 +27,11 @@ model User {
   articles  Article[]
   comments  Comment[]
   likes     Like[]
+  // 第 4 批（已获用户批准）：关注关系。
+  //   - following 走 "Follower" 关系：我是关注者 → 我关注的人列表
+  //   - followers 走 "Following" 关系：我是被关注者 → 关注我的人列表
+  following Follow[] @relation("Follower")
+  followers Follow[] @relation("Following")
 
   @@map("users")
 }
@@ -87,4 +92,25 @@ model Like {
   // 与「我赞过哪些文章」。user_id 侧不另建索引：上面唯一索引的左前缀已承担。
   @@index([articleId])
   @@map("likes")
+}
+
+// 第 4 批（已获用户批准）：关注关系。
+// 「关注」是关系状态而非可隐藏内容，故与 likes 同构——**刻意不设 deleted_at / updated_at**，
+// 取消关注用物理 DELETE。「我关注的」(follower_id) 与「关注我的」(following_id) 角色不同，
+// 用命名关系 Follower / Following 区分，避免 Prisma 自引用歧义。
+model Follow {
+  id          Int      @id @default(autoincrement())
+  followerId  Int      @map("follower_id")
+  follower    User     @relation("Follower", fields: [followerId], references: [id])
+  followingId Int      @map("following_id")
+  following   User     @relation("Following", fields: [followingId], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // 防重复关注：同一 (follower_id, following_id) 唯一。并发重复关注由 DB 唯一约束最终拦截
+  // （报 1062 / P2002），应用层「先查后写」仅作友好提示，不作为正确性保障。
+  @@unique([followerId, followingId], name: "follows_follower_id_following_id_key")
+  // 支撑「某用户的粉丝数」实时 count（SELECT COUNT(*) WHERE following_id = ?）。
+  // follower_id 侧不另建索引：上面唯一索引的左前缀已承担。
+  @@index([followingId])
+  @@map("follows")
 }

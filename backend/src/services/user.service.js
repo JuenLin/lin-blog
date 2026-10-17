@@ -189,7 +189,7 @@ export async function updateAvatar({ userId, file }) {
   return toPublicUser(updated);
 }
 
-export { toPublicUser, PUBLIC_FIELDS };
+export { toPublicUser, PUBLIC_FIELDS, requireUserExists };
 
 /* ---------- 第2 批：用户主页接口 ---------- */
 

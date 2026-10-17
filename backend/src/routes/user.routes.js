@@ -8,6 +8,12 @@ import {
   listArticlesByUser,
   listLikedArticles,
 } from '../controllers/user.controller.js';
+import {
+  follow,
+  unfollow,
+  listFollowers,
+  listFollowing,
+} from '../controllers/follow.controller.js';
 import { updateProfileSchema, userIdParamSchema } from '../validators/user.validator.js';
 import { avatarUpload } from '../services/upload.service.js';
 
@@ -61,6 +67,15 @@ router.post('/me/avatar', auth, avatarUpload, uploadAvatar);
  * 不是 bug —— 不为此加 `GET /me` 别名。
  */
 router.get('/me/likes', auth, listLikedArticles);
+
+// 第 4 批：关注相关 4 接口。
+// 注册在 `/me/likes` 之后、`/:id/articles` 之前：保持「/me/* 先于 /:id/*」的硬约束，
+// 且 POST/DELETE 需要 auth，中间件顺序 auth → validate（未登录先 401，不暴露参数细节）。
+// GET 两个列表公开，只挂 params 校验，query 由 service 内的 parsePagination 统一校验。
+router.post('/:id/follow', auth, validate({ params: userIdParamSchema }), follow);
+router.delete('/:id/follow', auth, validate({ params: userIdParamSchema }), unfollow);
+router.get('/:id/followers', validate({ params: userIdParamSchema }), listFollowers);
+router.get('/:id/following', validate({ params: userIdParamSchema }), listFollowing);
 
 router.get('/:id/articles', validate({ params: userIdParamSchema }), listArticlesByUser);
 
