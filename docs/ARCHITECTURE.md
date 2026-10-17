@@ -1,26 +1,14 @@
-<!--
-  正式文档声明（ARCHITECTURE.md）：
-  - 纳入版本控制：会 commit、会 push，是仓库正式文档。
-  - 可被引用：README.md / docs/AI_CONTRACT.md 等文档可链接本文件。
-  - 进文档清单：docs/AI_CONTRACT.md §3 目录结构中收录本文件。
-  - 定位：本文件是「视图文档」，用 Mermaid 呈现系统各维度的关系图，不是契约。
-    若与 API.md（接口契约）/ DB.md（表结构）冲突，以 API.md / DB.md 为准。
-  - 更新触发标准（仅结构性变更才更新）：
-    ✅ 新增/删除：表、模块、页面路由、跨模块 service 复用、接口
-    ❌ 不触发：改字段名、改文案、改样式、修 bug、加探针
--->
-
 # 系统架构图（ARCHITECTURE）
 
-> 本文档用 Mermaid 画「关系」，不重复 API.md / README / DB.md 的字段清单。
-> 六张图：A 系统架构 / B 后端请求链路 / C 数据库 ER / D 用户功能地图 / E 接口全景 / F 前端路由+组件树。
+> 本文档用 Mermaid 画「关系」，不重复 API.md / README / DB.md 的字段清单。  
+> 六张图：A 系统架构 / B 后端请求链路 / C 数据库 ER / D 用户功能地图 / E 接口全景 / F 前端路由+组件树。  
 > 视图文档，冲突以 API.md / DB.md 为准。
 
 ---
 
 ## A · 系统架构图
 
-三层：前端 (Vue3) / 后端 (Express) / 数据层 (MySQL + Prisma)。标注端口、鉴权方式、静态资源路径、CORS 白名单；MySQL 层一眼看到「4 张表 + 6 个迁移」的数据规模。
+三层：前端 (Vue3) / 后端 (Express) / 数据层 (MySQL + Prisma)。标注端口、鉴权方式、静态资源路径、CORS 白名单；MySQL 层一眼看到「5 张表 + 7 个迁移」的数据规模。
 
 ```mermaid
 graph TB
@@ -38,8 +26,8 @@ graph TB
 
   subgraph DATA[数据层 MySQL Prisma]
     db[("MySQL")]
-    tables["4 张表\nusers / articles / comments / likes"]
-    migs["6 个迁移 migrations\ninit → avatar_bio → likes → category"]
+    tables["5 张表\nusers / articles / comments / likes / follows"]
+    migs["7 个迁移 migrations\ninit → avatar_bio → likes → category → follows"]
   end
 
   uploads["静态资源 /uploads\nexpress.static 挂 /uploads\n头像路径 /uploads/avatars/userId/file"]
@@ -104,13 +92,15 @@ flowchart LR
 
 ## C · 数据库 ER 图
 
-4 张表，标出外键、唯一约束、软删列。关键差异：`users` / `articles` / `comments` 有 `deleted_at`（软删除），`likes` **没有**（物理删除，因为唯一约束 + 「点赞 = 行存在」不变式）。
+5 张表，标出外键、唯一约束、软删列。关键差异：`users` / `articles` / `comments` 有 `deleted_at`（软删除），`likes` 与 `follows` **没有**（物理删除，因为唯一约束 + 「关系 = 行存在」不变式）。
 
 ```mermaid
 erDiagram
   USER ||--o{ ARTICLE : "发布"
   USER ||--o{ COMMENT : "撰写"
   USER ||--o{ LIKE : "点赞"
+  USER ||--o{ FOLLOW : "关注"
+  USER ||--o{ FOLLOW : "被关注"
   ARTICLE ||--o{ COMMENT : "拥有"
   ARTICLE ||--o{ LIKE : "被赞"
 
@@ -150,9 +140,16 @@ erDiagram
     int article_id FK "与 user_id 复合唯一"
     datetime created_at
   }
+  FOLLOW {
+    int id PK
+    int follower_id FK "关注人 与 following_id 复合唯一"
+    int following_id FK "被关注人 与 follower_id 复合唯一"
+    datetime created_at
+  }
 ```
 
 > `likes` 表无 `deleted_at`：取消点赞是物理 DELETE，而非软删——避免与 `(user_id, article_id)` 唯一约束冲突（详见 DB.md 第十一批说明）。
+> `follows` 表同样无 `deleted_at`：取关是物理 DELETE；`(follower_id, following_id)` 复合唯一即「一段关注关系只有一行」，重复关注由唯一约束兜底、应用层返回幂等成功（第 4 批）。
 
 ---
 
@@ -186,6 +183,12 @@ mindmap
       看评论
         入口 ArticleDetailView·CommentList
         接口 GET ／api／articles／：id／comments
+      看他关注谁
+        入口 UserFollowsView
+        接口 GET ／api／users／：id／following
+      看他的粉丝
+        入口 UserFollowsView
+        接口 GET ／api／users／：id／followers
     写（登录）
       发文章
         入口 ArticleEditorView（／editor）
@@ -202,6 +205,12 @@ mindmap
       取消赞
         入口 ArticleCard 赞按钮
         接口 DELETE ／api／articles／：id／like
+      关注他人
+        入口 UserProfileView 关注按钮
+        接口 POST ／api／users／：id／follow
+      取消关注
+        入口 UserProfileView 已关注按钮
+        接口 DELETE ／api／users／：id／follow
     管自己（登录）
       改简介
         入口 ProfileEditView（／settings／profile）
@@ -225,13 +234,13 @@ mindmap
 
 ## E · 接口全景图（flowchart）
 
-21 个接口按模块聚合（auth+health 5 / user 5 / article 5 / like 3 / comment 3）。画三类关系——这正是 API.md 接口表看不出来的部分：**① 模块归属独立 service**（auth 有独立 auth.service，直接碰 users 表，不经 user.service）**② 跨模块 service 复用**（article.service 导出的 `toArticleListItem / ARTICLE_DETAIL_SELECT / ARTICLE_SORT_MAP` 被 user.service 复用，第 2 批）**③ 跨 service 共享数据表**（user.service 直接查 likes 表，不经 like.service；users 表被 auth.service 与 user.service 共同直连）。所有 service 均经 Prisma 直连表，无 service 间链式调用（除第 2 批那一条复用）。不重复 API.md 接口表。
+25 个接口按模块聚合（auth+health 5 / user 9 / article 5 / like 3 / comment 3）。画四类关系——这正是 API.md 接口表看不出来的部分：**① 模块归属独立 service**（auth 有独立 auth.service，直接碰 users 表，不经 user.service）**② 跨模块 service 复用**（article.service 导出的 `toArticleListItem / ARTICLE_DETAIL_SELECT / ARTICLE_SORT_MAP` 被 user.service 复用，第 2 批）**③ 跨 service 共享数据表**（user.service 直接查 likes 表，不经 like.service；users 表被 auth.service 与 user.service 共同直连）**④ 同模块跨 service**（user 路由下的 4 个 follow 接口走独立 follow.service，挂在 user.routes.js 下但不经 user.service；follows 表只被 follow.service 直连，第 4 批）。所有 service 均经 Prisma 直连表，无 service 间链式调用（除第 2 批那一条复用）。不重复 API.md 接口表。
 
 ```mermaid
 flowchart TB
-  subgraph MOD[接口按模块聚合（共 21 个）]
+  subgraph MOD[接口按模块聚合（共 25 个）]
     authH["auth + health 5\nregister / login / me / password / health"]
-    userM["user 模块 5\nme / avatar / :id / :id/articles / me/likes"]
+    userM["user 模块 9\nme / avatar / :id / :id/articles / me/likes / follow / followers / following"]
     artM["article 模块 5\n列表 / 详情 / 发布 / 编辑 / 删除"]
     likeM["like 模块 3\nPOST+DELETE /like + GET /liked"]
     cmtM["comment 模块 3\nPOST /comments + GET /:id/comments + DELETE /:id"]
@@ -243,11 +252,13 @@ flowchart TB
     artSvc["Article service"]
     likeSvc["Like service"]
     cmtSvc["Comment service"]
+    followSvc["Follow service"]
   end
 
   subgraph DBT[数据层（Prisma 直连）]
     usersTable["users 表"]
     likesTable["likes 表"]
+    followsTable["follows 表"]
   end
 
   %% 模块归属各自独立 service
@@ -265,13 +276,15 @@ flowchart TB
   %% 跨边界核心关系（API.md 接口表看不出）
   artSvc -. "article.service 导出 toArticleListItem / ARTICLE_DETAIL_SELECT / ARTICLE_SORT_MAP（第 2 批）" .-> userSvc
   userSvc -. "user.service 直接查 likes 表（不经 like.service）" .-> likesTable
+  userM -. "follow 四接口走独立 follow.service（挂在 user.routes 下，第 4 批）" .-> followSvc
+  followSvc --> followsTable
 ```
 
 ---
 
 ## F · 前端路由 + 组件树（graph）
 
-画三类关系：**① 路由嵌套（壳+子页、双路径共用组件）② 组件复用（ArticleCard / Pagination 被哪几处用）③ store 订阅（likedStore 消费与 reset 触发链）**。不重复 README 目录。
+画三类关系：**① 路由嵌套（壳+子页、双路径共用组件）② 组件复用（ArticleCard / Pagination 被哪几处用）③ store 订阅（likedStore / followingStore 消费与 reset 触发链）**。不重复 README 目录。
 
 ```mermaid
 graph TB
@@ -282,6 +295,7 @@ graph TB
     rEditor["/editor → ArticleEditorView\nrequiresAuth"]
     rEditorId["/editor/:id → ArticleEditorView\nrequiresAuth 双路径"]
     rUser["/user/:id → UserProfileView\n公开"]
+    rFollows["/user/:id/follows/:type → UserFollowsView\n公开 type 白名单 beforeEnter"]
     rSettings["/settings → SettingsView 壳\nrequiresAuth redirect profile"]
     rPwd["/settings/password → ChangePasswordView\n子页"]
     rProfile["/settings/profile → ProfileEditView\n子页"]
@@ -293,10 +307,13 @@ graph TB
     clist["CommentList\n内含 Pagination"]
     pag["Pagination\n@change 翻页 不 watch"]
     header["AppHeader\n监听 AUTH_CLEARED_EVENT"]
+    followsComp["UserFollowsView\n粉丝/关注列表 复用 Pagination"]
+    profileComp["UserProfileView\n关注按钮 + 主页入口"]
   end
 
   subgraph STORE[Store]
     liked["likedStore\n已赞 id 集合 Set"]
+    following["followingStore\n已关注 id 集合 Set"]
     user["userStore\nsetToken 联动 reset"]
   end
 
@@ -319,5 +336,13 @@ graph TB
   header --> liked
   header --> user
   user -->|setToken 触发 reset| liked
+  user -->|setToken 触发 reset| following
   header -. "监听 AUTH_CLEARED_EVENT\n→ setToken('')" .-> user
+
+  %% 第 4 批：关注链路
+  rFollows --> followsComp
+  rUser --> profileComp
+  followsComp --> pag
+  profileComp --> following
+  header -. "ensureLoaded(user.id)\n按钮初始态 + 主页计数" .-> following
 ```
