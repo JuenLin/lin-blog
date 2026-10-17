@@ -20,11 +20,16 @@ const contentSchema = z
 // 枚举保证库里永远不会出现拼写不一致的值（非法值直接 400 / 40000）。
 export const ARTICLE_CATEGORIES = ['技术', '生活', '随笔', '未分类'];
 
+// 第 6 批：发布状态枚举。DRAFT = 仅作者草稿箱可见；PUBLISHED = 公开。
+export const ARTICLE_STATUSES = ['DRAFT', 'PUBLISHED'];
+
 export const createArticleSchema = z.object({
   title: titleSchema,
   content: contentSchema,
   // 可选；省略时由 .default 补成 '未分类'（与 DB 默认值一致）。
   category: z.enum(ARTICLE_CATEGORIES).optional().default('未分类'),
+  // 第 6 批：省略或传 PUBLISHED 都是发布；传 DRAFT 创建草稿（仅作者草稿箱可见）。
+  status: z.enum(ARTICLE_STATUSES).optional().default('PUBLISHED'),
 });
 
 // PUT 是全量更新，title 与 content 都必填，校验规则与创建一致。
@@ -33,6 +38,30 @@ export const updateArticleSchema = z.object({
   content: contentSchema,
   // 可选且**无 default**：不传 = 保留库中原有值（service 层据此跳过该字段）。
   category: z.enum(ARTICLE_CATEGORIES).optional(),
+  // 第 6 批：省略 = 保留原 status；传 DRAFT/PUBLISHED 显式切换。
+  status: z.enum(ARTICLE_STATUSES).optional(),
+});
+
+// 第 6 批：自动保存草稿请求体。
+//
+// title / content 都**可选且允许空串**：
+//   - 更新草稿时允许把标题/正文清空（草稿就是「可半完成」的载体）；
+//   - 新建草稿时若二者都接近空，由 service 的「建草稿门槛」拦截（不创建、返回 IDLE）。
+// draftId：已有草稿 id，传了就走「更新分支」（越权校验 404）；不传走「新建分支」。
+// sourceArticleId：编辑已发布文章时的来源文章 id，**仅作归属校验、不落库**（补丁 1 独立草稿隔离）。
+//
+// 不在这里做「建草稿门槛」判断（那是业务阈值，不是字段格式），只做字段格式与正整数校验。
+export const autoSaveSchema = z.object({
+  title: z.string().optional(),
+  content: z.string().optional(),
+  category: z.enum(ARTICLE_CATEGORIES).optional(),
+  draftId: z.coerce.number().int('必须是整数').positive('必须是正整数').optional(),
+  sourceArticleId: z.coerce.number().int('必须是整数').positive('必须是正整数').optional(),
+});
+
+// 第 6 批：回滚到指定版本。revisionId 必填且必须为该文章的版本 id（归属校验在 service 层）。
+export const restoreSchema = z.object({
+  revisionId: z.coerce.number().int('必须是整数').positive('必须是正整数'),
 });
 
 // 路径参数在 Express 里是字符串，统一 coerce 成正整数。

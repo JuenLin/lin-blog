@@ -7,6 +7,8 @@ import {
   getUserDetail,
   listArticlesByUser,
   listLikedArticles,
+  listDrafts,
+  deleteDraft,
 } from '../controllers/user.controller.js';
 import {
   follow,
@@ -16,6 +18,7 @@ import {
 } from '../controllers/follow.controller.js';
 import { updateProfileSchema, userIdParamSchema } from '../validators/user.validator.js';
 import { avatarUpload } from '../services/upload.service.js';
+import { articleIdParamSchema } from '../validators/article.validator.js';
 
 const router = Router();
 
@@ -67,6 +70,11 @@ router.post('/me/avatar', auth, avatarUpload, uploadAvatar);
  * 不是 bug —— 不为此加 `GET /me` 别名。
  */
 router.get('/me/likes', auth, listLikedArticles);
+
+// 第 6 批：草稿箱。注册在 `/:id/articles` 与 `/:id` 之前，保持「/me/* 先于 /:id/*」硬约束。
+// GET 用 parsePagination + parseKeyword 在 service 内校验，无 zod 参数；DELETE 用 articleIdParamSchema 校验 id。
+router.get('/me/drafts', auth, listDrafts);
+router.delete('/me/drafts/:id', auth, validate({ params: articleIdParamSchema }), deleteDraft);
 
 // 第 4 批：关注相关 4 接口。
 // 注册在 `/me/likes` 之后、`/:id/articles` 之前：保持「/me/* 先于 /:id/*」的硬约束，

@@ -5,6 +5,12 @@ import {
   listArticlesByUser as listArticlesByUserService,
   listLikedArticles as listLikedArticlesService,
 } from '../services/user.service.js';
+// 草稿的读写实际落在 articles 表，函数定义在 article.service.js（第 6 批），
+// 这里只做控制器转发。它们操作文章数据，与 user.service 的「用户维度聚合」不同源。
+import {
+  listDrafts as listDraftsService,
+  deleteDraft as deleteDraftService,
+} from '../services/article.service.js';
 import { sendOk, sendCreated, httpError, CODE } from '../utils/response.js';
 
 /**
@@ -103,6 +109,36 @@ export async function listLikedArticles(req, res, next) {
       userId: req.user.userId,
       query: req.query,
     });
+
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/* ---------- 第 6 批：草稿箱 ---------- */
+
+/**
+ * 我的草稿箱列表。对应 docs/API.md 的 GET /api/users/me/drafts。
+ * 仅本人草稿（service 内已按 authorId + status=DRAFT 过滤）。
+ */
+export async function listDrafts(req, res, next) {
+  try {
+    const data = await listDraftsService(req.user.userId, req.query);
+
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * 删除指定草稿。对应 docs/API.md 的 DELETE /api/users/me/drafts/:id。
+ * id 来自已校验的路径参数。物理删除（草稿无点赞/评论/版本，可安全硬删）。
+ */
+export async function deleteDraft(req, res, next) {
+  try {
+    const data = await deleteDraftService(req.validated.params.id, req.user.userId);
 
     return sendOk(res, data);
   } catch (error) {

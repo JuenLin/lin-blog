@@ -26,6 +26,11 @@ enum UserStatus {
   BANNED
 }
 
+enum ArticleStatus {
+  DRAFT
+  PUBLISHED
+}
+
 model User {
   id        Int       @id @default(autoincrement())
   username  String    @unique @db.VarChar(50)
@@ -46,6 +51,7 @@ model User {
   articles  Article[]
   comments  Comment[]
   likes     Like[]
+  revisions ArticleRevision[]
   // 第 4 批（已获用户批准）：关注关系。
   //   - following 走 "Follower" 关系：我是关注者 → 我关注的人列表
   //   - followers 走 "Following" 关系：我是被关注者 → 关注我的人列表
@@ -62,6 +68,7 @@ model Article {
   // 2026-10-04（用户批准）：分类列。枚举白名单（技术/生活/随笔/未分类）由后端校验，
   // 不建 categories 表、不加外键。NOT NULL + 默认 '未分类'，INSTANT 算法自动回填既有行。
   category  String    @default("未分类") @db.VarChar(20)
+  status    ArticleStatus @default(PUBLISHED)
   authorId  Int       @map("author_id")
   author    User      @relation(fields: [authorId], references: [id])
   createdAt DateTime  @default(now()) @map("created_at")
@@ -69,10 +76,27 @@ model Article {
   deletedAt DateTime? @map("deleted_at")
   comments  Comment[]
   likes     Like[]
+  revisions ArticleRevision[]
 
   @@index([deletedAt, createdAt])
   @@index([deletedAt, updatedAt])
+  @@index([status, createdAt])
   @@map("articles")
+}
+
+model ArticleRevision {
+  id        Int       @id @default(autoincrement())
+  articleId Int       @map("article_id")
+  article   Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  title     String    @db.VarChar(100)
+  content   String    @db.MediumText
+  category  String    @default("未分类") @db.VarChar(20)
+  authorId  Int       @map("author_id")
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([articleId, createdAt])
+  @@map("article_revisions")
 }
 
 model Comment {

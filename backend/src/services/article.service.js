@@ -128,6 +128,8 @@ export async function createArticle(payload, authorId) {
       title: payload.title,
       content: payload.content,
       category: payload.category ?? '未分类',
+      // 第 6 批：status 省略或 PUBLISHED 都是发布；DRAFT 创建草稿。
+      status: payload.status ?? 'PUBLISHED',
       authorId,
     },
     select: ARTICLE_DETAIL_SELECT,
@@ -166,7 +168,8 @@ export async function listArticles(query) {
   // whereNotDeleted 内部是 { ...where, deletedAt: null }，
   // 所以 OR 条件与软删除过滤是 AND 关系：软删除的文章搜不到（docs/API.md 语义第 5 条）。
   // searchWhere(OR...) 与 categoryWhere 平铺合并 → 二者也是 AND 关系，实现「正交可叠加」。
-  const where = whereNotDeleted({ ...searchWhere, ...categoryWhere });
+  // 第 6 批：公开广场只认 PUBLISHED，草稿（DRAFT）与已软删都不出现（docs/API.md 该节）。
+  const where = whereNotDeleted({ ...searchWhere, ...categoryWhere, status: 'PUBLISHED' });
 
   // 列表要生成 summary，必须取 content。pageSize 上限 100，100 条 MEDIUMTEXT 对 MVP 可接受。
   const [rows, total] = await Promise.all([
@@ -194,8 +197,10 @@ export async function listArticles(query) {
  * @param {number} id
  */
 export async function getArticleDetail(id) {
+  // 第 6 批：公开详情只认 PUBLISHED。草稿（DRAFT）走这里会自然 404（与「不存在」同口径），
+  // 不区分请求者是否为作者——草稿只通过 GET /api/users/me/drafts 暴露给作者本人（docs/API.md）。
   const article = await prisma.article.findFirst({
-    where: whereNotDeleted({ id }),
+    where: whereNotDeleted({ id, status: 'PUBLISHED' }),
     select: ARTICLE_DETAIL_SELECT,
   });
 
@@ -238,11 +243,42 @@ function assertAuthor(article, userId) {
  *
  * 判断顺序固定为「先存在（404）后作者（403）」：
  * 反过来会让非作者通过 403 / 404 的差异枚举出真实存在的文章 id。
+ *
+ * 第 6 批：版本快照。更新前若文章是 `PUBLISHED`，先把当前 title/content/category
+ * 存入 article_revisions（生成一条「更新前快照」），再应用本次更新——这是
+ * GET /api/articles/:id/revisions 与 /restore 的数据来源。若目标是 DRAFT（例如
+ * 把草稿 PUT 成 PUBLISHED 来「发布」），则**不快照**（草稿本身不进版本历史）。
  */
 export async function updateArticle(id, payload, userId) {
-  const article = await requireArticleForWrite(id);
+  // 复用 requireArticleForWrite 的存在性判定，再单独取快照所需字段。
+  const exists = await requireArticleForWrite(id);
+  assertAuthor(exists, userId);
 
-  assertAuthor(article, userId);
+  // 取更新前的完整内容用于快照（requireArticleForWrite 只回 {id, authorId}）。
+  const current = await prisma.article.findFirst({
+    where: whereNotDeleted({ id }),
+    select: {
+      id: true,
+      title: true,
+      content: true,
+      category: true,
+      authorId: true,
+      status: true,
+    },
+  });
+
+  // 仅当更新前是 PUBLISHED 才快照；DRAFT 不进版本历史。
+  if (current && current.status === 'PUBLISHED') {
+    await prisma.articleRevision.create({
+      data: {
+        articleId: id,
+        title: current.title,
+        content: current.content,
+        category: current.category,
+        authorId: current.authorId,
+      },
+    });
+  }
 
   // category 三态：不传（undefined）→ 保留原值（不写该字段）；传了合法值 → 更新。
   const data = {
@@ -251,6 +287,10 @@ export async function updateArticle(id, payload, userId) {
   };
   if (payload.category !== undefined) {
     data.category = payload.category;
+  }
+  // status 三态：不传（undefined）→ 保留原值；传了 DRAFT/PUBLISHED → 显式切换。
+  if (payload.status !== undefined) {
+    data.status = payload.status;
   }
 
   const updated = await prisma.article.update({
@@ -281,6 +321,267 @@ export async function deleteArticle(id, userId) {
   });
 
   return null;
+}
+
+/* ---------- 第 6 批：草稿 / 自动保存 / 版本历史 / 回滚 ---------- */
+
+/**
+ * 自动保存草稿。对应 docs/API.md 的 POST /api/articles/auto-save。
+ *
+ * 行为分两支（与 API.md 完全一致）：
+ *   ① 有 draftId → 更新该草稿（必须 DRAFT 且 authorId=本人，否则 404，坑 1 越权校验）；
+ *      status 保持 DRAFT，返回 { id, status:"DRAFT", saved:true }。
+ *   ② 无 draftId → 先过「建草稿门槛」（补丁 3 第一道闸）：title 空或纯空白 且 content 字符数 < 10
+ *      时不创建，返回 { id:null, status:"IDLE", saved:false }（前端保持 idle、不再发请求）；
+ *      门槛通过后再看 sourceArticleId：若传了，校验它指向 PUBLISHED 且作者本人，否则 404
+ *      （防越权编辑他人文章）；校验仅作放行，**不把 sourceArticleId 落库**（补丁 1 独立草稿隔离）。
+ *      然后新建一篇 DRAFT，返回 { id, status:"DRAFT", saved:true }。
+ *
+ * 注意：进入草稿态（已持有 draftId）后，任何内容变化（含清空到 0 字）都走「有 draftId」分支，
+ * 不再受建草稿门槛限制（补丁 3 第二道闸，保证「清空内容后保存」不丢）。
+ *
+ * @param {object} payload 已校验请求体（autoSaveSchema）
+ * @param {number} userId 来自 token
+ */
+export async function autoSaveArticle(payload, userId) {
+  const { title, content, category, draftId, sourceArticleId } = payload;
+
+  // ① 有 draftId：更新已有草稿。
+  if (draftId !== undefined && draftId !== null) {
+    const draft = await prisma.article.findFirst({
+      where: whereNotDeleted({ id: draftId, authorId: userId, status: 'DRAFT' }),
+      select: { id: true },
+    });
+    if (!draft) {
+      throw httpError(404, CODE.NOT_FOUND, '草稿不存在');
+    }
+
+    const data = {};
+    if (title !== undefined) data.title = title;
+    if (content !== undefined) data.content = content;
+    if (category !== undefined) data.category = category;
+    // status 保持 DRAFT，不在此处被改。
+
+    const updated = await prisma.article.update({
+      where: { id: draftId },
+      data,
+      select: { id: true, status: true },
+    });
+
+    return { id: updated.id, status: updated.status, saved: true };
+  }
+
+  // ② 无 draftId：新建草稿，先过「建草稿门槛」。
+  const titleStr = title ?? '';
+  const contentStr = content ?? '';
+  // 按字符数（码点）计，与 buildSummary 一致，避免代理对被截断后误判长度。
+  const contentLen = [...contentStr].length;
+  if (titleStr.trim() === '' && contentLen < 10) {
+    return { id: null, status: 'IDLE', saved: false };
+  }
+
+  // sourceArticleId 归属校验：必须 PUBLISHED 且本人，否则 404。仅校验，不落库。
+  if (sourceArticleId !== undefined && sourceArticleId !== null) {
+    const source = await prisma.article.findFirst({
+      where: whereNotDeleted({ id: sourceArticleId, authorId: userId, status: 'PUBLISHED' }),
+      select: { id: true },
+    });
+    if (!source) {
+      throw httpError(404, CODE.NOT_FOUND, '来源文章不存在或无权编辑');
+    }
+  }
+
+  const created = await prisma.article.create({
+    data: {
+      title: titleStr,
+      content: contentStr,
+      category: category ?? '未分类',
+      status: 'DRAFT',
+      authorId: userId,
+    },
+    select: { id: true, status: true },
+  });
+
+  return { id: created.id, status: created.status, saved: true };
+}
+
+/**
+ * 当前用户的草稿箱列表。对应 docs/API.md 的 GET /api/users/me/drafts。
+ *
+ * 只返回 status=DRAFT 且本人才有的文章（不含已发布、不含已软删）。
+ * 结构与 GET /api/articles 同形（list[] 走 toArticleListItem，含 summary 截取）。
+ * 默认按 updatedAt 倒序（最近编辑的草稿在前）。
+ *
+ * @param {number} userId 来自 token
+ * @param {object} query Express 的 req.query（page / pageSize / keyword）
+ */
+export async function listDrafts(userId, query) {
+  const pagination = parsePagination(query, {
+    allowedSort: ARTICLE_SORT_FIELDS,
+    defaultSort: 'updatedAt',
+  });
+
+  const where = whereNotDeleted({ authorId: userId, status: 'DRAFT' });
+
+  // keyword 仅按 title 模糊匹配（草稿箱是作者私域，不搜正文）。parseKeyword 复用
+  // 广场的校验（空串/纯空白=不过滤、超长 50 报错、重复传值报错），返回已 trim 关键字。
+  const keyword = parseKeyword(query);
+  if (keyword) {
+    where.title = { contains: keyword };
+  }
+
+  const [rows, total] = await Promise.all([
+    prisma.article.findMany({
+      where,
+      select: ARTICLE_DETAIL_SELECT,
+      orderBy: buildOrderBy(pagination, { map: ARTICLE_SORT_MAP }),
+      skip: pagination.skip,
+      take: pagination.take,
+    }),
+    prisma.article.count({ where }),
+  ]);
+
+  return {
+    // 与广场列表项同形（toArticleListItem），但**额外透出 content 全文**：
+    // 草稿拿不到公开详情（DRAFT 详情一律 404，坑 3），「从草稿箱继续编辑」
+    // 的全文回填只有这一个数据来源。接口本身就是作者私域，不泄露。
+    list: rows.map((row) => ({ ...toArticleListItem(row), content: row.content })),
+    ...buildPaginationMeta(pagination.page, pagination.pageSize, total),
+  };
+}
+
+/**
+ * 删除指定草稿（物理删除）。对应 docs/API.md 的 DELETE /api/users/me/drafts/:id。
+ *
+ * 必须是 DRAFT 且本人，否则 404 / 40400。草稿无点赞/评论/版本记录，可安全硬删。
+ *
+ * @param {number} id 路径参数
+ * @param {number} userId 来自 token
+ */
+export async function deleteDraft(id, userId) {
+  const draft = await prisma.article.findFirst({
+    where: whereNotDeleted({ id, authorId: userId, status: 'DRAFT' }),
+    select: { id: true },
+  });
+
+  if (!draft) {
+    throw httpError(404, CODE.NOT_FOUND, '草稿不存在');
+  }
+
+  await prisma.article.delete({ where: { id } });
+
+  return null;
+}
+
+/**
+ * 文章版本历史（全量 content，方案 A）。对应 docs/API.md 的 GET /api/articles/:id/revisions。
+ *
+ * 必须是 PUBLISHED 且本人，否则按失败表区分：
+ *   - 不存在 / 已软删 / 非 PUBLISHED → 404 / 40400
+ *   - 存在但非作者 → 403 / 40300（与失败表一致，便于前端区分「无权」与「不存在」）
+ * 草稿（DRAFT）没有版本历史，故非 PUBLISHED 一律 404。
+ *
+ * @param {number} id 路径参数
+ * @param {number} userId 来自 token
+ */
+export async function listRevisions(id, userId) {
+  const article = await prisma.article.findFirst({
+    where: whereNotDeleted({ id }),
+    select: { id: true, authorId: true, status: true },
+  });
+
+  if (!article || article.status !== 'PUBLISHED') {
+    throw httpError(404, CODE.NOT_FOUND, '文章不存在或非已发布');
+  }
+  if (article.authorId !== userId) {
+    throw httpError(403, CODE.FORBIDDEN, '无权访问');
+  }
+
+  // 按 createdAt 倒序：最新快照在前。每条都带完整 content（方案 A）。
+  const revisions = await prisma.articleRevision.findMany({
+    where: { articleId: id },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return {
+    articleId: id,
+    revisions: revisions.map((r) => ({
+      id: r.id,
+      articleId: r.articleId,
+      title: r.title,
+      content: r.content,
+      category: r.category,
+      authorId: r.authorId,
+      createdAt: r.createdAt,
+    })),
+    total: revisions.length,
+  };
+}
+
+/**
+ * 回滚到指定版本（先快照、后覆盖）。对应 docs/API.md 的 POST /api/articles/:id/restore。
+ *
+ * 必须是 PUBLISHED 且本人（与 listRevisions 同口径）。revisionId 必须属于该文章，否则 404。
+ * 行为：
+ *   1. 先把目标文章「当前」的 title/content/category 存入 article_revisions（记录「回滚前」状态）；
+ *   2. 再把文章覆盖为 revisionId 对应快照的内容，status 保持 PUBLISHED；
+ *   3. 返回更新后的文章（结构同详情）。
+ *
+ * @param {number} id 路径参数（目标文章）
+ * @param {number} revisionId 请求体（restoreSchema 已校验为正整数）
+ * @param {number} userId 来自 token
+ */
+export async function restoreArticle(id, revisionId, userId) {
+  const article = await prisma.article.findFirst({
+    where: whereNotDeleted({ id }),
+    select: {
+      id: true,
+      authorId: true,
+      status: true,
+      title: true,
+      content: true,
+      category: true,
+    },
+  });
+
+  if (!article || article.status !== 'PUBLISHED') {
+    throw httpError(404, CODE.NOT_FOUND, '文章不存在或非已发布');
+  }
+  if (article.authorId !== userId) {
+    throw httpError(403, CODE.FORBIDDEN, '无权访问');
+  }
+
+  // revisionId 必须属于该文章，否则 404（防止跨文章回滚）。
+  const revision = await prisma.articleRevision.findFirst({
+    where: { id: revisionId, articleId: id },
+  });
+  if (!revision) {
+    throw httpError(404, CODE.NOT_FOUND, '版本不存在');
+  }
+
+  // 1. 先快照当前版（保证回滚本身也可再回滚）。
+  await prisma.articleRevision.create({
+    data: {
+      articleId: id,
+      title: article.title,
+      content: article.content,
+      category: article.category,
+      authorId: article.authorId,
+    },
+  });
+
+  // 2. 覆盖为选定版本的内容。status 保持 PUBLISHED。
+  const updated = await prisma.article.update({
+    where: { id },
+    data: {
+      title: revision.title,
+      content: revision.content,
+      category: revision.category,
+    },
+    select: ARTICLE_DETAIL_SELECT,
+  });
+
+  return toArticleDetail(updated);
 }
 
 /* ---------- 供user.service.js 复用的内部件（第 2 批导出） ---------- */

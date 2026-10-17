@@ -234,7 +234,8 @@ export async function getUserDetail(id) {
   }
 
   const [articleCount, receivedLikeCount, receivedCommentCount] = await Promise.all([
-    prisma.article.count({ where: whereNotDeleted({ authorId: id }) }),
+    // 第 6 批：articleCount 只数「未软删且已发布」的文章——草稿不计入个人主页文章数。
+    prisma.article.count({ where: whereNotDeleted({ authorId: id, status: 'PUBLISHED' }) }),
 
     // 该用户未软删文章上收到的赞。article: { authorId: id, deletedAt: null } 是
     // 「该用户的文章」+「文章未软删」两个条件的 AND（关系过滤器内部即AND）。
@@ -294,7 +295,8 @@ export async function listArticlesByUser(id, query) {
     defaultSort: 'createdAt',
   });
 
-  const where = whereNotDeleted({ authorId: id });
+  // 第 6 批：个人主页「文章」Tab 只返回 PUBLISHED，草稿不出现（草稿仅作者本人在草稿箱可见）。
+  const where = whereNotDeleted({ authorId: id, status: 'PUBLISHED' });
 
   const [rows, total] = await Promise.all([
     prisma.article.findMany({

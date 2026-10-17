@@ -4,6 +4,9 @@ import {
   getArticleDetail as getArticleDetailService,
   updateArticle as updateArticleService,
   deleteArticle as deleteArticleService,
+  autoSaveArticle as autoSaveArticleService,
+  listRevisions as listRevisionsService,
+  restoreArticle as restoreArticleService,
 } from '../services/article.service.js';
 import { sendOk, sendCreated } from '../utils/response.js';
 
@@ -52,6 +55,56 @@ export async function update(req, res, next) {
 export async function remove(req, res, next) {
   try {
     const data = await deleteArticleService(req.validated.params.id, req.user.userId);
+
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/* ---------- 第 6 批：草稿 / 自动保存 / 版本历史 / 回滚 ---------- */
+
+/**
+ * 自动保存草稿。对应 docs/API.md 的 POST /api/articles/auto-save。
+ *
+ * 返回体由 service 决定：可能是 { id, status:"DRAFT", saved:true }（已建/已更新），
+ * 或 { id:null, status:"IDLE", saved:false }（建草稿门槛未过，前端保持 idle）。
+ */
+export async function autoSave(req, res, next) {
+  try {
+    const data = await autoSaveArticleService(req.validated.body, req.user.userId);
+
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * 文章版本历史。对应 docs/API.md 的 GET /api/articles/:id/revisions。
+ * 全量 content（方案 A），前端抽屉直接预览。
+ */
+export async function revisions(req, res, next) {
+  try {
+    const data = await listRevisionsService(req.validated.params.id, req.user.userId);
+
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * 回滚到指定版本。对应 docs/API.md 的 POST /api/articles/:id/restore。
+ * revisionId 来自已校验的请求体。
+ */
+export async function restore(req, res, next) {
+  try {
+    const data = await restoreArticleService(
+      req.validated.params.id,
+      req.validated.body.revisionId,
+      req.user.userId,
+    );
 
     return sendOk(res, data);
   } catch (error) {
