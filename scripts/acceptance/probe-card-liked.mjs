@@ -586,9 +586,22 @@ async function cleanup() {
   });
   const ids = accs.map((u) => u.id);
 
-  const stat = { likes: 0, comments: 0, articles: 0, users: 0 };
+  const stat = { notifications: 0, bookmarks: 0, likes: 0, comments: 0, articles: 0, users: 0 };
 
   if (ids.length) {
+    // ⚠️ 第 8 批起点赞会发 LIKE 通知（notifications 双 RESTRICT），第 9 批起收藏同理
+    // （bookmarks 双 RESTRICT）。本探针当前流程只让 A 赞自己的文章（自通知被抑制），
+    // 所以这两行现在是 0 —— 但一旦将来有人让 B 给 A 点赞，不删通知就删不掉文章（P2003）。
+    // 按 tmp-account 的同款顺序前置，防同型崩法（probe-liked 2026-10-18 实测崩过）。
+    stat.notifications = (
+      await prisma.notification.deleteMany({
+        where: {
+          OR: [{ actorId: { in: ids } }, { userId: { in: ids } }],
+        },
+      })
+    ).count;
+    stat.bookmarks = (await prisma.bookmark.deleteMany({ where: { userId: { in: ids } } })).count;
+
     // 顺序固定：likes → comments → articles → users（外键 RESTRICT，反序会被 MySQL 1452 拦）
     stat.likes = (await prisma.like.deleteMany({ where: { userId: { in: ids } } })).count;
     stat.comments = (await prisma.comment.deleteMany({ where: { authorId: { in: ids } } })).count;
@@ -658,7 +671,7 @@ try {
   try {
     const stat = await cleanup();
     console.log(
-      `\n清理：likes ${stat.likes} / comments ${stat.comments} / articles ${stat.articles} / users ${stat.users}`
+      `\n清理：notifications ${stat.notifications} / bookmarks ${stat.bookmarks} / likes ${stat.likes} / comments ${stat.comments} / articles ${stat.articles} / users ${stat.users}`
     );
   } catch (error) {
     console.error('清理失败（需手动处理）：', error && error.message ? error.message : error);

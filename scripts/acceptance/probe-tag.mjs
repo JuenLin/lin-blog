@@ -67,10 +67,14 @@ async function getPrisma() {
 }
 
 /**
- * 清理探针自造数据。顺序：article_tags → tags → revisions → articles，
+ * 清理探针自造数据。顺序：notifications → bookmarks → article_tags → tags → revisions → articles，
  * 最后一次性账号走 lib/tmp-account.mjs 的通用清理。
  * article_tags 两条外键都是 CASCADE，物理删 article 会自动带走关联——
  * 但显式先删一遍中间表，保证 tags 侧的删除不依赖级联时序。
+ *
+ * 第 8 批通知 + 第 9 批收藏的 article_id / user_id / actor_id 全是 RESTRICT，
+ * 必须最早删：账号 id 由 usernames 反查（精确命中本趟注册的账号），
+ * 通知/收藏按「文章 id ∪ 账号 id」两个方向删。
  *
  * 【探针清理铁律】只删本趟明确创建的实体：文章按主键 id in 精确删；
  * article_tags / revisions 按本趟文章 id（直接外键列）限定，只可能命中
@@ -84,8 +88,31 @@ async function cleanupProbeData(usernames, createdArticleIds, tagNamePrefix) {
   let tags = 0;
   let revisions = 0;
   let articles = 0;
+  let notifications = 0;
+  let bookmarks = 0;
 
   try {
+    // 账号 id 反查：usernames 全是本趟注册的探针账号，按用户名精确命中、不误伤。
+    const accountRows =
+      usernames.length > 0
+        ? await prisma.user.findMany({ where: { username: { in: usernames } }, select: { id: true } })
+        : [];
+    const accountIds = accountRows.map((r) => r.id);
+
+    if (accountIds.length > 0 || createdArticleIds.length > 0) {
+      const r0 = await prisma.notification.deleteMany({
+        where: {
+          OR: [{ articleId: { in: createdArticleIds } }, { userId: { in: accountIds } }, { actorId: { in: accountIds } }],
+        },
+      });
+      notifications = r0.count;
+
+      const r0b = await prisma.bookmark.deleteMany({
+        where: { OR: [{ articleId: { in: createdArticleIds } }, { userId: { in: accountIds } }] },
+      });
+      bookmarks = r0b.count;
+    }
+
     if (createdArticleIds.length > 0) {
       const l1 = await prisma.articleTag.deleteMany({ where: { articleId: { in: createdArticleIds } } });
       links = l1.count;
@@ -109,7 +136,7 @@ async function cleanupProbeData(usernames, createdArticleIds, tagNamePrefix) {
   const { cleanupProbeAccounts } = await import('./lib/tmp-account.mjs');
   const users = await cleanupProbeAccounts(usernames);
 
-  return { links, tags, revisions, articles, users };
+  return { links, tags, revisions, articles, users, notifications, bookmarks };
 }
 
 /* ============================ 前置检查 ============================ */
@@ -418,7 +445,7 @@ try {
       TAG_PREFIX
     );
     console.log(
-      `\n清理：标签关联 ${cleaned.links} 条 / 标签 ${cleaned.tags} 个 / 版本 ${cleaned.revisions} 条 / 文章 ${cleaned.articles} 篇（仅本趟创建 ${createdArticleIds.length} 篇）/ 探针账号 ${cleaned.users} 个`
+      `\n清理：通知 ${cleaned.notifications} 条 / 收藏 ${cleaned.bookmarks} 条 / 标签关联 ${cleaned.links} 条 / 标签 ${cleaned.tags} 个 / 版本 ${cleaned.revisions} 条 / 文章 ${cleaned.articles} 篇（仅本趟创建 ${createdArticleIds.length} 篇）/ 探针账号 ${cleaned.users} 个`
     );
 
     // 安全自检：① 本趟创建的实体（文章/标签）必须全部物理消失；② articles 全表行数只增不减。

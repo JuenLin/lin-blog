@@ -118,16 +118,35 @@ async function createArticle(token, title, category = '技术') {
 }
 
 /**
- * 清理：likes → comments → articles → users。
+ * 清理：notifications → bookmarks → likes → comments → articles → users。
  *
- * 顺序**不能变**：likes 与 comments 都同时引用 articles 和 users，
- * 两条外键都是 ON DELETE RESTRICT（docs/DB.md 实测），先删上游会被MySQL 1452拒。
+ * 顺序**不能变**：notifications（第 8 批）/ bookmarks（第 9 批）/ likes 与 comments
+ * 都同时引用 articles 和 users，外键都是 ON DELETE RESTRICT（docs/DB.md 实测），
+ * 先删上游会被 MySQL 1452 拒。本探针「A 给 B 点赞」会产生 LIKE 通知
+ * （article_id 指向 B 的靶子文章、actor_id 指向 A），漏删 notifications
+ * 会在删文章/账号时撞 P2003（2026-10-18 probe-liked 同类事故）。
  *
  * @param {{userIds: number[], articleIds: number[], usernames: string[]}} ids
  */
 async function cleanup({ userIds, articleIds, usernames }) {
   const prisma = await getPrisma();
-  const tally = { likes: 0, comments: 0, articles: 0, users: 0 };
+  const tally = { notifications: 0, bookmarks: 0, likes: 0, comments: 0, articles: 0, users: 0 };
+
+  if (userIds.length > 0 || articleIds.length > 0) {
+    // 通知/收藏的三（双）个外键全 RESTRICT，必须排在 likes/comments/articles 之前。
+    // userIds / articleIds 由调用方保证是数组（空数组的 `in: []` 匹配不到行，安全）。
+    const r0 = await prisma.notification.deleteMany({
+      where: {
+        OR: [{ articleId: { in: articleIds } }, { userId: { in: userIds } }, { actorId: { in: userIds } }],
+      },
+    });
+    tally.notifications = r0.count;
+
+    const r0b = await prisma.bookmark.deleteMany({
+      where: { OR: [{ articleId: { in: articleIds } }, { userId: { in: userIds } }] },
+    });
+    tally.bookmarks = r0b.count;
+  }
 
   if (userIds.length > 0) {
     // 点赞/评论里可能有**别人的**账号参与吗？没有——本探针只有自己造的账号在互动，
@@ -544,14 +563,14 @@ try {
   console.error(error && error.stack ? error.stack.split('\n').slice(0, 4).join('\n') : '');
   exitCode = 2;
 } finally {
-  // 清理顺序 likes → comments → articles → users（外键 RESTRICT）。
+  // 清理顺序 notifications → bookmarks → likes → comments → articles → users（外键 RESTRICT）。
   try {
     const cleaned = await cleanup({
       userIds: accounts.map((a) => a.userId).filter(Boolean),
       articleIds,
       usernames: accounts.map((a) => a.username).filter(Boolean),
     });
-    console.log(`\n清理：点赞 ${cleaned.likes} 条 / 评论 ${cleaned.comments} 条 / 靶子文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`);
+    console.log(`\n清理：通知 ${cleaned.notifications} 条 / 收藏 ${cleaned.bookmarks} 条 / 点赞 ${cleaned.likes} 条 / 评论 ${cleaned.comments} 条 / 靶子文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`);
 
     // 残留自查：只查**本轮自己造的**，不能一看到 pwprobe 前缀就报残留 ——
     // 库里可能有别次跑（如 probe-password）留下的 pwprobe 账号，那不是本探针的责任。

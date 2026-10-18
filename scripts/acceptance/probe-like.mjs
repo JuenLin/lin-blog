@@ -58,14 +58,36 @@ async function getPrisma() {
   return prismaClient;
 }
 
-// 清理顺序**不能变**：likes 引用 articles 与 users，两条外键都是 ON DELETE RESTRICT，
+// 清理顺序**不能变**：notifications → bookmarks → likes → articles。
+// 第 8 批起 like 服务会发 LIKE 通知（notifications.article_id / actor_id 双
+// RESTRICT），第 9 批 bookmarks 同型（article_id / user_id 双 RESTRICT），
 // 先删 user 或 article 都会被 MySQL 1452 拒绝（docs/DB.md 已实测）。
+// 本探针当前只自赞（actorId===userId 被通知服务抑制、不产行），但一旦将来
+// 改成跨账号互动，漏删通知/收藏就会在删靶子文章时撞 P2003——按最终顺序防将来。
 async function cleanupProbeData({ username, userId, articleIds }) {
   const prisma = await getPrisma();
   let likes = 0;
   let articles = 0;
+  let notifications = 0;
+  let bookmarks = 0;
 
   try {
+    // userId 仅在登录成功后才可能是有效整数；异常路径下不带用户方向的条件，
+    // 避免 Prisma 把 undefined 当作「不过滤」把全表通知/收藏删光。
+    const uid = Number(userId);
+    const hasUser = Number.isInteger(uid);
+    const r0 = await prisma.notification.deleteMany({
+      where: {
+        OR: [{ articleId: { in: articleIds } }, ...(hasUser ? [{ userId: uid }, { actorId: uid }] : [])],
+      },
+    });
+    notifications = r0.count;
+
+    const r0b = await prisma.bookmark.deleteMany({
+      where: { OR: [{ articleId: { in: articleIds } }, ...(hasUser ? [{ userId: uid }] : [])] },
+    });
+    bookmarks = r0b.count;
+
     const r1 = await prisma.like.deleteMany({ where: { userId } });
     likes = r1.count;
 
@@ -81,7 +103,7 @@ async function cleanupProbeData({ username, userId, articleIds }) {
 
   const users = await cleanupProbeAccounts([username]);
 
-  return { likes, articles, users };
+  return { likes, articles, users, notifications, bookmarks };
 }
 
 /* ============================ 前置检查 ============================ */
@@ -517,14 +539,14 @@ try {
     await stopChrome(chromeChild);
   }
 
-  // 清理：探针自造的 likes / 靶子文章 / 一次性账号。
+  // 清理：探针自造的 likes / 靶子文章 / 一次性账号（notifications / bookmarks 按同一顺序先删）。
   try {
     const cleaned = await cleanupProbeData({
       username: ACCOUNT.username,
       userId: state.userId,
       articleIds: state.articleIds,
     });
-    console.log(`\n清理：删除点赞 ${cleaned.likes} 条 / 靶子文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`);
+    console.log(`\n清理：删除通知 ${cleaned.notifications} 条 / 收藏 ${cleaned.bookmarks} 条 / 点赞 ${cleaned.likes} 条 / 靶子文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`);
   } catch (error) {
     console.error('清理失败（需手动处理）：', error && error.message ? error.message : error);
     exitCode = 1;

@@ -62,16 +62,41 @@ async function getPrisma() {
 }
 
 /**
- * 清理探针自造数据。顺序不能变：revisions → articles → users
+ * 清理探针自造数据。顺序：notifications → bookmarks → revisions → articles → users
  * （两条 author 外键都是 RESTRICT，先删 user/article 会被 MySQL 1452 拒）。
+ *
+ * 第 8 批通知 + 第 9 批收藏的 article_id / user_id / actor_id 全是 RESTRICT，
+ * 必须最早删：先按 authorId ∈ userIds 收出本趟文章 id（与下面删文章同范围），
+ * 通知/收藏按「文章 id ∪ 账号 id」两个方向删。
  */
 async function cleanupProbeData(usernames, userIds) {
   const prisma = await getPrisma();
   let revisions = 0;
   let articles = 0;
+  let notifications = 0;
+  let bookmarks = 0;
 
   try {
     if (userIds.length > 0) {
+      // 本趟文章 id（含软删行）：notifications / bookmarks 的 article_id 方向靠它。
+      const artRows = await prisma.article.findMany({
+        where: { authorId: { in: userIds } },
+        select: { id: true },
+      });
+      const artIds = artRows.map((r) => r.id);
+
+      const r0 = await prisma.notification.deleteMany({
+        where: {
+          OR: [{ articleId: { in: artIds } }, { userId: { in: userIds } }, { actorId: { in: userIds } }],
+        },
+      });
+      notifications = r0.count;
+
+      const r0b = await prisma.bookmark.deleteMany({
+        where: { OR: [{ articleId: { in: artIds } }, { userId: { in: userIds } }] },
+      });
+      bookmarks = r0b.count;
+
       const r1 = await prisma.articleRevision.deleteMany({ where: { authorId: { in: userIds } } });
       revisions = r1.count;
       const r2 = await prisma.article.deleteMany({ where: { authorId: { in: userIds } } });
@@ -86,7 +111,7 @@ async function cleanupProbeData(usernames, userIds) {
   const { cleanupProbeAccounts } = await import('./lib/tmp-account.mjs');
   const users = await cleanupProbeAccounts(usernames);
 
-  return { revisions, articles, users };
+  return { revisions, articles, users, notifications, bookmarks };
 }
 
 /* ============================ 前置检查 ============================ */
@@ -487,7 +512,7 @@ try {
       [state.userIdA, state.userIdB].filter(Boolean)
     );
     console.log(
-      `\n清理：删除版本 ${cleaned.revisions} 条 / 文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`
+      `\n清理：删除通知 ${cleaned.notifications} 条 / 收藏 ${cleaned.bookmarks} 条 / 版本 ${cleaned.revisions} 条 / 文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`
     );
   } catch (error) {
     console.error('清理失败（需手动处理）：', error && error.message ? error.message : error);

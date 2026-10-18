@@ -72,13 +72,21 @@ export async function cleanupProbeAccounts(usernames) {
     ).map((a) => a.id);
 
     // 外键顺序（全部 RESTRICT，必须按依赖反向删）：
-    // 通知 → 点赞 → 关注 → 评论 → 文章 → 用户。
+    // 通知 → 收藏 → 点赞 → 关注 → 评论 → 文章 → 用户。
     // ⚠️ 第 8 批新增 notifications 表，actor_id / user_id 都指向 users 且 RESTRICT；
     //    之前的探针账号只要在评论 / 点赞 / 关注里当过触发者或接收者，就会在硬删用户时
     //    触发 P2003。这里按 `id: { in: [...] }` 精确清理，绝不误伤真实数据。
+    // ⚠️ 第 9 批新增 bookmarks 表，user_id / article_id 双 RESTRICT（对镜 likes）：
+    //    探针账号只要收藏过文章（自己的或别人的），硬删 user / article 就会被 1452 拦。
+    //    清理条件与 likes 同构（userId OR articleId 双侧），顺序放在 notifications 之后。
     await prisma.notification.deleteMany({
       where: {
         OR: [{ actorId: { in: ids } }, { userId: { in: ids } }, { articleId: { in: articleIds } }],
+      },
+    });
+    await prisma.bookmark.deleteMany({
+      where: {
+        OR: [{ userId: { in: ids } }, { articleId: { in: articleIds } }],
       },
     });
     await prisma.like.deleteMany({

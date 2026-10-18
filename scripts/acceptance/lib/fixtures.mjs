@@ -158,14 +158,18 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
   let comments = 0;
   let articles = 0;
   let notifications = 0;
+  let bookmarks = 0;
   let marked = 0;
   try {
     if (list.length) {
-      // 外键顺序：先通知 → 再点赞 → 再评论 → 最后文章（外键都是 RESTRICT）。
+      // 外键顺序：先通知 → 再收藏 → 再点赞 → 再评论 → 最后文章（外键都是 RESTRICT）。
       // ⚠️ notifications 必须最先删：第 8 批新增 notifications 表，article_id 指向 articles
       // 且 ON DELETE RESTRICT；夹具文章被评论 / 点赞 / 关注会生成通知，漏删这一步
       // `article.deleteMany` 会因 RESTRICT 报 P2003，整个清理失败、留下脏数据。
+      // ⚠️ bookmarks（第 9 批新增）同型：article_id / user_id 双 RESTRICT，
+      // 夹具文章被收藏同样会挡住删文章，紧跟通知之后删。
       notifications = (await prisma.notification.deleteMany({ where: { articleId: { in: list } } })).count;
+      bookmarks = (await prisma.bookmark.deleteMany({ where: { articleId: { in: list } } })).count;
       likes = (await prisma.like.deleteMany({ where: { articleId: { in: list } } })).count;
       comments = (await prisma.comment.deleteMany({ where: { articleId: { in: list } } })).count;
       articles = (await prisma.article.deleteMany({ where: { id: { in: list } } })).count;
@@ -183,12 +187,14 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
     const totalComments = await prisma.comment.count();
     const totalLikes = await prisma.like.count();
     const totalNotifications = await prisma.notification.count();
+    const totalBookmarks = await prisma.bookmark.count();
     return {
       ok: true,
       likes,
       comments,
       articles,
       notifications,
+      bookmarks,
       marked,
       final: {
         users,
@@ -197,6 +203,7 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
         totalComments,
         totalLikes,
         totalNotifications,
+        totalBookmarks,
       },
     };
   } finally {

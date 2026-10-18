@@ -7,7 +7,8 @@
 // 与 probe-like.mjs 同一套规矩：
 //   - 一次性 pwprobe 账号，finally 清理，不碰真实用户数据；
 //   - 点赞 / 软删全用探针**自己发的文章**做靶子；
-//   - 清理顺序 likes → articles → users（外键 RESTRICT，反序会被 1452 拦）；
+//   - 清理顺序 notifications → bookmarks → likes → articles → users（外键全 RESTRICT，
+//     反序会被 1452 拦；第 8 批通知 / 第 9 批收藏两张关系表都引 articles，漏删撞 P2003）；
 //   - 自己起的浏览器自己关（契约 §13-17）。
 //
 // 用法：node scripts/acceptance/probe-liked.mjs
@@ -88,8 +89,31 @@ async function cleanupProbeData({ usernames, userIds, articleIds }) {
   const prisma = await getPrisma();
   let likes = 0;
   let articles = 0;
+  let notifications = 0;
+  let bookmarks = 0;
 
   try {
+    // ⚠️ 第 8 批起 like 服务会发 LIKE 通知（notifications.article_id / actor_id 双
+    // RESTRICT）：A5「次账号点赞主账号的靶子文章」就会产生通知行，不先删就删不掉
+    // 靶子文章（P2003，2026-10-18 实测崩过一次 —— 第 8 批落地后没重跑本探针漏网）。
+    // 第 9 批 bookmarks 同型（双 RESTRICT），本探针不产收藏行，但按同一顺序防将来。
+    // 顺序：notifications → bookmarks → likes → articles，最后 tmp-account 收尾 users。
+    if (articleIds.length > 0 || userIds.length > 0) {
+      const r0 = await prisma.notification.deleteMany({
+        where: {
+          OR: [{ articleId: { in: articleIds } }, { userId: { in: userIds } }, { actorId: { in: userIds } }],
+        },
+      });
+      notifications = r0.count;
+
+      const r0b = await prisma.bookmark.deleteMany({
+        where: {
+          OR: [{ articleId: { in: articleIds } }, { userId: { in: userIds } }],
+        },
+      });
+      bookmarks = r0b.count;
+    }
+
     const r1 = await prisma.like.deleteMany({ where: { userId: { in: userIds } } });
     likes = r1.count;
 
@@ -104,7 +128,7 @@ async function cleanupProbeData({ usernames, userIds, articleIds }) {
 
   const users = await cleanupProbeAccounts(usernames);
 
-  return { likes, articles, users };
+  return { likes, articles, notifications, bookmarks, users };
 }
 
 /* ============================ 前置检查 ============================ */
@@ -609,7 +633,7 @@ try {
       articleIds,
     });
     console.log(
-      `\n清理：删除点赞 ${cleaned.likes} 条 / 靶子文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`
+      `\n清理：删除通知 ${cleaned.notifications} 条 / 收藏 ${cleaned.bookmarks} 条 / 点赞 ${cleaned.likes} 条 / 靶子文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`
     );
   } catch (error) {
     console.error('清理失败（需手动处理）：', error && error.message ? error.message : error);

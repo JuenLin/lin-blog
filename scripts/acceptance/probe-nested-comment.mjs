@@ -69,9 +69,15 @@ async function getPrisma() {
 }
 
 /**
- * 清理探针自造数据。顺序：comments → revisions → articles → users。
+ * 清理探针自造数据。顺序：notifications → bookmarks → comments → revisions → articles → users。
  * comments.article_id 外键是 RESTRICT：**物理删文章前必须先物理删评论**，
  * 且要连软删行一起删（deleteMany 不过滤 deletedAt，天然全删）。
+ *
+ * 第 8 批起 comment 服务会发 COMMENT 通知（notifications.article_id / actor_id
+ * 双 RESTRICT）：B 在 A 的文章下发评论/回复就产通知行，漏删会在删文章时撞
+ * P2003；第 9 批 bookmarks 同型（article_id / user_id 双 RESTRICT）。账号 id
+ * 由 usernames 反查（精确命中本趟注册的账号），把 userId / actor_id 两个方向
+ * 都覆盖到。
  *
  * 【探针清理铁律】只删本趟明确创建的实体：评论/文章按主键 id in 精确删；
  * revisions 的主键由后端分配、探针拿不到，先按 articleId ∈ 本趟文章
@@ -83,8 +89,31 @@ async function cleanupProbeData(usernames, createdCommentIds, createdArticleIds)
   let comments = 0;
   let revisions = 0;
   let articles = 0;
+  let notifications = 0;
+  let bookmarks = 0;
 
   try {
+    // 账号 id 反查：usernames 全是本趟注册的探针账号，按用户名精确命中、不误伤。
+    const accountRows =
+      usernames.length > 0
+        ? await prisma.user.findMany({ where: { username: { in: usernames } }, select: { id: true } })
+        : [];
+    const accountIds = accountRows.map((r) => r.id);
+
+    if (accountIds.length > 0 || createdArticleIds.length > 0) {
+      const r0 = await prisma.notification.deleteMany({
+        where: {
+          OR: [{ articleId: { in: createdArticleIds } }, { userId: { in: accountIds } }, { actorId: { in: accountIds } }],
+        },
+      });
+      notifications = r0.count;
+
+      const r0b = await prisma.bookmark.deleteMany({
+        where: { OR: [{ articleId: { in: createdArticleIds } }, { userId: { in: accountIds } }] },
+      });
+      bookmarks = r0b.count;
+    }
+
     if (createdCommentIds.length > 0) {
       const c1 = await prisma.comment.deleteMany({ where: { id: { in: createdCommentIds } } });
       comments = c1.count;
@@ -111,7 +140,7 @@ async function cleanupProbeData(usernames, createdCommentIds, createdArticleIds)
   const { cleanupProbeAccounts } = await import('./lib/tmp-account.mjs');
   const users = await cleanupProbeAccounts(usernames);
 
-  return { comments, revisions, articles, users };
+  return { comments, revisions, articles, users, notifications, bookmarks };
 }
 
 /* ============================ 前置检查 ============================ */
@@ -399,7 +428,7 @@ try {
       createdArticleIds
     );
     console.log(
-      `\n清理：评论 ${cleaned.comments} 条（仅本趟创建 ${createdCommentIds.length} 条，含软删行）/ 版本 ${cleaned.revisions} 条 / 文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`
+      `\n清理：通知 ${cleaned.notifications} 条 / 收藏 ${cleaned.bookmarks} 条 / 评论 ${cleaned.comments} 条（仅本趟创建 ${createdCommentIds.length} 条，含软删行）/ 版本 ${cleaned.revisions} 条 / 文章 ${cleaned.articles} 篇 / 探针账号 ${cleaned.users} 个`
     );
 
     // 安全自检：① 本趟创建的实体必须全部物理消失；② comments 全表行数只增不减。

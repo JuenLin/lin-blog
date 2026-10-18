@@ -127,9 +127,23 @@ async function getPrisma() {
 
 async function cleanupProbeData({ usernames, userIds, articleIds }) {
   const prisma = await getPrisma();
-  const stat = { likes: 0, articles: 0, users: 0 };
+  const stat = { notifications: 0, bookmarks: 0, likes: 0, articles: 0, users: 0 };
 
   try {
+    // 第 8 批通知 + 第 9 批收藏（article_id / user_id / actor_id 全 RESTRICT）
+    // 必须最早删：本探针当前只自赞（通知被抑制、不产行），按最终顺序防将来。
+    const r0 = await prisma.notification.deleteMany({
+      where: {
+        OR: [{ articleId: { in: articleIds } }, { userId: { in: userIds } }, { actorId: { in: userIds } }],
+      },
+    });
+    stat.notifications = r0.count;
+
+    const r0b = await prisma.bookmark.deleteMany({
+      where: { OR: [{ articleId: { in: articleIds } }, { userId: { in: userIds } }] },
+    });
+    stat.bookmarks = r0b.count;
+
     // 顺序不能反：likes → articles → users。外键是 RESTRICT，反序会被 MySQL 1452 拦。
     const r1 = await prisma.like.deleteMany({ where: { userId: { in: userIds } } });
     stat.likes = r1.count;
@@ -851,7 +865,7 @@ main()
       userIds: accs.map((a) => a.userId).filter(Boolean),
       articleIds,
     });
-    console.log(`已清理：likes ${stat.likes} / articles ${stat.articles} / users ${stat.users}`);
+    console.log(`已清理：notifications ${stat.notifications} / bookmarks ${stat.bookmarks} / likes ${stat.likes} / articles ${stat.articles} / users ${stat.users}`);
 
     // 残留自查：按**本轮精确用户名**查，不按 pwprobe 前缀 ——
     // 前缀会把别的探针（如 probe-password 遗留的 #64）算成自己的残留。
@@ -884,7 +898,7 @@ main()
         userIds: accs.map((a) => a.userId).filter(Boolean),
         articleIds,
       });
-      console.log(`[异常后清理] likes ${stat.likes} / articles ${stat.articles} / users ${stat.users}`);
+      console.log(`[异常后清理] notifications ${stat.notifications} / bookmarks ${stat.bookmarks} / likes ${stat.likes} / articles ${stat.articles} / users ${stat.users}`);
     } catch (ce) {
       console.error('[清理失败] ' + ce.message);
     }

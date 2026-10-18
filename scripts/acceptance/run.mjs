@@ -571,7 +571,7 @@ if (OPT.cleanup && idsToClean.length) {
   const r = await cleanupFixtures(idsToClean, [MARKERS.comment]);
   if (r.ok) {
     console.log(
-      `已清理自己造的数据：文章 ${r.articles} 篇 / 评论 ${r.comments + r.marked} 条 / 点赞 ${r.likes} 条；当前库：users=${r.final.users} 文章(总/可见)=${r.final.totalArticles}/${r.final.visibleArticles} 评论=${r.final.totalComments} likes=${r.final.totalLikes}`
+      `已清理自己造的数据：文章 ${r.articles} 篇 / 评论 ${r.comments + r.marked} 条 / 点赞 ${r.likes} 条 / 通知 ${r.notifications} 条 / 收藏 ${r.bookmarks} 条；当前库：users=${r.final.users} 文章(总/可见)=${r.final.totalArticles}/${r.final.visibleArticles} 评论=${r.final.totalComments} likes=${r.final.totalLikes} 通知=${r.final.totalNotifications} 收藏=${r.final.totalBookmarks}`
     );
     for (const f of ['fixtures.json', 'ui-created.json']) {
       try {

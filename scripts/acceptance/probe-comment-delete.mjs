@@ -405,13 +405,30 @@ try {
     await stopChrome(chromeChild);
   }
 
-  // 清理：comments → articles → users（外键 RESTRICT，反序会被 1452 拦）。
+  // 清理：notifications → bookmarks → comments → articles → users（外键 RESTRICT，反序会被 1452 拦）。
   try {
     const prisma = await getPrisma();
     let comments = 0;
     let articles = 0;
+    let notifications = 0;
+    let bookmarks = 0;
     try {
       if (state.artB != null) {
+        // 第 8 批起 comment 服务会发 COMMENT 通知（notifications.article_id / actor_id
+        // 双 RESTRICT）：A/B/C 在靶子文章下发的评论会产通知行，不先删就删不掉
+        // 靶子文章（P2003）。第 9 批 bookmarks 同型（article_id / user_id 双
+        // RESTRICT），本探针不产收藏，按同一顺序防将来。
+        const probeUserIds = [state.A, state.B, state.C].map((a) => a && a.userId).filter(Boolean);
+        const r0 = await prisma.notification.deleteMany({
+          where: { OR: [{ articleId: state.artB }, { userId: { in: probeUserIds } }, { actorId: { in: probeUserIds } }] },
+        });
+        notifications = r0.count;
+
+        const r0b = await prisma.bookmark.deleteMany({
+          where: { OR: [{ articleId: state.artB }, { userId: { in: probeUserIds } }] },
+        });
+        bookmarks = r0b.count;
+
         comments = (await prisma.comment.deleteMany({ where: { articleId: state.artB } })).count;
         articles = (await prisma.article.deleteMany({ where: { id: state.artB } })).count;
       }
@@ -421,7 +438,7 @@ try {
     }
     const usernames = [state.A, state.B, state.C].filter(Boolean).map((a) => a.username).filter(Boolean);
     const users = usernames.length ? await cleanupProbeAccounts(usernames) : 0;
-    console.log(`\n清理：删除评论 ${comments} 条 / 靶子文章 ${articles} 篇 / 探针账号 ${users} 个`);
+    console.log(`\n清理：删除通知 ${notifications} 条 / 收藏 ${bookmarks} 条 / 评论 ${comments} 条 / 靶子文章 ${articles} 篇 / 探针账号 ${users} 个`);
   } catch (error) {
     console.error('清理失败（需手动处理）：', error && error.message ? error.message : error);
     exitCode = 1;
