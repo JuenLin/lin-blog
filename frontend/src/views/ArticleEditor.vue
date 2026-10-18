@@ -61,6 +61,25 @@
             </el-select>
           </el-form-item>
 
+          <!-- 第 7 批：标签输入。Element Plus 现成能力，零新依赖：
+               multiple 多选 + filterable 可搜 + allow-create 回车即建 + default-first-option
+               （打完字直接回车选中高亮项）+ multiple-limit 5（与后端上限一致）。
+               每篇最多 5 个、单个 1-20 字（前端拦一道，后端 zod 再拦一道）。 -->
+          <el-form-item label="标签（最多 5 个，回车创建）">
+            <el-select
+              v-model="form.tags"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              :multiple-limit="ARTICLE_TAGS_MAX"
+              :reserve-keyword="false"
+              placeholder="输入标签后回车，如 Vue、前端"
+              class="tag-select"
+              data-testid="tag-select"
+            />
+          </el-form-item>
+
           <!-- 第 6 批：自动保存状态条。四态：idle / saving / saved / error。
                idle 是「还没形成草稿」（标题空或正文 < 10 字），不显示具体时间避免误导。 -->
           <div class="autosave-bar" :class="`is-${saveState}`" data-testid="autosave-bar" role="status">
@@ -108,6 +127,9 @@ const CONTENT_MAX = 20000;
 const AUTOSAVE_DELAY = 700;
 // 建草稿门槛（补丁 3 第一道闸，与后端一致）：正文至少 10 个字符（按码点计）。
 const IDLE_GATE_CONTENT_MIN = 10;
+// 第 7 批：标签上限（与后端 zod / docs/API.md 一致，前端写死不抽常量文件）。
+const ARTICLE_TAGS_MAX = 5;
+const TAG_NAME_MAX = 20;
 
 const route = useRoute();
 const router = useRouter();
@@ -124,6 +146,7 @@ const form = reactive({
   title: '',
   content: '',
   category: '未分类',
+  tags: [], // 第 7 批：标签名字符串数组（el-select multiple 直接绑定）
 });
 
 /**
@@ -168,7 +191,8 @@ const pageTitle = computed(() => {
 const submitText = computed(() => (mode.value === 'editPublished' ? '保存' : '发表'));
 
 function snapshotForm() {
-  return JSON.stringify([form.title, form.content, form.category]);
+  // 第 7 批：tags 并入快照 —— 增删标签同样触发自动保存，「改回去」也不重复发。
+  return JSON.stringify([form.title, form.content, form.category, form.tags]);
 }
 
 function nowTime() {
@@ -208,6 +232,7 @@ async function runAutoSave() {
     title: form.title,
     content: form.content,
     category: form.category,
+    tags: form.tags, // 第 7 批：标签随草稿一起自动保存（后端三态：传了=全量替换）
   };
   if (draftId.value !== null) {
     payload.draftId = draftId.value;
@@ -291,6 +316,8 @@ async function load() {
     form.content = data.content;
     // 后端未返回 category（理论不会）时兜底成「未分类」，避免 el-select 出现空白选中项。
     form.category = data.category || '未分类';
+    // 第 7 批：回填标签（详情恒返回数组，无标签为 []）。
+    form.tags = Array.isArray(data.tags) ? data.tags : [];
   } catch (error) {
     // 404 有两种可能：文章真的不存在 / 已软删，或者它是**自己的草稿**（公开详情对
     // DRAFT 一律 404）。先查草稿箱再下结论 —— 草稿箱列表带 content 全文，直接回填。
@@ -324,6 +351,8 @@ async function tryLoadDraft(id) {
     form.title = draft.title || '';
     form.content = draft.content || '';
     form.category = draft.category || '未分类';
+    // 第 7 批：草稿箱带 tags（listDrafts 补 content 同一批加的字段），编辑器直接回填。
+    form.tags = Array.isArray(draft.tags) ? draft.tags : [];
     saveState.value = 'saved';
     savedAt.value = nowTime();
     return true;
@@ -357,6 +386,18 @@ function validate() {
     return false;
   }
 
+  // 第 7 批：标签前端校验（el-select 的 multiple-limit 只拦数量，这里拦格式）。
+  // 空白标签 / 超 20 字直接提示，与后端 zod 同口径，避免发出去才 400。
+  const trimmedTags = form.tags.map((t) => t.trim()).filter((t) => t !== '');
+  if (trimmedTags.some((t) => t.length > TAG_NAME_MAX)) {
+    ElMessage.warning(`单个标签最多 ${TAG_NAME_MAX} 个字`);
+    return false;
+  }
+  if (new Set(trimmedTags).size !== trimmedTags.length) {
+    ElMessage.warning('标签不能重复');
+    return false;
+  }
+
   return true;
 }
 
@@ -387,6 +428,8 @@ async function handleSubmit() {
       content: form.content,
       // 分类：el-select 默认已选「未分类」，省略时后端也会兜底，这里显式带上。
       category: form.category,
+      // 第 7 批：trim + 去空白项后带上（大小写不敏感是 DB 层 ci 行为，原文原样传）。
+      tags: form.tags.map((t) => t.trim()).filter((t) => t !== ''),
     };
 
     if (mode.value === 'editPublished') {
@@ -447,7 +490,7 @@ function goBack() {
 //   2. 与「上次已发送」快照一致的变化（改回去）不重复发；
 //   3. leaving 之后（发布/存草稿跳转中）不再发。
 watch(
-  () => [form.title, form.content, form.category],
+  () => [form.title, form.content, form.category, form.tags],
   () => {
     if (!hydrated.value || leaving) return;
     if (snapshotForm() === lastSentSnapshot) return;
@@ -486,6 +529,11 @@ onMounted(load);
 .editor-forbidden-foot {
   margin-top: 16px;
   text-align: center;
+}
+
+/* 第 7 批：标签选择器给足宽度（多选 chip 会换行，别让 el-select 默认宽度太窄）。 */
+.tag-select {
+  width: 100%;
 }
 
 /* 第 6 批：自动保存状态条。弱化视觉（它不是主操作，是背景信息），

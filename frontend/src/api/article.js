@@ -104,3 +104,15 @@ export function listRevisions(id) {
 export function restoreArticle(id, revisionId) {
   return request.post(`/articles/${id}/restore`, { revisionId });
 }
+
+/**
+ * 热门标签列表。对应 docs/API.md 的 GET /api/tags（第 7 批新增）。无需登录。
+ *
+ * 返回 { list: [{ id, name, articleCount }] }，按 articleCount desc → name asc。
+ * articleCount 只数已发布且未软删的文章（草稿 / 软删不计入）。
+ *
+ * @param {object} [params] { limit } 默认 20，上限 100
+ */
+export function listHotTags(params) {
+  return request.get('/tags', { params });
+}

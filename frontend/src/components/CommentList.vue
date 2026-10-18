@@ -23,61 +23,145 @@
       <template v-else>
         <!-- B2：刷新期间旧评论留在原地，变淡 + 不可交互 -->
         <div class="comment-items" :class="{ 'is-refreshing': loading }">
-          <div v-for="item in list" :key="item.id" class="comment-item">
-            <div class="comment-item-head">
-              <!-- 入口：评论者头像+昵称可点进 /user/:id。评论区没有外层 router-link，
-                   这里不用 @click.stop 也不会误触发跳转。author 缺失时退化为纯展示（不可点）。 -->
-              <span
-                class="comment-author-link"
-                :class="{ 'is-clickable': commentAuthorId(item) != null }"
-                :role="commentAuthorId(item) != null ? 'link' : null"
-                :tabindex="commentAuthorId(item) != null ? 0 : null"
-                @click="goToProfile(commentAuthorId(item))"
-                @keydown.enter="goToProfile(commentAuthorId(item))"
-              >
-                <!-- 头像两种形态（第九批）：有 avatar 外链渲染 <img>，否则回退色块 + 首字。
-                     列表里每个作者是独立一条，所以失败状态按评论 id 记在 brokenAvatars 里，
-                     不能用单个 ref ——否则一个作者的图片加载失败会让整页都显示成色块。 -->
-                <img
-                  v-if="commentAvatar(item).type === 'image' && !brokenAvatars[item.id]"
-                  class="comment-avatar-img"
-                  :src="commentAvatar(item).src"
-                  :alt="authorName(item)"
-                  @error="markAvatarBroken(item)"
-                />
+          <!-- 第 7 批：v-for 的数据源从扁平 list 换成组树后的 tree.roots。
+               树是纯展示层概念：接口保持扁平分页（契约只增字段不改结构），
+               这里按 parentId 组装两层；父评论不在当前页的回复按顶楼降级（isOrphan）。 -->
+          <template v-for="item in tree.roots" :key="item.id">
+            <div class="comment-item">
+              <div class="comment-item-head">
+                <!-- 入口：评论者头像+昵称可点进 /user/:id。评论区没有外层 router-link，
+                     这里不用 @click.stop 也不会误触发跳转。author 缺失时退化为纯展示（不可点）。 -->
                 <span
-                  v-else
-                  class="comment-avatar"
-                  :style="{ backgroundColor: commentAvatar(item).color }"
+                  class="comment-author-link"
+                  :class="{ 'is-clickable': commentAuthorId(item) != null }"
+                  :role="commentAuthorId(item) != null ? 'link' : null"
+                  :tabindex="commentAuthorId(item) != null ? 0 : null"
+                  @click="goToProfile(commentAuthorId(item))"
+                  @keydown.enter="goToProfile(commentAuthorId(item))"
                 >
-                  {{ commentAvatar(item).text }}
+                  <!-- 头像两种形态（第九批）：有 avatar 站内路径渲染 <img>，否则回退色块 + 首字。
+                       列表里每个作者是独立一条，所以失败状态按评论 id 记在 brokenAvatars 里，
+                       不能用单个 ref ——否则一个作者的图片加载失败会让整页都显示成色块。 -->
+                  <img
+                    v-if="commentAvatar(item).type === 'image' && !brokenAvatars[item.id]"
+                    class="comment-avatar-img"
+                    :src="commentAvatar(item).src"
+                    :alt="authorName(item)"
+                    @error="markAvatarBroken(item)"
+                  />
+                  <span
+                    v-else
+                    class="comment-avatar"
+                    :style="{ backgroundColor: commentAvatar(item).color }"
+                  >
+                    {{ commentAvatar(item).text }}
+                  </span>
+                  <span class="comment-author">
+                    {{ authorName(item) }}
+                    <!-- 第 5 批：管理员徽章挂在作者名旁（author.role 透出）。 -->
+                    <UserBadge :role="item.author?.role" />
+                  </span>
                 </span>
-                <span class="comment-author">
-                  {{ authorName(item) }}
-                  <!-- 第 5 批：管理员徽章挂在作者名旁（author.role 透出）。 -->
-                  <UserBadge :role="item.author?.role" />
-                </span>
-              </span>
-              <!-- 方案 D：评论时间同样改相对时间（列表里绝对时间又长又占位），
-                   悬停 tooltip 给绝对时间。 -->
-              <el-tooltip
-                :content="formatAbsoluteTime(item.createdAt)"
-                placement="top"
-              >
-                <span class="comment-time">{{ formatRelativeTime(item.createdAt) }}</span>
-              </el-tooltip>
-              <el-button
-                v-if="canDelete(item)"
-                class="comment-delete-btn"
-                link
-                type="danger"
-                size="small"
-                @click="handleDelete(item)"
-              >删除</el-button>
-            </div>
+                <!-- 方案 D：评论时间同样改相对时间（列表里绝对时间又长又占位），
+                     悬停 tooltip 给绝对时间。 -->
+                <el-tooltip
+                  :content="formatAbsoluteTime(item.createdAt)"
+                  placement="top"
+                >
+                  <span class="comment-time">{{ formatRelativeTime(item.createdAt) }}</span>
+                </el-tooltip>
+                <!-- 第 7 批：「回复」按钮。仅顶层评论显示（parentId 为 null）——
+                     孤儿降级项（isOrphan）的父评论不在本页，回复它会违反两层硬限制，
+                     后端会拦，前端干脆不给入口。未登录不显示（登录后 fetchMe 完成自然出现）。 -->
+                <el-button
+                  v-if="canReply(item)"
+                  class="comment-reply-btn"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="startReply(item)"
+                >回复</el-button>
+                <el-button
+                  v-if="canDelete(item)"
+                  class="comment-delete-btn"
+                  link
+                  type="danger"
+                  size="small"
+                  @click="handleDelete(item)"
+                >删除</el-button>
+              </div>
 
-            <div class="comment-content">{{ item.content }}</div>
-          </div>
+              <!-- 第 7 批：孤儿降级前缀 —— 父评论不在当前页（分页拆树），靠后端给的
+                   replyToAuthor 渲染「回复 @某某」，用户不会莫名其妙。 -->
+              <div class="comment-content">
+                <span v-if="item.isOrphan" class="comment-reply-prefix">回复 @{{ item.replyToAuthor }}：</span>{{ item.content }}
+              </div>
+
+              <!-- 第 7 批：子回复区（缩进）。两层硬限制下这里只会有一层，不再递归。 -->
+              <div v-if="item.replies.length" class="comment-replies">
+                <div v-for="reply in item.replies" :key="reply.id" class="comment-item comment-reply">
+                  <div class="comment-item-head">
+                    <span
+                      class="comment-author-link"
+                      :class="{ 'is-clickable': commentAuthorId(reply) != null }"
+                      :role="commentAuthorId(reply) != null ? 'link' : null"
+                      :tabindex="commentAuthorId(reply) != null ? 0 : null"
+                      @click="goToProfile(commentAuthorId(reply))"
+                      @keydown.enter="goToProfile(commentAuthorId(reply))"
+                    >
+                      <img
+                        v-if="commentAvatar(reply).type === 'image' && !brokenAvatars[reply.id]"
+                        class="comment-avatar-img"
+                        :src="commentAvatar(reply).src"
+                        :alt="authorName(reply)"
+                        @error="markAvatarBroken(reply)"
+                      />
+                      <span
+                        v-else
+                        class="comment-avatar"
+                        :style="{ backgroundColor: commentAvatar(reply).color }"
+                      >
+                        {{ commentAvatar(reply).text }}
+                      </span>
+                      <span class="comment-author">
+                        {{ authorName(reply) }}
+                        <UserBadge :role="reply.author?.role" />
+                      </span>
+                    </span>
+                    <el-tooltip :content="formatAbsoluteTime(reply.createdAt)" placement="top">
+                      <span class="comment-time">{{ formatRelativeTime(reply.createdAt) }}</span>
+                    </el-tooltip>
+                    <el-button
+                      v-if="canDelete(reply)"
+                      class="comment-delete-btn"
+                      link
+                      type="danger"
+                      size="small"
+                      @click="handleDelete(reply)"
+                    >删除</el-button>
+                  </div>
+                  <div class="comment-content">{{ reply.content }}</div>
+                </div>
+              </div>
+
+              <!-- 第 7 批：回复输入框（行内展开，不弹窗）。只挂在被点击回复的顶层评论下；
+                   成功后回第一页（与顶层评论发表后的 reload 行为一致）。 -->
+              <div v-if="replyTargetId === item.id" class="comment-reply-editor">
+                <el-input
+                  v-model="replyDraft"
+                  type="textarea"
+                  :rows="2"
+                  maxlength="500"
+                  show-word-limit
+                  :placeholder="`回复 @${authorName(item)}（1–500 字）`"
+                />
+                <div class="comment-reply-editor-foot">
+                  <el-button type="primary" size="small" :loading="replySubmitting" @click="submitReply(item)">回复</el-button>
+                  <el-button size="small" @click="cancelReply">取消</el-button>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <Pagination
@@ -93,11 +177,11 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { listComments, deleteComment } from '../api/comment.js';
+import { listComments, deleteComment, createComment } from '../api/comment.js';
 import { useUserStore } from '../stores/user.js';
-import { ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 import EmptyState from './EmptyState.vue';
 import Pagination from './Pagination.vue';
@@ -127,6 +211,46 @@ const loading = ref(false);
 
 // B2：区分「首次加载」和「刷新」—— 骨架屏只在首次出现。
 const initialized = ref(false);
+
+/* ---------------- 第 7 批：扁平列表 → 两层树（纯展示层组装） ---------------- */
+
+/**
+ * 按 parentId 组装两层树。接口保持扁平（契约不破坏、探针兼容），树在这里组装：
+ *   - parentId 为 null → 顶楼，子回复挂 node.replies；
+ *   - parentId 非空且父在本页 → 挂到父节点 replies（缩进渲染）；
+ *   - parentId 非空但父**不在本页**（分页把父子拆开）→ isOrphan 降级为顶楼，
+ *     模板用「回复 @replyToAuthor」前缀说明语境，不给回复按钮（再回复会违反两层限制）。
+ * 扁平 list 本身按 createdAt desc 排，组树保持原有相对顺序（回复天然在父之后）。
+ */
+const tree = computed(() => {
+  const items = list.value;
+  const byId = new Map();
+  const roots = [];
+
+  for (const item of items) {
+    byId.set(item.id, { ...item, replies: [], isOrphan: false });
+  }
+
+  for (const item of items) {
+    const node = byId.get(item.id);
+
+    if (item.parentId == null) {
+      roots.push(node);
+      continue;
+    }
+
+    const parent = byId.get(item.parentId);
+    if (parent) {
+      parent.replies.push(node);
+    } else {
+      // 父不在当前页：降级为顶楼（保序挂尾），渲染「回复 @某某」前缀。
+      node.isOrphan = true;
+      roots.push(node);
+    }
+  }
+
+  return { roots };
+});
 
 // 入口：取评论者展示名 / id。API 保证内嵌 author（docs/API.md），
 // 这里仍做空值兜底，避免 author 缺失时整页报错。
@@ -169,6 +293,56 @@ function goToProfile(id) {
   router.push({ name: 'user-profile', params: { id } });
 }
 
+/* ---------------- 第 7 批：回复 ---------------- */
+
+// 正在回复的顶层评论 id（null = 没有展开任何回复框）。
+const replyTargetId = ref(null);
+const replyDraft = ref('');
+const replySubmitting = ref(false);
+
+// 回复权限：已登录 + 顶层评论（parentId 为 null）。
+// 孤儿降级项（isOrphan）parentId 非空，天然被排除 —— 两层硬限制的前端表达。
+function canReply(item) {
+  return userStore.isLogin && item.parentId == null;
+}
+
+function startReply(item) {
+  replyTargetId.value = item.id;
+  replyDraft.value = '';
+}
+
+function cancelReply() {
+  replyTargetId.value = null;
+  replyDraft.value = '';
+}
+
+// 提交回复：parentId 指向被回复的顶层评论。成功后回第一页 reload
+//（与顶层评论发表后的行为一致 —— 新回复出现在树上，用户能在第一页找到）。
+async function submitReply(item) {
+  const content = replyDraft.value.trim();
+
+  if (!content) {
+    ElMessage.warning('回复内容不能为空');
+    return;
+  }
+
+  replySubmitting.value = true;
+  try {
+    await createComment({
+      articleId: props.articleId,
+      content,
+      parentId: item.id,
+    });
+    ElMessage.success('回复成功');
+    cancelReply();
+    reload();
+  } catch (error) {
+    // 错误提示由 request.js 拦截器统一抛出（含 40000 两层限制等）。
+  } finally {
+    replySubmitting.value = false;
+  }
+}
+
 // 删除权限：评论作者本人，或文章作者（文章未软删时）。
 // 注意先判 !me 返回 false —— 登录后刷新页面时 fetchMe() 异步，user 在其返回前是 null，
 // 此时删除按钮短暂不显示，属可接受行为（用户感知不到），等 fetchMe 完成按钮自然出现，非 bug。
@@ -184,6 +358,10 @@ function canDelete(item) {
 // 直接 await deleteComment：request.js 拦截器约定 code !== 0 抛 Error（走外层 catch 统一提示），
 // 成功时 res 即 data（此处为 null），故不判 code（判 res.code 会访问 null.code 抛 TypeError 被吞）。
 // 等删除响应成功后才动本地 state（正常更新，非乐观更新），不重拉列表（避免非首页删除弹回第一页）。
+//
+// 第 7 批树化更新：删除顶层评论时后端同事务级联软删其全部子评论，
+// 前端把「本页内可见的子回复」一并移除、total 减去相同数量（后端口径与前端一致，
+// docs/API.md DELETE /api/comments/:id 的「级联软删」小节）；删回复只减 1。
 async function handleDelete(item) {
   try {
     await ElMessageBox.confirm('删除后评论将不再可见，确认删除？', '提示', {
@@ -196,11 +374,19 @@ async function handleDelete(item) {
   }
   try {
     await deleteComment(item.id);
-    const idx = list.value.findIndex((c) => c.id === item.id);
-    if (idx !== -1) list.value.splice(idx, 1);
-    total.value = Math.max(0, total.value - 1);
+
+    const isRoot = item.parentId == null;
+    // 本页内该评论的直接子回复数（两层硬限制：只可能有直接子级）。
+    const removedReplies = isRoot
+      ? list.value.filter((c) => c.parentId === item.id).length
+      : 0;
+
+    list.value = list.value.filter(
+      (c) => c.id !== item.id && c.parentId !== item.id
+    );
+    total.value = Math.max(0, total.value - 1 - removedReplies);
   } catch (error) {
-    // 错误提示由 request.js 拦截器统一抛出；取消以外的异常也走这里，无需额外处理。
+    // 错误提示由 request.js 的拦截器统一抛出；取消以外的异常也走这里，无需额外处理。
   }
 }
 
@@ -229,6 +415,8 @@ async function load() {
     Object.keys(brokenAvatars).forEach((key) => {
       delete brokenAvatars[key];
     });
+    // 换页 / 刷新后收起回复框（被回复对象可能已不在当前页）。
+    cancelReply();
   }
 }
 
@@ -344,9 +532,15 @@ defineExpose({
   cursor: help; /* 方案 D：走 tooltip 看绝对时间 */
 }
 
-/* 删除按钮贴 .comment-item-head 行尾（head 是 flex，margin-left:auto 推右） */
-.comment-delete-btn {
+/* 删除按钮贴 .comment-item-head 行尾（head 是 flex，margin-left:auto 推右）。
+   第 7 批：「回复」按钮也推右（margin-left:auto），「删除」跟在它后面——
+   两个按钮成组贴尾；只有删除时删除按钮自然推到行尾（回复按钮 v-if 不渲染）。 */
+.comment-reply-btn {
   margin-left: auto;
+}
+
+.comment-delete-btn {
+  margin-left: 0;
 }
 
 .comment-content {
@@ -355,5 +549,51 @@ defineExpose({
   color: var(--text-strong);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 第 7 批：孤儿降级前缀（「回复 @某某」），弱化色避免喧宾夺主。 */
+.comment-reply-prefix {
+  color: var(--text-muted);
+}
+
+/* 第 7 批：子回复区。左缩进 + 竖线引导，视觉上明确「这些是上面这条的回复」。 */
+.comment-replies {
+  margin: 4px 0 0 32px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-light);
+}
+
+.comment-replies .comment-item {
+  padding: 10px 0 6px;
+}
+
+.comment-replies .comment-item:last-of-type {
+  border-bottom: none;
+}
+
+.comment-replies .comment-avatar,
+.comment-replies .comment-avatar-img {
+  width: 20px;
+  height: 20px;
+}
+
+.comment-replies .comment-content {
+  font-size: 13px;
+}
+
+/* 第 7 批：行内回复输入框。挂在被回复评论下方，浅底色块与正文区分。 */
+.comment-reply-editor {
+  margin: 10px 0 4px;
+  padding: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-panel);
+  background: rgba(var(--brand-rgb), 0.03);
+}
+
+.comment-reply-editor-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
 }
 </style>

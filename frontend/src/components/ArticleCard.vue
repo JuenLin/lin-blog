@@ -61,6 +61,21 @@
     <h2 class="article-title">{{ article.title }}</h2>
     <p class="article-summary">{{ article.summary }}</p>
 
+    <!-- 第 7 批：标签行。空数组不渲染整行（没标签的文章不留空隙）。
+         chip 可点：跳广场 ?tag= 筛选。整卡是 router-link（真实 <a>），
+         所以沿用作者入口的写法：span role=link + @click.prevent.stop（拦原生导航 + 拦冒泡）+ keydown。 -->
+    <div v-if="tagNames.length" class="article-card-tags">
+      <span
+        v-for="t in tagNames"
+        :key="t"
+        class="article-tag-chip"
+        role="link"
+        tabindex="0"
+        @click.prevent.stop="goTag(t)"
+        @keydown.enter.prevent.stop="goTag(t)"
+      ># {{ t }}</span>
+    </div>
+
     <!-- 第十批：点赞。
          整张卡是 router-link（渲染成真实 <a href>），所以这里必须 @click.prevent.stop ——
          和作者头像入口是同一个坑：.stop 只拦冒泡，拦不住 <a> 的**原生导航**，
@@ -116,6 +131,15 @@ const authorName = computed(() => {
 
   return author.nickname || author.username || '匿名';
 });
+
+// 第 7 批：标签名数组。article.tags 缺失（探针造的对象 / 老数据）时兜底为空数组，
+// 与「无标签不渲染整行」的模板条件配合，不会整卡报错。
+const tagNames = computed(() => (Array.isArray(props.article.tags) ? props.article.tags : []));
+
+// 点击标签 chip → 广场按该标签筛选（与 category / keyword 正交）。
+function goTag(name) {
+  router.push({ name: 'home', query: { tag: name } });
+}
 
 // 头像形态（第九批）：有 avatar 外链渲染 <img>，否则回退色块 + 首字。
 // resolveAvatar 内部用 truthy 检查，**avatar 键不存在时**（探针造的对象就没有这个键）
@@ -430,6 +454,35 @@ async function toggleLike() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* 第 7 批：标签行。轻量胶囊（# 前缀弱化「这是检索入口」的暗示），
+   hover / 聚焦给品牌色反馈；选中态由广场页（Home）管理，卡片内不做选中态。 */
+.article-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.article-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
+}
+
+.article-tag-chip:hover,
+.article-tag-chip:focus-visible {
+  color: var(--brand-start);
+  border-color: rgba(var(--brand-rgb), 0.4);
+  background: rgba(var(--brand-rgb), 0.06);
+  outline: none;
 }
 
 /* 第十批：卡片底栏。摘要上方是标题 / 摘要，点赞单独一行放右下，

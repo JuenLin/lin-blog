@@ -90,6 +90,21 @@
           </template>
         </div>
 
+        <!-- 第 7 批：标签行。无标签不渲染；chip 可点 → 广场 ?tag= 筛选。
+             详情页不在 router-link 内，@click 直接跳即可（带 role=link + keydown 保键盘可达）。 -->
+        <div v-if="articleTags.length" class="article-detail-tags" data-testid="article-tags">
+          <span class="article-detail-tags-label">标签</span>
+          <span
+            v-for="t in articleTags"
+            :key="t"
+            class="article-detail-tag-chip"
+            role="link"
+            tabindex="0"
+            @click="goTag(t)"
+            @keydown.enter.prevent="goTag(t)"
+          ># {{ t }}</span>
+        </div>
+
         <!-- 第 5 批：右侧悬浮目录（el-anchor，零新增依赖）。
              标题少于 2 个时组件自身不渲染。fixed 定位，DOM 位置不影响视觉。 -->
         <ArticleToc v-if="article.content" :content="article.content" />
@@ -282,6 +297,16 @@ const authorName = computed(() => {
 
   return author.nickname || author.username || '匿名';
 });
+
+// 第 7 批：标签名数组（后端恒返回数组，无标签为 []；缺失兜底防探针造对象炸模板）。
+const articleTags = computed(() =>
+  article.value && Array.isArray(article.value.tags) ? article.value.tags : []
+);
+
+// 点击标签 → 广场按该标签筛选（整页跳转，详情页状态不保留）。
+function goTag(name) {
+  router.push({ name: 'home', query: { tag: name } });
+}
 
 // user 可能为 null（未登录，或刷新后 AppHeader 的 fetchMe 还没回来），此时不显示操作入口。
 const isAuthor = computed(() => {
@@ -542,6 +567,41 @@ onBeforeUnmount(() => {
   margin-bottom: 24px;
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* 第 7 批：标签行。与卡片 chip 同视觉语言（# 前缀胶囊），hover 给品牌色反馈；
+   负 margin 让标签行与 meta 行贴紧（meta 自带 24px 下边距）。 */
+.article-detail-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -14px 0 20px;
+}
+
+.article-detail-tags-label {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.article-detail-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
+}
+
+.article-detail-tag-chip:hover,
+.article-detail-tag-chip:focus-visible {
+  color: var(--brand-start);
+  border-color: rgba(var(--brand-rgb), 0.4);
+  background: rgba(var(--brand-rgb), 0.06);
+  outline: none;
 }
 
 .article-detail-dot {

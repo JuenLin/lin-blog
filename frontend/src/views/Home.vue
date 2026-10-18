@@ -34,6 +34,32 @@
         <el-button size="small" text type="primary" @click="clearKeyword">清空搜索</el-button>
       </div>
 
+      <!-- 第 7 批：标签筛选提示条（与搜索提示条同款式）。 -->
+      <div v-if="tag" class="home-search-tip">
+        <span class="home-search-tip-text">
+          「<strong class="home-search-tip-kw">{{ tag }}</strong>」标签下的文章，共 {{ total }} 篇
+        </span>
+        <el-button size="small" text type="primary" @click="clearTag">清除标签筛选</el-button>
+      </div>
+
+      <!-- 第 7 批：热门标签行。数据来自 GET /api/tags（articleCount 只数已发布文章）。
+           点击 chip = 设置 ?tag= 筛选（与 category / keyword 正交叠加）；
+           再次点击当前选中的 chip = 取消筛选。加载失败整行隐藏（增值信息，不报错打扰）。 -->
+      <div v-if="hotTags.length" class="home-tags-row" data-testid="hot-tags-row">
+        <span class="home-tags-label">热门标签</span>
+        <button
+          v-for="t in hotTags"
+          :key="t.id"
+          type="button"
+          class="home-tag-chip"
+          :class="{ 'is-active': tag === t.name }"
+          @click="handleTagChipClick(t.name)"
+        >
+          {{ t.name }}
+          <span class="home-tag-count">{{ t.articleCount }}</span>
+        </button>
+      </div>
+
       <!-- B1：骨架屏贴形 —— 骨架的外框（内边距 / 圆角 / 边框 / 阴影）跟 ArticleCard 一模一样，
            所以数据到位后只有内容在变，外框不动，不会有位移。
            B2：骨架只在「首次加载」出现；翻页 / 切 Tab 时保留旧列表（见 .home-list.is-refreshing）。 -->
@@ -96,7 +122,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { listArticles } from '../api/article.js';
+import { listArticles, listHotTags } from '../api/article.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleCard from '../components/ArticleCard.vue';
 import EmptyState from '../components/EmptyState.vue';
@@ -138,6 +164,26 @@ const category = computed(() => {
   return typeof raw === 'string' && CATEGORIES.includes(raw) ? raw : '';
 });
 
+// 第 7 批：标签筛选。与 keyword / category 同套路 —— URL ?tag= 是唯一数据源，
+// 刷新 / 前进后退 / 分享链接行为一致。大小写敏感（后端不折叠，前端原样传）。
+const tag = computed(() => {
+  const value = route.query.tag;
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : '';
+});
+
+// 热门标签数据。加载失败静默隐藏整行（增值信息，不值得弹错误提示）。
+const hotTags = ref([]);
+
+async function loadHotTags() {
+  try {
+    const data = await listHotTags({ limit: 20 });
+    hotTags.value = (data && data.list) || [];
+  } catch {
+    hotTags.value = [];
+  }
+}
+
 // B2：区分「首次加载」和「刷新」。首次才用骨架屏，之后一律保留旧列表。
 const initialized = ref(false);
 
@@ -161,6 +207,8 @@ async function load() {
       keyword: keyword.value || undefined,
       // 分类筛选：与 keyword 正交，可叠加。空串（「全部分类」）等同不过滤。
       category: category.value || undefined,
+      // 第 7 批：标签筛选，与 keyword / category 三者正交可叠加。空值不带参数。
+      tag: tag.value || undefined,
     });
 
     list.value = data.list;
@@ -216,7 +264,29 @@ function handleCategoryChange(val) {
   router.push({ name: 'home', query });
 }
 
-onMounted(load);
+// 第 7 批：热门标签 chip 点击。当前已选中 → 取消筛选（toggle）；未选中 → 设为筛选。
+// 与 keyword / category 互不清除（正交）。chip 点击回第 1 页由 watch(tag) 统一处理。
+function handleTagChipClick(name) {
+  const query = { ...route.query };
+  if (tag.value === name) {
+    delete query.tag;
+  } else {
+    query.tag = name;
+  }
+  router.push({ name: 'home', query });
+}
+
+// 清除标签筛选：只删 tag，保留 keyword / category。
+function clearTag() {
+  const query = { ...route.query };
+  delete query.tag;
+  router.push({ name: 'home', query });
+}
+
+onMounted(() => {
+  load();
+  loadHotTags();
+});
 
 // ⑦ 搜索词变化（含浏览器前进后退）→ 回到第 1 页重新拉。
 // 刻意不复用 handleTabChange：那会把 activeTab 一起重置，而搜索时 Tab 排序是要保留的。
@@ -228,6 +298,12 @@ watch(keyword, () => {
 // 分类变化（含浏览器前进后退）→ 回到第 1 页重新拉。刻意不与 keyword watch 合并，
 // 两者独立保留对方的筛选条件（正交）。
 watch(category, () => {
+  page.value = 1;
+  load();
+});
+
+// 第 7 批：标签变化 → 回到第 1 页重新拉（标签筛选变窄后原页码可能越界，同 keyword 理由）。
+watch(tag, () => {
   page.value = 1;
   load();
 });
@@ -316,6 +392,59 @@ watch(category, () => {
 .home-search-tip-kw {
   color: var(--brand-start);
   font-weight: 600;
+}
+
+/* 第 7 批：热门标签行。chip 用原生 button（可聚焦、可键盘操作），
+   样式对齐 ArticleCard 的元数据 chip 视觉；选中态用品牌色浅底。 */
+.home-tags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 16px;
+}
+
+.home-tags-label {
+  font-size: 13px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.home-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-regular);
+  cursor: pointer;
+  transition: background var(--transition-base), border-color var(--transition-base), color var(--transition-base);
+}
+
+.home-tag-chip:hover,
+.home-tag-chip:focus-visible {
+  border-color: rgba(var(--brand-rgb), 0.4);
+  color: var(--brand-start);
+  outline: none;
+}
+
+.home-tag-chip.is-active {
+  background: rgba(var(--brand-rgb), 0.1);
+  border-color: rgba(var(--brand-rgb), 0.4);
+  color: var(--brand-start);
+  font-weight: 600;
+}
+
+.home-tag-count {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.home-tag-chip.is-active .home-tag-count {
+  color: var(--brand-start);
 }
 
 /* B2：刷新中的旧列表 —— 变淡 + 不可点。
