@@ -1,3 +1,5 @@
+<!-- 文档：ARCHITECTURE.md | 定位：架构说明 | 核心：前后端分层、请求链路、ER 图与前端路由组件树。 -->
+
 # 系统架构图（ARCHITECTURE）
 
 > 本文档用 Mermaid 画「关系」，不重复 API.md / README / DB.md 的字段清单。  

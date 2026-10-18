@@ -1,6 +1,8 @@
+<!-- 文档：README.md | 定位：项目总入口 | 核心：博客项目总览、环境要求、启动步骤与当前状态速查。 -->
+
 # workbuddy
 
-Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` 四张表由 6 个迁移创建，16 个接口已实现并通过自动化验收；前端 7 个页面（登录、首页广场、文章详情、发布/编辑、评论、修改密码、编辑资料）已可运行。已完成到哪一步见下方「当前状态」。
+Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` / `follows` / `notifications` / `tags` / `bookmarks` / `article_revisions` 九张表由 14 个迁移创建，47 个接口已实现并通过自动化验收；前端 12 个页面（登录、首页广场、文章详情、发布/编辑、个人主页、编辑资料、修改密码、关注列表、设置壳、管理后台四页）已可运行。已完成到哪一步见下方「当前状态」。
 
 协作约束见 [`docs/AI_CONTRACT.md`](./docs/AI_CONTRACT.md)，接口以 [`docs/API.md`](./docs/API.md) 为准，表结构以 [`docs/DB.md`](./docs/DB.md) 为准。
 
@@ -15,9 +17,10 @@ Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/he
 ```text
 frontend/   Vue 3 + Vite，开发端口 5173
 backend/    Node.js + Express + Prisma，开发端口 3000
-  ├─ prisma/migrations/   6 个迁移文件，schema 与库的唯一真相
+  ├─ prisma/migrations/   14 个迁移文件，schema 与库的唯一真相
   └─ uploads/             头像落盘目录，运行时数据，不进 git
-docs/       共享契约：AI_CONTRACT.md / API.md / DB.md / CODING_STYLE.md / ACCEPTANCE.md
+docs/       共享契约与架构：AI_CONTRACT.md / API.md / DB.md / CODING_STYLE.md / ACCEPTANCE.md / ARCHITECTURE.md / ROADMAP.md / AGENTS.md
+  └─ history/            历史交接单归档（如 TASK_HANDOFF_batch10.md）
 scripts/acceptance/       自动化验收脚本（零新增依赖）
 ```
 
@@ -161,21 +164,17 @@ EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_en
 - [x] 前端能启动：`npm run dev`
 - [x] 后端能启动：`npm run dev`
 - [x] MySQL 能连接（`workbuddy_dev`，8.0.46，utf8mb4_unicode_ci）
-- [x] Prisma 迁移已应用，共 6 个：`20260929123151_init`（users）、`20260929144738_blog_articles_comments`（articles / comments）、`20260929145244_comments_idx_article_created`（评论索引调整）、`20261003080727_add_user_avatar_bio`（users.avatar / bio）、`20261003140221_add_user_likes`（likes 表）、`20261004145107_add_article_category`（articles.category）
+- [x] Prisma 迁移已应用，共 14 个：`20260929123151_init`（users）、`20260929144738_blog_articles_comments`（articles / comments）、`20260929145244_comments_idx_article_created`（评论索引调整）、`20261003080727_add_user_avatar_bio`（users.avatar / bio）、`20261003140221_add_user_likes`（likes 表）、`20261004145107_add_article_category`（articles.category）、`20261011083029_add_follows`（follows 表）、`20261017063642_add_user_role_status`（users.role / status，MySQL 8 INSTANT 回填）、`20261017125847_add_article_status`（articles.status 草稿）、`20261017130010_add_article_revisions`（版本快照表）、`20261017130223_add_article_status_idx`（status 索引）、`20261018014846_add_tags_and_article_tags`（标签多对多）、`20261018042009_add_notifications`（通知表）、`20261018053624_add_bookmarks_and_view_count`（bookmarks 表 + articles.view_count）
 - [x] 注册 / 登录 / `/api/auth/me` 跑通，拿到 token 且鉴权生效
 - [x] `docs/API.md`：auth + health 通用接口 + 文章 / 评论 / 点赞 / 用户业务接口，含未实现接口的显式登记
-- [x] `docs/DB.md`：users / articles / comments / likes 四表说明、外键命名规则、新增业务表流程、头像文件存储（第十一批）、category 分类列
-- [x] 后端接口共 16 个：文章 5（列表 / 详情 / 发布 / 编辑 / 删除）+ 评论 2（发表 / 列表）+ 点赞 2（点赞 / 取消）+ 用户 2（改资料 / 传头像）+ health 1 + auth 4（注册 / 登录 / me / 改密码）
-- [x] 前端 7 个页面：`Login` / `Home`（广场列表 + 最新/热门 Tab + 分类筛选）/ `ArticleDetail` / `ArticleEditor`（发布与编辑共用）/ `UserProfile` / `ProfileEdit` / `ChangePassword`
+- [x] `docs/DB.md`：users / articles / comments / likes / follows / notifications / tags / bookmarks / article_revisions 九表说明、外键命名规则、新增业务表流程、头像文件存储（第十一批）、category 分类列
+- [x] 后端接口共 47 个：文章 5（列表 / 详情 / 发布 / 编辑 / 删除）+ 评论 3（发表 / 列表 / 删除）+ 点赞 3（点赞 / 取消 / 查询是否已赞）+ 收藏 4（收藏 / 取消 / 查询是否已收藏 / 我的收藏列表）+ 阅读 1（`POST /view`，免登录判重）+ 用户 9（改资料 / 传头像 / 用户详情 / 他的文章列表 / 我的点赞列表 / 关注 / 取消关注 / 粉丝列表 / 关注列表）+ 草稿与版本 5（auto-save / 草稿箱 / 删草稿 / 版本历史 / 回滚）+ 标签 1（热门标签）+ 通知 4（列表 / 未读数 / 标已读 / 全部已读）+ 管理端 7（`/api/admin`：stats / users 列表 / 改用户状态封禁 / 文章列表 / 删文章 / 评论列表 / 删评论，仅 ADMIN）+ health 1 + auth 4（注册 / 登录 / me / 改密码）
+- [x] 前端 12 个页面：`Login` / `Home`（广场列表 + 最新/热门 Tab + 分类筛选）/ `ArticleDetail` / `ArticleEditor`（发布与编辑共用）/ `UserProfile` / `ProfileEdit` / `ChangePassword`（自第十四批起并列挂在 `/settings` 父级壳下）/ `UserFollows`（关注 / 粉丝列表）/ `AdminStats` / `AdminUsers` / `AdminArticles` / `AdminComments`（自第 5 批起挂在 `/admin` 父级壳 `AdminLayout` 下，仅 ADMIN 可进）
 - [x] 文章分类：列表按 `category` 筛选（枚举 `技术` / `生活` / `随笔` / `未分类`），发布与编辑可设分类
-- [x] 自动化验收：`node scripts/acceptance/run.mjs` 全绿（16 个探针脚本 + 3 个截图脚本，执行细则见 `docs/ACCEPTANCE.md`）
+- [x] 自动化验收：`node scripts/acceptance/run.mjs` 全绿（25 个探针脚本 + 3 个截图脚本，执行细则见 `docs/ACCEPTANCE.md`）
 
 ## 明确不做
 
 以下项已评估并决定不实现，不要在后续批次里补：
 
-- 评论删除
-- 用户管理接口（`/api/users` 系列，仅 `me` 与 `me/avatar` 已实现）
-- `/settings` 页与用户管理后台
-- 关注功能
-- 列表 / 详情返回 `liked`（当前用户是否已赞）——需给 `auth` 加可选认证模式，影响所有接口，待单独排批
+- 列表 / 详情返回 `liked`（需给 `auth` 加可选认证模式，待单独排批）
