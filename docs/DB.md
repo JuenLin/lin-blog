@@ -12,16 +12,16 @@
 | 数据库 | MySQL 8.0.46 |
 | 端口 | 3306 |
 | 字符集 / 排序规则 | utf8mb4 / utf8mb4_unicode_ci |
-| 主库 | `workbuddy_dev` |
-| Shadow 库 | `workbuddy_dev_shadow`（仅 Prisma Migrate 使用，业务不写入） |
+| 主库 | `lin_blog_dev` |
+| Shadow 库 | `lin_blog_dev_shadow`（仅 Prisma Migrate 使用，业务不写入） |
 | 项目账号 | `workbuddy_dev`（专用账号，不使用 root） |
-| 账号权限 | `workbuddy_dev.*` 与 `workbuddy_dev_shadow.*` 的 ALL PRIVILEGES |
+| 账号权限 | `lin_blog_dev.*` 与 `lin_blog_dev_shadow.*` 的 ALL PRIVILEGES |
 
 环境变量：
 
 ```env
-DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy_dev"
-SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy_dev_shadow"
+DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/lin_blog_dev"
+SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/lin_blog_dev_shadow"
 ```
 
 ---

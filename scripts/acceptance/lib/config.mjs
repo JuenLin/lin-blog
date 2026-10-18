@@ -16,7 +16,7 @@ export const requireCjs = createRequire(import.meta.url);
 export const BACKEND = path.join(ROOT, 'backend');
 export const BACKEND_MODULES = path.join(BACKEND, 'node_modules');
 
-export const TMP = path.join(os.tmpdir(), 'workbuddy-acceptance');
+export const TMP = path.join(os.tmpdir(), 'lin-blog-acceptance');
 fs.mkdirSync(TMP, { recursive: true });
 
 export const PREFIX = '验收占位';
@@ -25,7 +25,7 @@ export const CONFIG = {
   frontend: process.env.ACCEPTANCE_FRONTEND || 'http://localhost:5173',
   api: process.env.ACCEPTANCE_API || 'http://127.0.0.1:3000/api',
   cdpPort: Number(process.env.CDP_PORT || 9222),
-  shots: process.env.ACCEPTANCE_SHOTS || path.join(os.tmpdir(), 'workbuddy-acceptance-shots'),
+  shots: process.env.ACCEPTANCE_SHOTS || path.join(os.tmpdir(), 'lin-blog-acceptance-shots'),
   adminId: Number(process.env.ACCEPTANCE_ADMIN_ID || 2),
   demoId: Number(process.env.ACCEPTANCE_DEMO_ID || 1),
   pageSize: 10,

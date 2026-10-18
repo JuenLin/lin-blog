@@ -1,7 +1,7 @@
 <template>
   <footer class="app-footer">
     <div class="app-footer-inner">
-      <span>workbuddy · 博客 MVP</span>
+      <span>Lin's Blog · 博客 MVP</span>
       <span>Vue 3 + Express + Prisma + MySQL</span>
     </div>
   </footer>

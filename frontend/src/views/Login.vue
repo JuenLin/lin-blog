@@ -2,7 +2,7 @@
   <div class="login">
     <el-card class="login-card" shadow="never">
       <template #header>
-        <span>登录 workbuddy</span>
+        <span>登录 Lin's Blog</span>
       </template>
 
       <el-form ref="formRef" :model="form" :rules="rules" label-width="72px" @submit.prevent="handleLogin">

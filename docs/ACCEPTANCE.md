@@ -32,7 +32,7 @@ node scripts/acceptance/run.mjs
 | `--no-cleanup` | 保留临时数据不清理（方便复现问题） |
 | `--no-chrome` | 不自动拉 Chrome，用你已有的 9222 端口实例 |
 | `--no-seed` | 不造临时数据（数据不足的用例会标 SKIP） |
-| `--shots <dir>` | 指定截图目录，默认 `%TEMP%/workbuddy-acceptance-shots` |
+| `--shots <dir>` | 指定截图目录，默认 `%TEMP%/lin-blog-acceptance-shots` |
 | `--report <path.md>` | 额外把结果表写成 markdown 文件 |
 
 **退出码**：`0` = 全通过；`1` = 有 FAIL；`2` = 前置检查没过（服务没起 / Node 版本不够）。
@@ -45,7 +45,7 @@ FAIL | D1-3 | 空正文提示「正文不能为空」 | 未出现
 SKIP | A3-1 | 分页翻页 | 总条数 1 ≤ 每页 10，无第 2 页
 
 合计 50 条：PASS 49 / FAIL 1 / SKIP 0
-截图目录：C:\Users\123\AppData\Local\Temp\workbuddy-acceptance-shots
+截图目录：C:\Users\123\AppData\Local\Temp\lin-blog-acceptance-shots
 ```
 
 每条的结果依据是**从浏览器里读出来的真东西**：DOM 文本、CDP 抓到的请求 URL 和状态码、跳转后的 location，不是靠"看起来没报错"推断。
@@ -212,7 +212,7 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `CDP_PORT` | `9222` | CDP 调试端口 |
 | `CHROME_PATH` | 自动搜索 | 指定 chrome.exe |
 | `ACCEPTANCE_ADMIN_ID` / `ACCEPTANCE_DEMO_ID` | `2` / `1` | 两个会话用户 |
-| `ACCEPTANCE_SHOTS` | `%TEMP%/workbuddy-acceptance-shots` | 截图目录 |
+| `ACCEPTANCE_SHOTS` | `%TEMP%/lin-blog-acceptance-shots` | 截图目录 |
 
 排错：
 

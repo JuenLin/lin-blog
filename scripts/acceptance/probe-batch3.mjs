@@ -124,7 +124,7 @@ try {
     await s.goto(CONFIG.frontend + '/');
     await sleep(2200);
     const restored = await s.evaluate(`document.title`);
-    log('F7-2 离开详情页标题复原为基准值(workbuddy)', restored === 'workbuddy', `"${restored}"`);
+    log('F7-2 离开详情页标题复原为基准值(Lin\'s Blog)', restored === 'Lin\'s Blog', `"${restored}"`);
   });
 
   // ============================================================

@@ -1,4 +1,4 @@
-# workbuddy
+# Lin's Blog
 
 Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` / `follows` / `notifications` / `tags` / `bookmarks` / `article_revisions` 九张表由 14 个迁移创建，47 个接口已实现并通过自动化验收；前端 12 个页面（登录、首页广场、文章详情、发布/编辑、个人主页、编辑资料、修改密码、关注列表、设置壳、管理后台四页）已可运行。已完成到哪一步见下方「当前状态」。
 
@@ -10,7 +10,7 @@ Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/he
 
 - Node.js ≥ 22（本项目在 v22.22.2 上开发与验收；验收脚本依赖 Node 内置 WebSocket，低于 22 会失败）
 - npm 10+
-- MySQL 8.0.46（端口 3306，数据库 `workbuddy_dev`，字符集 utf8mb4 / utf8mb4_unicode_ci）
+- MySQL 8.0.46（端口 3306，数据库 `lin_blog_dev`，字符集 utf8mb4 / utf8mb4_unicode_ci）
 
 ## 目录结构
 
@@ -30,17 +30,17 @@ scripts/acceptance/       自动化验收脚本（零新增依赖）
 
 ### 1. 准备数据库
 
-按契约第 4 节，使用项目专用账号，**不使用 root**。主库名 `workbuddy_dev`，Prisma Migrate 还需要一个 shadow 库 `workbuddy_dev_shadow`。
+按契约第 4 节，使用项目专用账号，**不使用 root**。主库名 `lin_blog_dev`，Prisma Migrate 还需要一个 shadow 库 `lin_blog_dev_shadow`。
 
 以 root 登录后执行（root 密码自行输入，不要写进任何文件）：
 
 ```sql
 -- 1. 建两个库
-CREATE DATABASE workbuddy_dev
+CREATE DATABASE lin_blog_dev
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-CREATE DATABASE workbuddy_dev_shadow
+CREATE DATABASE lin_blog_dev_shadow
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
@@ -48,8 +48,8 @@ CREATE DATABASE workbuddy_dev_shadow
 CREATE USER 'workbuddy_dev'@'localhost' IDENTIFIED BY '你的密码';
 
 -- 3. 授权，范围只有这两个库
-GRANT ALL PRIVILEGES ON `workbuddy_dev`.* TO 'workbuddy_dev'@'localhost';
-GRANT ALL PRIVILEGES ON `workbuddy_dev_shadow`.* TO 'workbuddy_dev'@'localhost';
+GRANT ALL PRIVILEGES ON `lin_blog_dev`.* TO 'workbuddy_dev'@'localhost';
+GRANT ALL PRIVILEGES ON `lin_blog_dev_shadow`.* TO 'workbuddy_dev'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
@@ -70,8 +70,8 @@ cp .env.example .env        # Windows 用 copy .env.example .env
 编辑 `backend/.env`，填入专用账号密码和 JWT_SECRET（不要提交该文件）：
 
 ```env
-DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy_dev"
-SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy_dev_shadow"
+DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/lin_blog_dev"
+SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/lin_blog_dev_shadow"
 JWT_SECRET="你自己生成的随机字符串"
 ```
 
@@ -163,7 +163,7 @@ EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_en
 
 - [x] 前端能启动：`npm run dev`
 - [x] 后端能启动：`npm run dev`
-- [x] MySQL 能连接（`workbuddy_dev`，8.0.46，utf8mb4_unicode_ci）
+- [x] MySQL 能连接（`lin_blog_dev`，8.0.46，utf8mb4_unicode_ci）
 - [x] Prisma 迁移已应用，共 14 个：`20260929123151_init`（users）、`20260929144738_blog_articles_comments`（articles / comments）、`20260929145244_comments_idx_article_created`（评论索引调整）、`20261003080727_add_user_avatar_bio`（users.avatar / bio）、`20261003140221_add_user_likes`（likes 表）、`20261004145107_add_article_category`（articles.category）、`20261011083029_add_follows`（follows 表）、`20261017063642_add_user_role_status`（users.role / status，MySQL 8 INSTANT 回填）、`20261017125847_add_article_status`（articles.status 草稿）、`20261017130010_add_article_revisions`（版本快照表）、`20261017130223_add_article_status_idx`（status 索引）、`20261018014846_add_tags_and_article_tags`（标签多对多）、`20261018042009_add_notifications`（通知表）、`20261018053624_add_bookmarks_and_view_count`（bookmarks 表 + articles.view_count）
 - [x] 注册 / 登录 / `/api/auth/me` 跑通，拿到 token 且鉴权生效
 - [x] `docs/API.md`：auth + health 通用接口 + 文章 / 评论 / 点赞 / 用户业务接口，含未实现接口的显式登记

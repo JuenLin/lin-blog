@@ -1,7 +1,7 @@
 <template>
   <header class="app-header">
     <div class="app-header-inner">
-      <router-link class="app-logo" :to="{ name: 'home' }">workbuddy</router-link>
+      <router-link class="app-logo" :to="{ name: 'home' }">Lin's Blog</router-link>
 
       <!-- ⑦ 搜索框：全站常驻。放头部而不是 Home 内部，详情页 / 个人主页 / 写文章页都能直接搜。
            搜索结果统一落在首页（Home.vue 读 ?keyword=），所以这里不重复放第二个输入框。 -->
