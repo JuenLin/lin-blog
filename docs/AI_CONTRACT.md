@@ -68,7 +68,7 @@
 - 禁止擅自升级依赖大版本。
 - 禁止擅自引入新依赖。**例外见「已批准的例外」第 3、7 项**。
 - 禁止修改接口契约。
-- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9、10、11、12、13、14 项**。
+- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9、10、11、12、13、14、15、16、17 项**。
 
 ### 已批准的例外
 
@@ -187,14 +187,9 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  │  │  ├─ request.js                # axios 实例：baseURL、token拦截、统一错误处理
 
-│  │  │  ├─ auth.js       	# 认证接口：登录、注册、登出、当前用户
-
-│  │  │  ├─ user.js       	# 用户接口：改资料、传头像（列表 / 详情 / 增删未实现）
-
-│  │  │  ├─ article.js              # 文章接口：发布、列表、详情、编辑、删除
-
-│  │  │  ├─ comment.js              # 评论接口：发表、文章评论列表  
-│  │  │  └─ like.js                 # 点赞接口：点赞、取消点赞（第十批）
+│  │  │  ├─ auth.js / user.js / article.js / comment.js / like.js
+│  │  │  ├─ bookmark.js / notification.js / series.js / tag.js
+│  │  │  └─ admin.js / report.js
 
 │  │  ├─ router/                      # Vue Router 路由配置
 
@@ -232,7 +227,7 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  │  ├─ app.js                       # 创建 Express app，注册中间件和路由
 
-│  │  ├─ uploads/                     # 头像落盘目录（第十一批）：avatars/ 存用户头像，不进 git
+│  │  ├─ uploads/                     # 运行时数据落盘目录（不进 git）：avatars/ 存用户头像（第十一批）、articles/ 存文章配图（第 10 批）
 
 │  │  └─ server.js                    # 启动后端服务，监听端口
 
@@ -257,7 +252,9 @@ project/                              # 项目根目录，所有代码和文档�
 │  ├─ ROADMAP.md                      # 未来规划与批次路线图
 
 │  ├─ ARCHITECTURE.md                # 架构视图文档：六张关系图（系统/链路/ER/功能/接口全景/前端路由），第 3 批引入
-│  └─ ACCEPTANCE.md                   # 验收说明书：跑什么、怎么跑、已知边界与不变式
+│  ├─ ACCEPTANCE.md                   # 验收说明书：跑什么、怎么跑、已知边界与不变式
+│  ├─ FEATURES.md                     # 全站功能总览
+│  └─ history/                        # 历史交接单归档（TASK_HANDOFF_batch10.md）
 
 ├─ scripts/                           # 项目级辅助脚本，不进前后端依赖
 
@@ -620,7 +617,7 @@ model User {
 
 ### 前端验收
 
-- 任何前端改动完成后，必须重跑 `node scripts/acceptance/run.mjs`，保持**全部通过**（当前为 50 条断言，随功能增加而变）。
+- 任何前端改动完成后，必须重跑 `node scripts/acceptance/run.mjs`，保持**全部通过**（`run.mjs` 50 条 + 33 个探针共约 738 条断言，随功能增加而变）；前端改动后**至少**跑 `run.mjs`，涉及组件/UI 改动的应跑全部探针（细则见 `docs/ACCEPTANCE.md`）。
 - 新增功能另写 `scripts/acceptance/probe-*.mjs` 出**客观证据**（计算样式值、DOM 结构、请求参数），不靠截图判断正确性。
 - 截图仅作辅助，产物放 `D:/tools/acceptance-shots/<批次>-<时间戳>/`（见第 13 节第 20 条）。
 
