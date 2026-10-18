@@ -5,6 +5,7 @@ import articleRoutes from './article.routes.js';
 import userRoutes from './user.routes.js';
 import { commentRootRouter, commentArticleRouter } from './comment.routes.js';
 import { likeArticleRouter } from './like.routes.js';
+import { bookmarkArticleRouter } from './bookmark.routes.js';
 import adminRoutes from './admin.routes.js';
 import tagRoutes from './tag.routes.js';
 import notificationRoutes from './notification.routes.js';
@@ -31,6 +32,10 @@ router.use('/comments', commentRootRouter);
 // 挂在 articleRoutes 之后不影响路由匹配：articleRoutes 只注册了 '/', '/:id' 的
 // GET/PUT/DELETE，不会截获 POST|DELETE /:id/like。
 router.use('/articles', likeArticleRouter);
+
+// 业务路由：收藏（第 9 批）。/api/articles/:id/bookmark 三个方法，挂 /articles。
+// 与点赞同构：幂等 200（重复收藏 / 取消未收藏都不报错），语义差异在 service 层。
+router.use('/articles', bookmarkArticleRouter);
 
 // 业务路由：标签（第 7 批）。GET /api/tags，公开无需登录。
 router.use('/tags', tagRoutes);

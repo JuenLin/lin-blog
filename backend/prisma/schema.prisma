@@ -69,6 +69,8 @@ model User {
   followers Follow[] @relation("Following")
   // 第 8 批：作为通知触发者（actor）被引用；接收者（userId）是普通 int 列，不建关系。
   notifications Notification[] @relation("NotificationActor")
+  // 第 9 批：作为收藏人被引用（「用户本人」而非作者角色）。
+  bookmarks     Bookmark[]
 
   @@map("users")
 }
@@ -92,6 +94,12 @@ model Article {
   tags      ArticleTag[]
   // 第 8 批：文章作为通知的目标锚点（articleId）被引用。
   notifications Notification[]
+  // 第 9 批：文章作为收藏的目标锚点被引用。
+  bookmarks   Bookmark[]
+  // 第 9 批（2026-10-18 用户批准）：累计阅读量。累加计数器（只增不减），
+  // 只由 POST /api/articles/:id/view 以 prisma increment 原子 +1。
+  // 与 likeCount（likes 表实时 COUNT）是两种口径；不建索引（高频写入列，见 docs/DB.md）。
+  viewCount   Int           @default(0) @map("view_count")
 
   @@index([deletedAt, createdAt])
   @@index([deletedAt, updatedAt])
@@ -229,4 +237,27 @@ model Notification {
   // 以及「未读数」WHERE user_id = ? AND read_at IS NULL。
   @@index([userId, readAt])
   @@map("notifications")
+}
+
+// 第 9 批（2026-10-18 用户批准）：收藏表（收藏夹数据源）。
+// 与 likes / follows 同族：**刻意不设 deleted_at / updated_at**——收藏是关系状态
+// 而非可隐藏内容，取消收藏是物理 DELETE（理由同 likes，见 docs/DB.md）。
+// ⚠️ 错误码语义与 likes 刻意相反：重复收藏（P2002）/ 取消未收藏都返回 **200 幂等**，
+// 与 follow 一致、与 like 的 409/404 相反（见 docs/API.md「收藏与阅读量」）。
+model Bookmark {
+  id        Int      @id @default(autoincrement())
+  // 收藏者是「用户本人」而非「作者」，按 docs/DB.md「外键命名规则」用 user_id（同 likes）。
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  articleId Int      @map("article_id")
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 防重复收藏：DB 唯一约束是唯一真相。与 likes 的区别只在拦截后的语义——
+  // 收藏侧 P2002 转「已收藏」的幂等成功（200），不是 409。
+  @@unique([userId, articleId], name: "bookmarks_user_id_article_id_key")
+  // 支撑「某篇文章的收藏数」实时 count（bookmarkCount）与收藏列表回表。
+  // user_id 侧不另建索引：唯一索引左前缀已承担（同 likes 纪律）。
+  @@index([articleId])
+  @@map("bookmarks")
 }

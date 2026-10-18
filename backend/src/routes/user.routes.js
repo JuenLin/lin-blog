@@ -7,6 +7,7 @@ import {
   getUserDetail,
   listArticlesByUser,
   listLikedArticles,
+  listBookmarkedArticles,
   listDrafts,
   deleteDraft,
 } from '../controllers/user.controller.js';
@@ -75,6 +76,10 @@ router.get('/me/likes', auth, listLikedArticles);
 // GET 用 parsePagination + parseKeyword 在 service 内校验，无 zod 参数；DELETE 用 articleIdParamSchema 校验 id。
 router.get('/me/drafts', auth, listDrafts);
 router.delete('/me/drafts/:id', auth, validate({ params: articleIdParamSchema }), deleteDraft);
+
+// 第 9 批：我的收藏列表。与 /me/likes 完全同构（只有 auth、无 validate——
+// 没有路径参数，id 来自 token），同样注册在 `/:id` 之前。
+router.get('/me/bookmarks', auth, listBookmarkedArticles);
 
 // 第 4 批：关注相关 4 接口。
 // 注册在 `/me/likes` 之后、`/:id/articles` 之前：保持「/me/* 先于 /:id/*」的硬约束，

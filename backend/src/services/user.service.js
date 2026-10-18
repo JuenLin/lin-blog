@@ -51,6 +51,20 @@ const LIKED_SORT_MAP = {
   likeCount: (order) => ({ article: { likes: { _count: order } } }),
 };
 
+// 收藏 Tab 的 sortBy 白名单（docs/API.md GET /api/users/me/bookmarks），
+// 对镜 LIKED_SORT_FIELDS。默认 bookmarkedAt desc（最近收藏的在前）。
+const BOOKMARKED_SORT_FIELDS = ['bookmarkedAt', 'createdAt', 'likeCount'];
+
+// bookmarkedAt 是 API 层虚拟名（bookmarks 表的列叫 created_at / Prisma 侧 createdAt），
+// 直接 orderBy { bookmarkedAt } 会报 Invalid（与 likedAt 同一机制，实测过）。
+// 查询主模型是 Bookmark，所以 `{ createdAt: order }` 解析到 bookmarks.createdAt
+// （收藏时间）——正是 bookmarkedAt 的语义，不是 articles.createdAt。
+const BOOKMARKED_SORT_MAP = {
+  bookmarkedAt: (order) => ({ createdAt: order }),
+  createdAt: (order) => ({ article: { createdAt: order } }),
+  likeCount: (order) => ({ article: { likes: { _count: order } } }),
+};
+
 function toPublicUser(user) {
   return {
     id: user.id,
@@ -381,6 +395,59 @@ export async function listLikedArticles({ userId, query }) {
   return {
     // 这里是**唯一**给列表项附加 likedAt 的地方（约束②）。
     list: rows.map((row) => ({ ...toArticleListItem(row.article), likedAt: row.createdAt })),
+    ...buildPaginationMeta(pagination.page, pagination.pageSize, total),
+  };
+}
+
+/**
+ * 当前登录用户收藏过的文章列表（个人主页「收藏」Tab，第 9 批）。
+ * 对应 docs/API.md 的 GET /api/users/me/bookmarks。
+ *
+ * 与 listLikedArticles **逐行对镜**（同一套三条硬约束，只是换表）：
+ *   ① 从 bookmarks 表出发（主模型 Bookmark），次级排序 `{ id }` 即 bookmarks.id；
+ *   ② bookmarkedAt 就是 row.createdAt（bookmarks.created_at 收藏时间），
+ *      与文章自己的 createdAt 是两个时间，探针须断言二者不同；
+ *   ③ bookmarkedAt 是 API 层虚拟名，排序靠 BOOKMARKED_SORT_MAP 翻译。
+ * 只返回未软删的文章（where 里 `article: { deletedAt: null }`）；
+ * 取消收藏是物理 DELETE，total 会立刻下降。
+ *
+ * @param {object} params
+ * @param {number} params.userId 来自 token
+ * @param {object} params.query Express 的 req.query
+ */
+export async function listBookmarkedArticles({ userId, query }) {
+  await requireUserExists(userId);
+
+  const pagination = parsePagination(query, {
+    allowedSort: BOOKMARKED_SORT_FIELDS,
+    defaultSort: 'bookmarkedAt',
+  });
+
+  const where = {
+    userId,
+    article: { deletedAt: null },
+  };
+
+  const [rows, total] = await Promise.all([
+    prisma.bookmark.findMany({
+      where,
+      // bookmarkedAt 走 BOOKMARKED_SORT_MAP 翻译成 bookmarks.createdAt；
+      // row.createdAt 同时就是要平铺给前端的 bookmarkedAt（一次查询拿到）。
+      select: {
+        createdAt: true,
+        article: { select: ARTICLE_DETAIL_SELECT },
+      },
+      orderBy: buildOrderBy(pagination, { map: BOOKMARKED_SORT_MAP }),
+      skip: pagination.skip,
+      take: pagination.take,
+    }),
+    // total 与 list 用同一个 where，保证「条数」与「翻页边界」一致。
+    prisma.bookmark.count({ where }),
+  ]);
+
+  return {
+    // 这里是**唯一**给列表项附加 bookmarkedAt 的地方（约束②）。
+    list: rows.map((row) => ({ ...toArticleListItem(row.article), bookmarkedAt: row.createdAt })),
     ...buildPaginationMeta(pagination.page, pagination.pageSize, total),
   };
 }

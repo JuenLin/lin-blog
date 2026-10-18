@@ -18,6 +18,7 @@ import {
   revisions,
   restore,
 } from '../controllers/article.controller.js';
+import { recordView } from '../controllers/view.controller.js';
 
 const router = Router();
 
@@ -37,5 +38,10 @@ router.delete('/:id', auth, validate({ params: articleIdParamSchema }), remove);
 // `/:id/revisions` 与 `/:id/restore` 是两段路径，不会与上面的 `/:id` 单段冲突。
 router.get('/:id/revisions', auth, validate({ params: articleIdParamSchema }), revisions);
 router.post('/:id/restore', auth, validate({ params: articleIdParamSchema, body: restoreSchema }), restore);
+
+// 第 9 批：阅读计数。**无需登录**（阅读是匿名行为，与点赞 / 收藏刻意不同）——
+// 这是本文件唯一不挂 auth 的写接口，防刷（同 IP 同文章 5 分钟判重）在 service 层。
+// 两段路径同样不会与 `/:id` 冲突；存在性判定（不存在 / 软删 / 草稿 → 404）也在 service。
+router.post('/:id/view', validate({ params: articleIdParamSchema }), recordView);
 
 export default router;

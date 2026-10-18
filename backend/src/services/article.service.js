@@ -4,10 +4,12 @@ import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
 import { parseKeyword, parseCategory, parseTag, TAG_NAME_MAX_LENGTH } from '../validators/article.validator.js';
 import { CODE, httpError } from '../utils/response.js';
 
-// docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id / likeCount，默认 createdAt desc。
-// 「热门」Tab 用 likeCount（按点赞数倒序），updatedAt 保留 —— 前端不再暴露该 Tab，
+// docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id / likeCount / viewCount，
+// 默认 createdAt desc。
+// 「热门」Tab 用 likeCount（按点赞数倒序），「阅读最多」Tab 用 viewCount（第 9 批，
+// 真实列直映射、无 JOIN 聚合），updatedAt 保留 —— 前端不再暴露该 Tab，
 // 但接口不缩水（probe-search 的 S4-4 仍在用它验白名单）。
-export const ARTICLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'id', 'likeCount'];
+export const ARTICLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'id', 'likeCount', 'viewCount'];
 
 // likeCount 是**计算字段**（响应层由 `_count.likes` 折算），articles 表里没有这一列，
 // 所以不能把它直接透传给 Prisma（会报 Unknown argument 'likeCount'）。
@@ -50,6 +52,10 @@ const ARTICLE_DETAIL_SELECT = {
   category: true,
   createdAt: true,
   updatedAt: true,
+  // 第 9 批：累计阅读量。真实列（不是计算字段），sortBy=viewCount 时
+  // buildOrderBy 直映射 `{ viewCount: order }`，不需要进 ARTICLE_SORT_MAP。
+  // 不建索引（高频写入列，理由见 docs/DB.md「第 9 批」）。
+  viewCount: true,
   author: {
     select: AUTHOR_SELECT,
   },
@@ -110,6 +116,7 @@ function toArticleDetail(article) {
     tags: toTagNames(article),
     author: toAuthor(article.author),
     likeCount: article._count ? article._count.likes : 0,
+    viewCount: article.viewCount,
     createdAt: article.createdAt,
     updatedAt: article.updatedAt,
   };
@@ -127,6 +134,7 @@ function toArticleListItem(article) {
     // 与详情口径一致：实时 COUNT(*)。_count 缺失时降级为 0 而不是 undefined，
     // 这样「接口没返回」和「确实是 0」对前端是同一个值（docs/API.md 的约定）。
     likeCount: article._count ? article._count.likes : 0,
+    viewCount: article.viewCount,
     createdAt: article.createdAt,
     updatedAt: article.updatedAt,
   };

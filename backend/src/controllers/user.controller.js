@@ -4,6 +4,7 @@ import {
   getUserDetail as getUserDetailService,
   listArticlesByUser as listArticlesByUserService,
   listLikedArticles as listLikedArticlesService,
+  listBookmarkedArticles as listBookmarkedArticlesService,
 } from '../services/user.service.js';
 // 草稿的读写实际落在 articles 表，函数定义在 article.service.js（第 6 批），
 // 这里只做控制器转发。它们操作文章数据，与 user.service 的「用户维度聚合」不同源。
@@ -116,8 +117,26 @@ export async function listLikedArticles(req, res, next) {
   }
 }
 
-/* ---------- 第 6 批：草稿箱 ---------- */
+/**
+ * 当前用户收藏过的文章列表（第 9 批）。对应 docs/API.md 的 GET /api/users/me/bookmarks。
+ *
+ * 与 listLikedArticles 完全对称：userId 只取自 token（路径是 /me/bookmarks，
+ * 没有 id 可传），未登录由 auth 中间件先挡掉（401 / 40100）。
+ */
+export async function listBookmarkedArticles(req, res, next) {
+  try {
+    const data = await listBookmarkedArticlesService({
+      userId: req.user.userId,
+      query: req.query,
+    });
 
+    return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/* ---------- 第 6 批：草稿箱 ---------- */
 /**
  * 我的草稿箱列表。对应 docs/API.md 的 GET /api/users/me/drafts。
  * 仅本人草稿（service 内已按 authorId + status=DRAFT 过滤）。
