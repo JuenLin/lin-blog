@@ -1,6 +1,6 @@
 # Lin's Blog
 
-Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` / `follows` / `notifications` / `tags` / `bookmarks` / `article_revisions` / `series` / `comment_likes` / `reports` / `article_tags` 十三张表由 17 个迁移创建，59 个接口已实现并通过自动化验收；前端 13 个页面（登录、首页广场、文章详情、发布/编辑、个人主页、编辑资料、修改密码、关注列表、设置壳、管理后台五页）已可运行。已完成到哪一步见下方「当前状态」。
+Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` / `follows` / `notifications` / `tags` / `bookmarks` / `article_revisions` / `series` / `comment_likes` / `reports` / `article_tags` 十三张表由 17 个迁移创建，59 个接口已实现并通过自动化验收；前端 13 个页面（登录、首页广场、文章详情、发布/编辑、个人主页、编辑资料、修改密码、关注列表、管理后台五页）已可运行。已完成到哪一步见下方「当前状态」。
 
 协作约束见 [`docs/AI_CONTRACT.md`](./docs/AI_CONTRACT.md)，接口以 [`docs/API.md`](./docs/API.md) 为准，表结构以 [`docs/DB.md`](./docs/DB.md) 为准。
 
