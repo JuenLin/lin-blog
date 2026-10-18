@@ -148,6 +148,7 @@
                    成功后回第一页（与顶层评论发表后的 reload 行为一致）。 -->
               <div v-if="replyTargetId === item.id" class="comment-reply-editor">
                 <el-input
+                  ref="replyInput"
                   v-model="replyDraft"
                   type="textarea"
                   :rows="2"
@@ -177,7 +178,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { listComments, deleteComment, createComment } from '../api/comment.js';
 import { useUserStore } from '../stores/user.js';
@@ -299,6 +300,8 @@ function goToProfile(id) {
 const replyTargetId = ref(null);
 const replyDraft = ref('');
 const replySubmitting = ref(false);
+// 行内回复输入框的组件 ref（同一时刻最多只有一个回复框展开，单 ref 安全）。
+const replyInput = ref(null);
 
 // 回复权限：已登录 + 顶层评论（parentId 为 null）。
 // 孤儿降级项（isOrphan）parentId 非空，天然被排除 —— 两层硬限制的前端表达。
@@ -309,6 +312,22 @@ function canReply(item) {
 function startReply(item) {
   replyTargetId.value = item.id;
   replyDraft.value = '';
+  // 瑕疵修复：展开后自动聚焦，省掉「再点一下输入框」的那一步。
+  // nextTick 等 v-if 的输入框真正挂载后再取 ref；ElInput 暴露 focus() 方法。
+  // 草稿为空，聚焦后光标天然落在最前面（placeholder 不占光标位）。
+  // focus 后顺手把 textarea 滚进可视区：移动端键盘弹起时输入框贴着可视区，不被遮挡。
+  // 注意：ref 挂在 v-for 作用域内的组件上，Vue 3 会把它收成数组——取 [0] 归一化，
+  // 否则 replyInput.value.focus 不是函数，会被下面的类型守卫静默跳过（光标不进来）。
+  nextTick(() => {
+    const raw = replyInput.value;
+    const input = Array.isArray(raw) ? raw[0] : raw;
+    if (!input || typeof input.focus !== 'function') return;
+    input.focus();
+    const textarea = input.textarea;
+    if (textarea && typeof textarea.scrollIntoView === 'function') {
+      textarea.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  });
 }
 
 function cancelReply() {
