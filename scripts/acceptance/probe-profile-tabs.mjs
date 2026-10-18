@@ -885,7 +885,19 @@ main()
       prismaClient = null;
     }
 
+    // 关 CDP WebSocket：attach() 建的这个 ws 不关，node 事件循环永远留着句柄，
+    // 全部断言跑完、数据清完后进程仍挂起不退（2026-10-18 实测连挂两次被 SIGTERM，
+    // `git show HEAD:` 同版对照同样挂=存量问题）。全探针审计过一遍：只有本探针
+    // 漏关 session 且成功路径没有 process.exit，其余都是 close()+exit 双保险。
+    if (session) { try { session.close(); } catch { /* noop */ } }
+
     await stopChrome(chromeChild);
+
+    // 强制收口：实测本环境 prisma.$disconnect() 后会残留 2 个 Socket 句柄
+    // （Prisma 连接器池，activeRequests 为空、纯句柄泄漏），自然退出永远等不到
+    // 事件循环清空。全库探针一律用 process.exit 收口，本探针是唯一漏的那个。
+    const failedN = results.filter((r) => !r.pass).length;
+    process.exit(failedN > 0 ? 1 : 0);
   })
   .catch(async (e) => {
     console.error('\n[探针异常] ' + e.message);
@@ -903,6 +915,7 @@ main()
       console.error('[清理失败] ' + ce.message);
     }
 
+    if (session) { try { session.close(); } catch { /* noop */ } }
     await stopChrome(chromeChild);
     process.exit(1);
   });

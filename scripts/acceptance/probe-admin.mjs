@@ -141,11 +141,24 @@ async function makeAccount(tag) {
 /* ---------- 物理清理（FK RESTRICT 序） ---------- */
 
 async function hardDeleteUser(prisma, userId) {
-  // 硬删序（docs/DB.md）：likes → follows → comments → articles → users。
+  // 硬删序（docs/DB.md）：notifications → bookmarks → likes → follows → comments → articles → users。
   // 文章的 comments / likes 是上游，必须先清（RESTRICT 会在顺序错误时直接拒绝）。
   const articles = await prisma.article.findMany({
     where: { authorId: userId },
     select: { id: true },
+  });
+
+  // 第 8/9 批：notifications（article_id / user_id / actor_id 三 RESTRICT）与
+  // bookmarks（article_id / user_id 双 RESTRICT）必须最早删。tempA 在真实文章
+  // （someArticle）下发的评论会产 COMMENT 通知，actor_id 指向 tempA，漏删会在
+  // 删账号时撞 P2003（2026-10-18 同型事故）。按 userId / actorId / 本人文章
+  // 三个方向删，只碰探针账号相关的行，不误删真实用户的数据。
+  const articleIds = articles.map((a) => a.id);
+  await prisma.notification.deleteMany({
+    where: { OR: [{ userId }, { actorId: userId }, { articleId: { in: articleIds } }] },
+  });
+  await prisma.bookmark.deleteMany({
+    where: { OR: [{ userId }, { articleId: { in: articleIds } }] },
   });
 
   for (const article of articles) {

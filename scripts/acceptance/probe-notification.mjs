@@ -95,6 +95,50 @@ async function snapshot(p) {
   };
 }
 
+// ───────────── 跑前自愈 ─────────────
+// 历史崩溃轮次（进程被 SIGTERM / 断言抛错没走到清理）可能留下本探针命名空间的
+// 残留账号与靶子文章。不先清掉，before 基线会把残留算进去，CLN 复核只能证明
+// 「本轮没新增」而假绿，基线被无声污染。识别口径用本探针独有命名空间：
+//   账号 username startsWith `${PROBE_PREFIX}_notif_`；文章 title startsWith `${PROBE_PREFIX} 通知靶子`
+// 清理顺序遵循 FK RESTRICT：notification → bookmark → follow → like → comment → article → user。
+async function healPreviousResidue() {
+  const c = await prisma();
+  const healed = { accounts: 0, articles: 0, notifications: 0, follows: 0, likes: 0, comments: 0, bookmarks: 0, revisions: 0 };
+  const accountPrefix = `${PROBE_PREFIX}_notif_`;
+  const articlePrefix = `${PROBE_PREFIX} 通知靶子`;
+  const accRows = await c.user.findMany({ where: { username: { startsWith: accountPrefix } }, select: { id: true } });
+  const artRows = await c.article.findMany({ where: { title: { startsWith: articlePrefix } }, select: { id: true } });
+  const userIds = accRows.map((r) => r.id);
+  const articleIds = artRows.map((r) => r.id);
+  if (userIds.length === 0 && articleIds.length === 0) return healed;
+
+  healed.notifications = (
+    await c.notification.deleteMany({
+      where: { OR: [{ userId: { in: userIds } }, { actorId: { in: userIds } }, { articleId: { in: articleIds } }] },
+    })
+  ).count;
+  healed.bookmarks = (
+    await c.bookmark.deleteMany({ where: { OR: [{ userId: { in: userIds } }, { articleId: { in: articleIds } }] } })
+  ).count;
+  healed.follows = (
+    await c.follow.deleteMany({ where: { OR: [{ followerId: { in: userIds } }, { followingId: { in: userIds } }] } })
+  ).count;
+  healed.likes = (
+    await c.like.deleteMany({ where: { OR: [{ userId: { in: userIds } }, { articleId: { in: articleIds } }] } })
+  ).count;
+  healed.comments = (
+    await c.comment.deleteMany({ where: { OR: [{ authorId: { in: userIds } }, { articleId: { in: articleIds } }] } })
+  ).count;
+  if (articleIds.length > 0) {
+    healed.revisions = (await c.articleRevision.deleteMany({ where: { articleId: { in: articleIds } } })).count;
+    healed.articles = (await c.article.deleteMany({ where: { id: { in: articleIds } } })).count;
+  }
+  if (userIds.length > 0) {
+    healed.accounts = (await c.user.deleteMany({ where: { id: { in: userIds } } })).count;
+  }
+  return healed;
+}
+
 // ───────────── 主流程 ─────────────
 const createdArticleIds = [];
 const createdNotificationIds = []; // 兜底：跑完再 DELETE（即便没显式收集到 id）
@@ -111,6 +155,17 @@ async function main() {
   if (apiStatus !== 200) fail('PRE', '后端探活', `后端 ${CONFIG.api} 不可达（HTTP ${apiStatus}）`);
   if (feStatus !== 200 || apiStatus !== 200) {
     throw new Error('前置服务未就绪，终止（先起后端 3000 与前端 5173）');
+  }
+
+  // 跑前自愈（仅清理模式：--no-cleanup 是留数据排查，不能动）：回收历史崩溃轮次
+  // 残留，保证下面的 before 是干净基线；--no-cleanup 下跳过，由用户自行处理。
+  if (OPT.cleanup) {
+    const healed = await healPreviousResidue();
+    if (healed.accounts > 0 || healed.articles > 0) {
+      console.log(
+        `跑前自愈：回收历史残留 账号 ${healed.accounts} / 文章 ${healed.articles} / 通知 ${healed.notifications} / 关注 ${healed.follows} / 点赞 ${healed.likes} / 评论 ${healed.comments} / 收藏 ${healed.bookmarks} / 版本 ${healed.revisions}`
+      );
+    }
   }
 
   const before = await snapshot(CONFIG);
