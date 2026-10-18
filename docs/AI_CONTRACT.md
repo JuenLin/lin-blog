@@ -254,7 +254,7 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  ├─ DB.md                           # 数据库文档：表结构、字段说明
 
-│  ├─ CODING_STYLE.md                 # 代码风格约定文档
+│  ├─ ROADMAP.md                      # 未来规划与批次路线图
 
 │  ├─ ARCHITECTURE.md                # 架构视图文档：六张关系图（系统/链路/ER/功能/接口全景/前端路由），第 3 批引入
 │  └─ ACCEPTANCE.md                   # 验收说明书：跑什么、怎么跑、已知边界与不变式
@@ -646,23 +646,48 @@ model User {
 
 ## 12. 代码规范
 
-- 缩进：2 空格。
-- 字符串：单引号。
-- 语句结尾：分号。
-- 文件名：
-  - 前端组件（含页面级）：PascalCase，例如 `Home.vue`、`ArticleDetail.vue`、`UserProfile.vue`
-  - 前端 JS：camelCase，例如 `request.js`
-  - 后端路由：`user.routes.js`
-  - 后端控制器：`user.controller.js`
-  - 后端服务：`user.service.js`
-- 函数命名：camelCase。
-- 常量命名：UPPER_SNAKE_CASE。
-- 不要输出省略号，例如 `// ...`。
-- 要求输出完整文件内容。
-- 不要重写无关文件。
-- 不要修改接口契约。
-- 如果必须改契约，先说明原因并等待确认。
-- 页面级组件命名以实际代码为准：`Home.vue` / `ArticleDetail.vue` / `ArticleEditor.vue` / `Login.vue` / `UserProfile.vue` / `ProfileEdit.vue` / `ChangePassword.vue`，**不加 `View` 后缀**（`views/` 目录本身已表明它是页面层）。`docs/CODING_STYLE.md` 的命名约定已与此对齐，两处不再冲突。
+通用：
+
+- 缩进：2 空格，不用 Tab。
+- 字符串：单引号 `'`；拼接或含变量用模板字符串 `` `${x}` ``。
+- 语句结尾：分号 `;`，行尾不留多余空格，文件末尾保留一个换行。
+- 不要输出省略号注释（`// ...`、`/* 略 */`）；要么写完整实现，要么不写。
+- 命名：常量 `UPPER_SNAKE_CASE`；变量与函数 `camelCase`；类名与组件名 `PascalCase`。
+- 要求输出完整文件内容，不要只给片段，不要重写无关文件。
+
+前端（Vue 3 + Vite）：
+
+- 一律 `<script setup>`，不用 Options API；样式一律 `<style scoped>`。
+- 组件放 `src/components`，页面放 `src/views`，均以 `PascalCase.vue` 命名、**页面不加 `View` 后缀**（如 `Home.vue`、`ArticleDetail.vue`、`ArticleEditor.vue`、`Login.vue`、`UserProfile.vue`、`ProfileEdit.vue`、`ChangePassword.vue`；`views/` 目录本身已表明页面层）。
+- 不在模板写复杂表达式，抽成 `computed` 或函数；不直接操作 DOM，除非确无 Vue 方案。
+- 所有请求走 `src/api/request.js` 导出的 axios 实例，组件内禁止出现完整 URL，baseURL 来自 `VITE_API_BASE_URL`；响应拦截器约定 `code === 0` 返回 `data`，其余抛错并携带 `message`，401 清除本地 token。
+- 仅全局共享状态进 Pinia，组件内状态用 `ref` / `reactive`；token 同时存 Pinia 与 localStorage，登出两边一起清。
+
+后端（Node.js + Express + Prisma）：
+
+- 分层：`routes`（仅 URL→controller 映射，无业务逻辑）→ `controllers`（取参、调 service、统一响应，不直接碰库）→ `services`（唯一允许调用 Prisma 的一层）→ `middlewares`（鉴权/校验/错误处理）→ `utils`（统一响应、Prisma 单例等）。
+- 文件命名：`xxx.routes.js` / `xxx.controller.js` / `xxx.service.js`；路由模块导出 `Router` 实例，在 `src/routes/index.js` 统一挂到 `/api`；处理函数须能被错误中间件捕获（try/catch + `next(error)` 或统一异步包装）。
+- 只允许 Prisma 操作数据库，**禁止手拼 SQL、禁止 `SELECT *`**（用 `select` 明确字段）；软删除表查询默认带 `deletedAt: null`。
+- 所有入参用 zod schema 校验，经 `validate` 中间件注入 `req.validated`；所有响应走 `src/utils/response.js`（`sendOk` / `sendFail`，固定 `{ code, message, data }`）；业务码只用 `CODE` 常量，不写魔法数字。
+- 错误中间件签名 `(err, req, res, next)` 四参数，缺一个 Express 会当普通中间件处理。
+- 环境变量只从 `process.env` 读取，入口顶部 `import 'dotenv/config'`；禁止把密码/密钥/`DATABASE_URL` 写进代码或提交 `.env`。
+
+命名对照：
+
+| 场景 | 规则 | 示例 |
+|---|---|---|
+| 组件文件 | PascalCase.vue | `Home.vue`（页面也 PascalCase，不加 `View` 后缀） |
+| 前端 JS | camelCase.js | `request.js` |
+| 路由文件 | xxx.routes.js | `user.routes.js` |
+| 控制器 | xxx.controller.js | `user.controller.js` |
+| 服务 | xxx.service.js | `user.service.js` |
+| 数据库表 | 复数 snake_case | `users` |
+| 数据库字段 | snake_case | `created_at` |
+| Prisma 模型 | PascalCase | `User` |
+| Prisma 字段 | camelCase（映射 snake_case） | `createdAt` → `created_at` |
+| API JSON 字段 | camelCase | `createdAt` |
+
+工具链状态：本次未启用 ESLint / Prettier（不引入契约外依赖），以下由人工与审查保证。Node.js ≥ 22（实测 v22.22.2；低于 22 验收脚本因缺内置 WebSocket 失败）；后端 ESM（`"type": "module"`）；前端 Vite 8 + Vue 3.5；后端 Express 5（注意与 Express 4 路由差异）；Prisma 6.19.3（schema 保留 `url = env("DATABASE_URL")` 经典写法）。
 
 ---
 
@@ -759,3 +784,32 @@ model User {
 - 前端改动后 `node scripts/acceptance/run.mjs` 保持全绿。
 - 新增功能有对应 `probe-*.mjs` 提供客观证据（计算样式值、DOM 结构、请求参数），不靠截图判断正确性。
 - 探针跑完自清理，数据库回到跑前基线，不留脏数据、不删用户真实数据。
+
+---
+
+## 16. 文档改动核对（四步纪律）
+
+改 `docs/*.md` 或根目录的 md 文件时，按这四步：
+
+1. **改前记基线**：`grep "^## " <文件>`，把输出全列留下。
+2. **用 Edit 工具按整行匹配改**，不要写脚本按行号切片——按行号切会吞掉相邻章节（`docs/AI_CONTRACT.md` 的 §12 曾因此丢过三次）。
+3. **改后逐行比对**：`grep "^## " <文件>` 再输出一遍，与基线对照——数量一致、序号连续、标题文本一致。
+4. **`git diff --numstat` 复核**：如出现「数字突变」（比如突然 -20 行以上），停下查清原因再继续。
+
+- **`docs/ARCHITECTURE.md` 同样受本四步约束**：它是第 3 批引入的架构视图文档，含多张 Mermaid 图的 `##` 章节；改它时改前/改后都要 `grep "^## "` 留全列比对，防止整张图被吞。它与 `AI_CONTRACT.md` / `API.md` / `DB.md` / `ACCEPTANCE.md` 一并视为「项目文档集」，改动任一都走这四步。
+- `grep -c "^## "` 只数数量，能发现整块丢失、发现不了「数量不变但标题被换」。核对一律用 `grep "^## "` 输出全列，不用 `-c`。
+
+## 17. 测试纪律（探针清理铁律）
+
+**【探针清理铁律】** 所有自动化探针和 fixtures 的 finally 清理逻辑，绝对禁止使用 `deleteMany({})` 或基于跨表关联条件删除（如 `where: { article: { authorId: { in: [...] } } }` 这类经关系字段跨表命中的写法）。必须收集本次跑批明确创建的实体主键 ID，按 `id: { in: [...] }` 精确清理。
+
+- 背景：2026-10-18 事故——probe-nested-comment 用 `article.authorId` 连表删除，把库内真实评论数据全表清零。跨表关联条件的命中范围不受探针掌控，一旦关联字段取值异常（如 null 过滤失误）就会扫到库内既有数据。
+- 后端自分配主键、探针拿不到的行（如 `article_revisions`）：先按「本趟创建的文章 id」这类**直接外键列**查出 id，再按 `id: { in: [...] }` 删。
+- 探针自造的独立命名空间数据（如带时间戳前缀的 tags）：同样先查 id 再按 id 删，不做前缀直接 `deleteMany` 以外的任何宽泛删除。
+- 探针必须内置**跑前/跑后全表行数自检**：跑前记 `count()` 基线，finally 清完后复查，行数下降即 FAIL-SAFE 置 `exit=1` 并打日志。
+
+## 18. 提交与推送
+
+- 本地 `commit` 可以，但 **`git push` 必须先拿到用户明确指令**。
+- `README.md`、`.workbuddy/memory/` 下的文件按项目规矩**不提交**。
+- **禁止 `git add -A` / `git add .`**：这两条会把不提交的文件一并带上，必须显式列文件路径。
