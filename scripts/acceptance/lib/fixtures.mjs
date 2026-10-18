@@ -141,8 +141,11 @@ export async function ensureFixtures(token, adminId) {
  * 清理：硬删除自己造的文章及其评论，还原到验收前的库内容。
  * ids 里可以包含 UI 操作流程中新建出来的文章 id（脚本会记录下来传进来）。
  */
-export async function cleanupFixtures(ids, commentMarkers = []) {
+export async function cleanupFixtures(ids, commentMarkers = [], seriesFixtures = []) {
   const list = Array.from(new Set((ids || []).filter((x) => Number.isInteger(Number(x))))).map(Number);
+  const seriesIds = Array.from(
+    new Set((seriesFixtures || []).filter((x) => Number.isInteger(Number(x))))
+  ).map(Number);
   loadPrismaEnv();
 
   let prisma;
@@ -159,10 +162,11 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
   let articles = 0;
   let notifications = 0;
   let bookmarks = 0;
+  let series = 0;
   let marked = 0;
   try {
     if (list.length) {
-      // 外键顺序：先通知 → 再收藏 → 再点赞 → 再评论 → 最后文章（外键都是 RESTRICT）。
+      // 外键顺序：先通知 → 再收藏 → 再点赞 → 再评论 → 再文章 → 最后系列（RESTRICT 链）。
       // ⚠️ notifications 必须最先删：第 8 批新增 notifications 表，article_id 指向 articles
       // 且 ON DELETE RESTRICT；夹具文章被评论 / 点赞 / 关注会生成通知，漏删这一步
       // `article.deleteMany` 会因 RESTRICT 报 P2003，整个清理失败、留下脏数据。
@@ -173,6 +177,12 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
       likes = (await prisma.like.deleteMany({ where: { articleId: { in: list } } })).count;
       comments = (await prisma.comment.deleteMany({ where: { articleId: { in: list } } })).count;
       articles = (await prisma.article.deleteMany({ where: { id: { in: list } } })).count;
+      // 第 10 批：series.authorId → users 是 RESTRICT（夹具账号建的系列挡删用户），
+      // articles.seriesId → series 是 SET NULL（删系列自动解绑文章，双向安全）。
+      // 按创建 id 精确删（seriesFixtures 由调用方传入，空数组跳过）。
+      if (seriesIds.length) {
+        series = (await prisma.series.deleteMany({ where: { id: { in: seriesIds } } })).count;
+      }
     }
     if (commentMarkers.length) {
       marked = (
@@ -195,6 +205,7 @@ export async function cleanupFixtures(ids, commentMarkers = []) {
       articles,
       notifications,
       bookmarks,
+      series,
       marked,
       final: {
         users,
