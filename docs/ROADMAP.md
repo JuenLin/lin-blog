@@ -171,18 +171,34 @@
 
 ---
 
+## 第 11 批：评论点赞 + @提及通知（2026-10-18 执行，插队候选两条转正）
+
+「插队候选」里的评论点赞与 @提及两条在本批合并实现（接口 53 → 56，+3）：
+
+- **Schema**（例外第 16 项）：`comment_likes` 表（`user_id` + `comment_id` 唯一，无软删，likes 族）；`comments.like_count INT DEFAULT 0`；`NotificationType` 枚举追加 `MENTION` / `COMMENT_LIKE`（enum ALTER 走 migrate，generate 前停后端防 EPERM）。
+- **评论点赞 3 接口**：`POST` / `DELETE /api/comments/:id/like` **幂等 200**（bookmark/follow 族，与文章 like 的 409/404 刻意相反）+ `GET /api/comments/:id/liked`；评论列表加 `likeCount` / `liked` 字段（`optionalAuth` 可选鉴权，未登录省略 `liked` 键）。
+- **通知**：收到评论赞 → `COMMENT_LIKE`（自赞抑制）；发布评论 / 文章时正则 `/@(\w+)/g` 提取用户名 → 查库（存在且未软删）→ `MENTION`（去重、过滤自己；只在发布动作触发，编辑/回滚不补发）。
+- **前端**：评论气泡旁点赞按钮（幂等无 409/404 分支）；通知中心补 `MENTION`（「在《文章》中提到了你」）与 `COMMENT_LIKE`（「赞了你的评论」）文案。
+- **探针**：`probe-comment-like.mjs`（约 10 项）；`probe-notification.mjs` 补 MENTION / COMMENT_LIKE 断言。
+- **硬删序**：`comment_likes` 排最上游（`notifications → bookmarks → likes → follows → comment_likes → comments → articles → series → users`），tmp-account / fixtures 同步（第 8/9 批教训：新 RESTRICT 表当天过所有清理）。
+
+---
+
 ## 插队候选（批次之间可随时做的小补丁）
 
-- **评论点赞**：comments 加 `likeCount` + `comment_likes` 表（仿 likes：无软删 + `@@unique` 防重）；评论旁加点赞小按钮。注意第 8 批通知体系可顺带接 COMMENT_LIKE 通知类型（需扩 NotificationType 枚举）。
-- **@ 提及**：编辑器解析 `@username`，触发通知中心 —— **NotificationType 枚举需加 MENTION**（enum ALTER 走 migrate；Prisma 侧重新 generate 前停后端，EPERM 老坑）。
+- ~~**评论点赞**：comments 加 `likeCount` + `comment_likes` 表~~ → **第 11 批已实现**（2026-10-18）。
+- ~~**@ 提及**：编辑器解析 `@username`，触发通知中心~~ → **第 11 批已实现**（后端正则提取，编辑器暂不做 @ 自动补全 UI，挂账）。
 - **图片孤儿清理**：文章删除后 `/uploads/articles/*` 的清理（推荐方案：定时任务扫描未被任何文章正文引用的文件）。第 10 批引入 `uploads/articles/` 后产生的新债——文章删除 / 图片被从正文手动移除都会留孤儿文件；解析正文 Markdown 反查引用成本与风险都高（正文可能被并发修改、图片可能被外部引用），**本批不实现**（2026-10-18 用户拍板）。
 - **草稿箱多端同步**：仅在本批技术方案上做记录，暂不实现。
+- **评论 @ 自动补全**：第 11 批只做后端提取 + 通知，编辑器输入 `@` 时的用户名下拉补全挂账（需要用户搜索接口或轻量 suggest 接口）。
+- **MENTION 限流**：单篇 @ 人数暂无上限（正则全量提取），量大后再设上限或限流（挂账）。
 
 ## 优先级建议
 
-1. **第 9 批**：收藏夹 + 阅读量（数据层互动，改动独立，风险低）
-2. **第 10 批**：图片上传 + 系列（创作端增强，让写长文更爽）
-3. 评论点赞 / @ 提及：任何批次之间可插队小补丁
+1. ~~**第 9 批**：收藏夹 + 阅读量~~（已完成）
+2. ~~**第 10 批**：图片上传 + 系列~~（已完成）
+3. ~~评论点赞 / @ 提及~~（第 11 批已完成）
+4. **第 12 批：举报与审核**（依赖第 5 批权限底座，等用户指令）
 
 ---
 

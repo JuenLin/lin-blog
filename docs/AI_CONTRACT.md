@@ -70,10 +70,10 @@
 
 ### 已批准的例外
 
-以下十五项（schema 十三项：第 1、2、4、5、6、8、9、10、11、12、13、14、15 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下十六项（schema 十四项：第 1、2、4、5、6、8、9、10、11、12、13、14、15、16 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14、15 项是「禁止改 schema」的十三条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count / 第 10 批 series），  
+**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14、15、16 项是「禁止改 schema」的十四条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count / 第 10 批 series / 第 11 批 comment_likes），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -154,6 +154,12 @@
     - **范围**：**仅限新建 `series` 一张表 + `articles` 两列一外键**。不含修改 `users` / `comments` / `likes` / `bookmarks` / `follows` / `notifications` 任何一列，不含 `(series_id, series_order)` 复合唯一索引（可空列不可靠，序号唯一应用层保证），不含给 `series` 加软删列。
     - **依据**：见 `docs/DB.md`「series（系列表）」小节与「第 10 批」小节，决策过程见 `docs/API.md`「文章图片上传与专栏系列（第 10 批）」章节。
     - **是否援引前例**：援引第 9 批「一次 migrate 打包多变更」与 `likes` / `bookmarks` 建表结构先例（内容上是独立的一次批准）。
+
+16. **第 11 批 · schema 变更（comment_likes 表 + comments.like_count 列 + NotificationType 追加两值，2026-10-18 批准）**
+    - **批准内容**：新建 `comment_likes` 表（`id` / `user_id` / `comment_id` / `created_at`，唯一约束 + comment_id 索引，双 RESTRICT 外键，无 `deleted_at` / `updated_at`）；`comments` 表新增 `like_count INT NOT NULL DEFAULT 0`（INSTANT 回填）；`NotificationType` 枚举追加 `MENTION` / `COMMENT_LIKE` 两值（追加末尾，MySQL 8 INSTANT）。
+    - **范围**：仅限上述三处。不含评论通知限流、不含评论点赞的软删除（likes 族纪律：物理 DELETE）。
+    - **依据**：见 `docs/DB.md`「comment_likes（评论点赞表）」与「第 11 批」小节，接口语义见 `docs/API.md`「评论点赞与 @提及（第 11 批）」。
+    - **是否援引前例**：援引 `likes` / `bookmarks` 建表结构先例与第 8 批 `NotificationType` 枚举扩值先例（内容上是独立的一次批准）。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -341,6 +347,9 @@ DELETE /api/articles/:id       删除文章（仅作者，软删除）
 POST   /api/comments           发表评论
 GET    /api/articles/:id/comments   文章评论列表
 DELETE /api/comments/:id       删除评论（评论作者或文章作者，软删除）
+POST   /api/comments/:id/like       赞评论（需登录，幂等 200，第 11 批）
+DELETE /api/comments/:id/like       取消赞（需登录，幂等 200，第 11 批）
+GET    /api/comments/:id/liked      查询当前用户是否已赞该评论（需登录，第 11 批）
 POST   /api/articles/:id/like       点赞
 DELETE /api/articles/:id/like       取消点赞
 GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
@@ -382,7 +391,7 @@ PUT    /api/notifications/:id/read    单条标记已读（需登录，第 8 批
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口、第 10 批新增 6 个图片上传 / 系列接口（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38 → 42 → 47 → 53**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论 / 系列内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口、第 10 批新增 6 个图片上传 / 系列接口、第 11 批新增 3 个评论点赞接口（另有评论列表加 `likeCount` / `liked` 两字段，非新路径），接口总数 25 → 37 → 38 → 42 → 47 → 53 → 56**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论 / 系列内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 

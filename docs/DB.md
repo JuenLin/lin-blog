@@ -30,8 +30,10 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 |---|---|---|
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`），第 5 批新增 `role` / `status` 两列（迁移 `add_user_role_status`） |
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`），第 6 批新增 `status` 一列（迁移 `20261017125847_add_article_status`），第 9 批新增 `view_count` 一列（迁移 `20261018053624_add_bookmarks_and_view_count`），第 10 批新增 `series_id` / `series_order` 两列（迁移见「第 10 批」小节） |
-| `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`），第 7 批新增 `parent_id` 一列（同批迁移 `20261018014846_add_tags_and_article_tags`） |
+| `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`），第 7 批新增 `parent_id` 一列（同批迁移 `20261018014846_add_tags_and_article_tags`），第 11 批新增 `like_count` 一列（迁移见「第 11 批」小节） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
+| `comment_likes` | 评论点赞表（第 11 批） | 已建（迁移见「第 11 批」小节） |
+| `notifications` | 通知表（第 8 批） | 已建（迁移见「第 8 批」小节），第 11 批 `type` 枚举追加 `MENTION` / `COMMENT_LIKE` 两值（同批迁移） |
 | `bookmarks` | 文章收藏表（第 9 批） | 已建（迁移 `20261018053624_add_bookmarks_and_view_count`） |
 | `series` | 文章系列表（第 10 批） | 已建（迁移见「第 10 批」小节） |
 | `tags` | 标签表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
@@ -225,6 +227,7 @@ Prisma 模型名 `Comment`，`@@map("comments")`。
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
 | parentId | parent_id | INT | 是 | NULL | **第 7 批新增**：父评论 id，`NULL` = 顶层评论；非空 = 对该评论的回复（**两层硬限制**：只允许指向顶层评论，应用层校验）；外键 → `comments.id` `ON DELETE CASCADE ON UPDATE CASCADE` |
+| likeCount | like_count | INT | 否 | 0 | **第 11 批新增**：评论点赞数（累加计数器，只增不减）。只由 `POST` / `DELETE /api/comments/:id/like` 以 `prisma increment` / `decrement` 原子维护；与 `comment_likes` 行数是同源两种口径（响应回显走本列，唯一真相是行存在性）。**不建索引**（高频写入列，同 `view_count` 纪律） |
 
 `deletedAt` 保留的依据是契约 §9「每张业务表建议包含」的通用字段，且 `whereNotDeleted()` 统一覆盖可避免遗漏；MVP 无评论删除接口，该列当前恒为 NULL，成本可忽略。
 
@@ -725,6 +728,51 @@ ALTER TABLE `bookmarks` ADD CONSTRAINT `bookmarks_article_id_fkey` FOREIGN KEY (
 ```
 
 迁移后已用 `SHOW INDEX FROM bookmarks` 核实：`bookmarks_user_id_article_id_key`（两列，唯一）+ `bookmarks_article_id_idx`（单列，非唯一）+ PRIMARY，**`user_id` 未被 MySQL 额外补单列索引**（唯一索引左前缀已承担，与 `likes` 同纪律）。
+
+---
+
+## comment_likes（评论点赞表）
+
+Prisma 模型名 `CommentLike`，`@@map("comment_likes")`。**第 11 批新建**（迁移见「第 11 批」小节）。
+
+与 `likes` / `bookmarks` / `follows` 同族：**刻意不设 `deleted_at` / `updated_at`**——点赞是关系状态而非可隐藏内容，取消点赞是物理 DELETE，「点赞 = 该行存在」。**错误码语义与文章点赞刻意相反**：重复赞 / 取消未赞都返回 **200 幂等**（与 bookmark / follow 一族，见 `docs/API.md`「评论点赞与 @提及」）。
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键 |
+| userId | user_id | INT | 否 | 无 | 点赞者 id（「用户本人」而非作者角色，命名同 likes / bookmarks），外键 → `users.id` RESTRICT |
+| commentId | comment_id | INT | 否 | 无 | 被赞的评论 id，外键 → `comments.id` RESTRICT（评论走软删、行不消失，RESTRICT 保证关联行永远有主） |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
+
+### 索引
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | id | |
+| comment_likes_user_id_comment_id_key | **唯一** | user_id, comment_id | 防重复点赞的唯一真相（并发 P2002 → 应用层转幂等成功） |
+| comment_likes_comment_id_idx | 普通 | comment_id | 「某条评论的点赞数」实时 count 与评论列表 liked 批量判定 |
+
+- `user_id` 侧不另建索引：唯一索引左前缀已承担（likes / bookmarks 同纪律）。
+
+### 建表 SQL（迁移生成）
+
+```sql
+CREATE TABLE `comment_likes` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `user_id` INTEGER NOT NULL,
+    `comment_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `comment_likes_comment_id_idx`(`comment_id`),
+    UNIQUE INDEX `comment_likes_user_id_comment_id_key`(`user_id`, `comment_id`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+ALTER TABLE `comment_likes` ADD CONSTRAINT `comment_likes_user_id_fkey` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `comment_likes` ADD CONSTRAINT `comment_likes_comment_id_fkey` FOREIGN KEY (`comment_id`) REFERENCES `comments`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
 
 ---
 
@@ -1383,6 +1431,31 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ---
 
+## 第 11 批：评论点赞 + @提及（comment_likes 表 + comments.like_count 列 + NotificationType 追加两值）
+
+### schema 变更
+
+| 变更 | 内容 |
+|---|---|
+| 新建 `comment_likes` 表 | `id` / `user_id` / `comment_id` / `created_at`；唯一约束 `comment_likes_user_id_comment_id_key` + 索引 `comment_likes_comment_id_idx`；两条外键（`user_id` → `users.id`、`comment_id` → `comments.id`）均 `ON DELETE RESTRICT`；无 `deleted_at` / `updated_at`（likes 族纪律） |
+| `comments` 新增 `like_count` 列 | `INT NOT NULL DEFAULT 0`，INSTANT 算法回填既有行为 0；**不建索引**（高频写入列，同 `view_count` 纪律） |
+| `NotificationType` 枚举追加两值 | `MENTION`（@提及）、`COMMENT_LIKE`（评论被赞）；MySQL 8 追加 ENUM 末尾成员走 INSTANT，零回填 |
+
+### 设计要点（详见 `docs/API.md`「评论点赞与 @提及（第 11 批）」）
+
+- **幂等 200 与文章点赞刻意相反**：对镜 bookmark / follow 族（P2002 → 幂等成功），探针显式对照文章 like 的 409/404，防止将来被「统一」。
+- **计数双口径**：`comments.like_count` 是响应回显用的累加计数器（`prisma increment` / `decrement` 原子维护）；`comment_likes` 行是唯一真相（幂等判定 / liked 批量判定走行存在性）。取消赞只在**确实删掉了行**时才 decrement，计数永不因幂等重放而变负。
+- **MENTION 提取规则**：正则 `/@(\w+)/g`，仅发布评论 / 发布文章时触发（编辑 / 回滚 / 自动保存不补发）；去重 + 查库过滤（存在且未软删）+ 过滤自己；每篇每人一条。
+- **COMMENT_LIKE 自赞抑制**：允许自赞（计数口径与文章 like 一致），但 `actorId === 评论作者` 时不写通知。
+- **硬删序新增一环**：`comment_likes` 双 RESTRICT 且挂在 comments/users 上，排最上游：`notifications → bookmarks → likes → follows → comment_likes → comments → articles → series → users`（`lib/tmp-account.mjs` / `lib/fixtures.mjs` 已同步）。
+- **评论列表可选鉴权**：新增 `optionalAuth` 中间件（验签失败静默当匿名，不拦请求），带合法 token 时列表项附加 `liked` 布尔；未登录 / token 非法省略键。
+
+### 与「已批准的例外」的关系（例外现共 16 项：schema 14 + 依赖 2）
+
+本批新增一项 schema 例外（第 16 项：`comment_likes` 表 + `comments.like_count` 列 + `NotificationType` 追加 `MENTION` / `COMMENT_LIKE`），已登记 `docs/AI_CONTRACT.md` §2。零新依赖。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -1396,19 +1469,19 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ## 软删除与外键的交互
 
-> 全库外键现共**十三条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条 + 第 10 批 `series` 两条：`series.author_id` → `users.id` 与 `articles.series_id` → `series.id`）。删除行为从此有三种：`RESTRICT`（绝大多数）、`CASCADE`（`article_revisions.article_id` / `article_tags` 两条 / `comments.parent_id`）、`SET NULL`（`articles.series_id`，第 10 批新增的第一条）。
-> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致；`series.author_id` 同为显式 Restrict，`articles.series_id` 是显式 **SetNull**。
+> 全库外键现共**十五条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条 + 第 10 批 `series` 两条 + 第 11 批 `comment_likes` 两条）。删除行为从此有三种：`RESTRICT`（绝大多数）、`CASCADE`（`article_revisions.article_id` / `article_tags` 两条 / `comments.parent_id`）、`SET NULL`（`articles.series_id`，第 10 批新增的第一条）。
+> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致；`series.author_id` 同为显式 Restrict，`articles.series_id` 是显式 **SetNull**；`comment_likes` 两条同为显式 Restrict。
 
 - **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 与 `likes.article_id` 的引用依然有效，因此**评论与点赞都不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
 - 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。点赞同理。
 - **将来若要物理清理**（硬删除），顺序必须是：
 
 ```text
-bookmarks → notifications → likes → follows → comments → articles → series → users
+notifications → bookmarks → likes → follows → comment_likes → comments → articles → series → users
 ```
 
-  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知 / **系列**会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
-  特别注意**必须先清 `bookmarks` / `notifications` / `likes` / `follows`**：这四张表都可能「悬挂」在被软删对象上（`bookmarks` / `likes` / `notifications` 挂文章与用户、`follows` 挂用户），是硬删顺序的最上游。
+  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知 / **系列** / **评论赞**会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错；`DELETE FROM comments` 若还有评论赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  特别注意**必须先清 `comment_likes` / `bookmarks` / `notifications` / `likes` / `follows`**：这五张表都可能「悬挂」在被软删对象上（`comment_likes` / `notifications` 挂评论与用户、`bookmarks` / `likes` / `notifications` 挂文章与用户、`follows` 挂用户），是硬删顺序的最上游。
   **`series` 排在 `articles` 之后、`users` 之前**（第 10 批）：`series.author_id → users.id` 是 RESTRICT，删用户前必须先删他的系列；而 `articles.series_id → series.id` 是 **SET NULL**——若先删 series，被绑文章会被自动解绑（此时文章往往也要删，无副作用），但**顺序上 articles 先删能顺带清掉 revisions（CASCADE）**，仍是 articles → series 更稳。
 
 ---
@@ -1515,6 +1588,7 @@ const summary = [...content].slice(0, 100).join('');
 | `add_tags_and_article_tags`（第 7 批，实际名 `20261018014846_add_tags_and_article_tags`） | **一次迁移包含全部三项变更**（改 schema 一次跑 migrate 时 Prisma 将变更合并打包）：① 新建 `tags` 表（`name VARCHAR(20)` + **唯一约束** `tags_name_key`）；② 新建 `article_tags` 中间表（联合主键 `(article_id, tag_id)` + 两条外键均 `ON DELETE CASCADE` + `article_tags_tag_id_idx` 索引）；③ `comments` 表新增 `parent_id INT NULL` + 外键 `comments_parent_id_fkey`（→ `comments.id`，`ON DELETE CASCADE ON UPDATE CASCADE`）+ 索引 `comments_parent_id_idx`，既有行 `parent_id` 全部为 `NULL`（全是顶层评论，零回填）。**不含数据回填**（新表无既有数据） | **已应用** |
 | `add_bookmarks_and_view_count`（第 9 批，实际名 `20261018053624_add_bookmarks_and_view_count`） | 新建 `bookmarks` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键（`user_id` → `users.id`、`article_id` → `articles.id`，均 `ON DELETE RESTRICT`）+ 唯一约束 `bookmarks_user_id_article_id_key` + 索引 `bookmarks_article_id_idx`；`articles` 表新增 `view_count INT NOT NULL DEFAULT 0`（INSTANT 回填既有行为 0）。**不含数据回填**（新表无既有数据） | **已应用**（2026-10-18，`SHOW INDEX` 核实：唯一约束两列 + article_id 单列索引，`user_id` 未被额外补索引） |
 | `add_series`（第 10 批，实际名 `20261018082357_add_series`） | 新建 `series` 表（`id` / `title VARCHAR(50)` / `description VARCHAR(200) NULL` / `author_id` / `created_at` / `updated_at`）+ 一条外键（`author_id` → `users.id`，`ON DELETE RESTRICT`，外键自动索引 `series_author_id_fkey`）；`articles` 表新增 `series_id INT NULL`（外键 `articles_series_id_fkey` → `series.id`，**`ON DELETE SET NULL`，全库第一条 SET NULL 外键**）与 `series_order INT NULL` 两列。**不含数据回填**：series 新表无既有数据；articles 既有 17 行两列全部 `NULL`（`SHOW CREATE TABLE` + `information_schema.REFERENTIAL_CONSTRAINTS` 已核实 SET NULL / RESTRICT 两条规则） | **已应用**（2026-10-18） |
+| `add_comment_likes_and_mention`（第 11 批，实际名 `20261018093952_add_comment_likes_and_mention`） | **一次迁移包含全部三项变更**：① `comments` 表新增 `like_count INT NOT NULL DEFAULT 0`（INSTANT 回填既有行为 0，不建索引）；② `notifications.type` 枚举追加 `MENTION` / `COMMENT_LIKE` 两值（MODIFY ENUM，追加末尾零数据变更）；③ 新建 `comment_likes` 表（`id` / `user_id` / `comment_id` / `created_at`）+ 唯一约束 `comment_likes_user_id_comment_id_key` + 索引 `comment_likes_comment_id_idx` + 两条外键（→ `users.id` / `comments.id`，均 `ON DELETE RESTRICT`）。**不含数据回填**（新表无既有数据；migration.sql 已逐行核对） | **已应用**（2026-10-18） |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
