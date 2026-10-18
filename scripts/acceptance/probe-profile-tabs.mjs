@@ -385,7 +385,14 @@ async function main() {
   const zeroTabs = await session.evaluate(
     `String(Array.from(document.querySelectorAll('.el-tabs__item')).map((e) => e.textContent.trim()).join(','))`
   );
-  check('A-8', '未登录看别人主页只有「文章」一个 Tab', zeroTabs === '文章', `实际="${zeroTabs}"`);
+  // 第 10 批起「系列」Tab 对所有访客公开（与文章 Tab 同属公开数据），
+  // 不再只有「文章」一个 Tab。只断言：含「文章」，且不含仅本人可见的「点赞/收藏/草稿」。
+  check(
+    'A-8',
+    '未登录看别人主页有「文章」Tab（允许「系列」），无仅本人 Tab',
+    zeroTabs.includes('文章') && !['点赞', '收藏', '草稿'].some((t) => zeroTabs.includes(t)),
+    `实际="${zeroTabs}"`
+  );
 
   /* ================= B 组：文章 Tab 真后端分页 ================= */
 
@@ -472,7 +479,14 @@ async function main() {
   const otherTabs = await session.evaluate(
     `String(Array.from(document.querySelectorAll('.el-tabs__item')).map((e) => e.textContent.trim()).join(','))`
   );
-  check('C-5', '看别人主页（已登录）仍只有「文章」Tab', otherTabs === '文章', `实际="${otherTabs}"`);
+  // 第 10 批起他人主页公开「系列」Tab，故不再只有「文章」。只断言：含「文章」，
+  // 且不含仅本人可见的「点赞/收藏/草稿」（关注按钮在头部、不在 Tab 行，本组不验）。
+  check(
+    'C-5',
+    '看别人主页（已登录）有「文章」Tab（允许「系列」），无仅本人 Tab',
+    otherTabs.includes('文章') && !['点赞', '收藏', '草稿'].some((t) => otherTabs.includes(t)),
+    `实际="${otherTabs}"`
+  );
 
   // C-6 别人主页只显示他自己那 1 篇
   const otherCards = await readCardIds();

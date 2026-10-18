@@ -1,10 +1,10 @@
-<!-- 文档：README.md | 定位：项目总入口 | 核心：博客项目总览、环境要求、启动步骤与当前状态速查。 -->
-
 # workbuddy
 
 Vue 3 + Express + Prisma + MySQL 的博客项目。后端通用骨架（`/api/health` 健康检查、`/api/auth/*` 认证接口）与博客业务部分均已实现：`users` / `articles` / `comments` / `likes` / `follows` / `notifications` / `tags` / `bookmarks` / `article_revisions` 九张表由 14 个迁移创建，47 个接口已实现并通过自动化验收；前端 12 个页面（登录、首页广场、文章详情、发布/编辑、个人主页、编辑资料、修改密码、关注列表、设置壳、管理后台四页）已可运行。已完成到哪一步见下方「当前状态」。
 
 协作约束见 [`docs/AI_CONTRACT.md`](./docs/AI_CONTRACT.md)，接口以 [`docs/API.md`](./docs/API.md) 为准，表结构以 [`docs/DB.md`](./docs/DB.md) 为准。
+
+全站功能清单见 [`docs/FEATURES.md`](./docs/FEATURES.md)。
 
 ## 环境要求
 
@@ -134,29 +134,29 @@ EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_en
        -> '...\query_engine-windows.dll.node'
 ```
 
-**根因：跑着 `npm run dev` 的后端进程（`node --watch`）占用了引擎 DLL。**
+**根因：跑着 `npm run dev` 的后端进程（`node --watch`）占用了引擎 DLL。**  
 停掉后端再跑 `npx prisma generate` 即成功（实测 v6.19.3，61ms）。
 
 判定依据：
 
 - 停后端 → generate 成功；起后端 → 复现。**开关后端是唯一变量**。
-- `@prisma/client` 启动时把 `query_engine-windows.dll.node` 载入为进程映像
-  （见 `node_modules/.prisma/client/index.js` 里 `path.join(__dirname, "query_engine-windows.dll.node")`），
+- `@prisma/client` 启动时把 `query_engine-windows.dll.node` 载入为进程映像  
+  （见 `node_modules/.prisma/client/index.js` 里 `path.join(__dirname, "query_engine-windows.dll.node")`），  
   Windows 上进程映像在进程存活期间不能被替换，Prisma 的 rename 因此报 `EPERM`。
 
-> 早期这里归因为「杀软 / Windows Search 实时扫描」，**该结论不成立**。
-> 当时只观察到「源 tmp 可 `mv`、目标 dll 可被覆盖」，就推断是扫描类占用 ——
-> 这是不充分的证据：Git Bash 的 `mv` 与 Node 的 `rename(..., REPLACE_EXISTING)`
+> 早期这里归因为「杀软 / Windows Search 实时扫描」，**该结论不成立**。  
+> 当时只观察到「源 tmp 可 `mv`、目标 dll 可被覆盖」，就推断是扫描类占用 ——  
+> 这是不充分的证据：Git Bash 的 `mv` 与 Node 的 `rename(..., REPLACE_EXISTING)`  
 > 不是同一条 Windows API，**前者成功不能证明文件没被占用**。
 
 处理：
 
 - **遇到就停掉后端（`Ctrl+C`），跑完 generate 再起**。这是确定有效的做法。
-- 失败留下的 `query_engine-windows.dll.node.tmp*` 不会被下次 generate 自动清理，
+- 失败留下的 `query_engine-windows.dll.node.tmp*` 不会被下次 generate 自动清理，  
   可在确认无进程占用后直接删（同目录下真正的 `query_engine-windows.dll.node` 不要动）。
-- 失败时 JS 与类型产物其实**已经更新成功**，同版本下引擎 dll 不被替换也不影响运行，
+- 失败时 JS 与类型产物其实**已经更新成功**，同版本下引擎 dll 不被替换也不影响运行，  
   所以「先停后端再 generate」不会打断工作流。
-- **升级 Prisma 版本前必须先停后端**：那时引擎 dll 必须真正被替换，
+- **升级 Prisma 版本前必须先停后端**：那时引擎 dll 必须真正被替换，  
   写不进去会导致 Client 与引擎版本不匹配。
 
 ## 当前状态

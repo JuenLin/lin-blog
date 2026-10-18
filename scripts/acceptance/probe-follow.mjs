@@ -430,6 +430,13 @@ async function main() {
   /* ---------- B5：B 的粉丝列表页 ---------- */
 
   const b5ready = await openPage(`${CONFIG.frontend}/user/${state.B.userId}/follows/followers`, null);
+  // 轮询等粉丝列表真正渲染出来（根除 B5 偶发时序 flake：列表数据来自异步接口，若
+  // evaluate 早于数据回来会拿到空 title / 0 行而误报；B6 因序列靠后被「自然等到」所以不抖）。
+  // 等「.follows-title 非空」且「至少 1 行 .follow-row」同时成立才读 DOM。
+  await waitFor(
+    `(function(){var t=document.querySelector('.follows-title');return !!t && t.textContent.trim().length>0 && document.querySelectorAll('.follow-row').length>=1;})()`,
+    10000
+  );
   const b5info = await session.evaluate(`(function(){
     var title=(document.querySelector('.follows-title')||{}).textContent||'';
     var rows=[].slice.call(document.querySelectorAll('.follow-row')).map(function(r){

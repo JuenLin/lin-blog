@@ -96,24 +96,17 @@ try {
   log('P1-4 提供「返回广场」入口', dom.backBtn, `backBtn=${dom.backBtn}`);
 
   // ---------- 空态：Fetch 拦截造假响应，让该作者命中 0 篇 ----------
+  // 第 10 批起前端不再按 author 客户端过滤（list 直接落 state），所以造假响应必须
+  // 直接返回空 list，才能命中真正的空态（EmptyState「还没有发布文章」）。
   const emptyBody = JSON.stringify({
     code: 0,
     message: 'ok',
     data: {
-      list: [
-        {
-          id: 999999,
-          title: '其他作者的文章',
-          summary: '不属于目标作者，应当被前端过滤掉',
-          author: { id: 888888, username: 'other', nickname: '其他作者' },
-          createdAt: '2026-09-29T14:00:00.000Z',
-          updatedAt: '2026-09-29T14:00:00.000Z',
-        },
-      ],
+      list: [],
       page: 1,
-      pageSize: 100,
-      total: 1,
-      totalPages: 1,
+      pageSize: 10,
+      total: 0,
+      totalPages: 0,
     },
   });
 
@@ -133,7 +126,8 @@ try {
       return;
     }
     const url = m.params.request.url || '';
-    if (url.includes('pageSize=100')) {
+    // 拦截「该用户的文章列表」接口（前端默认 pageSize=10，故不能按 pageSize=100 匹配）。
+    if (url.includes('/users/') && url.includes('/articles')) {
       s.send('Fetch.fulfillRequest', {
         requestId: m.params.requestId,
         responseCode: 200,
@@ -148,7 +142,7 @@ try {
     }
   };
   s.onEvent(fetchHandler);
-  await s.send('Fetch.enable', { patterns: [{ urlPattern: '*pageSize=100*' }] });
+  await s.send('Fetch.enable', { patterns: [{ urlPattern: '*users*/articles*' }] });
   await s.goto(targetUrl);
   const okEmpty = await waitFor(`Boolean(document.querySelector('.el-empty'))`, 8000);
   const noCard = await s.evaluate(`document.querySelectorAll('.article-card').length === 0`);
