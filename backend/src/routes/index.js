@@ -6,6 +6,7 @@ import userRoutes from './user.routes.js';
 import { commentRootRouter, commentArticleRouter } from './comment.routes.js';
 import { likeArticleRouter } from './like.routes.js';
 import adminRoutes from './admin.routes.js';
+import tagRoutes from './tag.routes.js';
 
 const router = Router();
 
@@ -29,6 +30,9 @@ router.use('/comments', commentRootRouter);
 // 挂在 articleRoutes 之后不影响路由匹配：articleRoutes 只注册了 '/', '/:id' 的
 // GET/PUT/DELETE，不会截获 POST|DELETE /:id/like。
 router.use('/articles', likeArticleRouter);
+
+// 业务路由：标签（第 7 批）。GET /api/tags，公开无需登录。
+router.use('/tags', tagRoutes);
 
 // 业务路由：管理端（第 5 批）。/api/admin/* 全部走 auth → requireAdmin 链，
 // 与 /api/users/* 是两套（管理端用户管理不走 /api/users，见 docs/API.md）。

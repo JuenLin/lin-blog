@@ -23,6 +23,14 @@ const COMMENT_SELECT = {
   id: true,
   articleId: true,
   content: true,
+  // 第 7 批：嵌套回复。parent 只取作者展示名（replyToAuthor 的数据来源），
+  // 不取父评论正文——前端树形渲染时正文在父节点上，降级场景用「回复 @昵称」即可。
+  parentId: true,
+  parent: {
+    select: {
+      author: { select: { nickname: true, username: true } },
+    },
+  },
   createdAt: true,
   author: {
     select: AUTHOR_SELECT,
@@ -43,18 +51,29 @@ function toComment(comment) {
   return {
     id: comment.id,
     content: comment.content,
+    // 第 7 批：顶层评论 parentId 恒为 null；replyToAuthor 是被回复人的展示昵称
+    // （nickname 为空回退 username，与 author 展示名同一规则），顶层恒为 null。
+    // 分页可能把父子拆到两页，前端靠它渲染「回复 @某某」降级文案。
+    parentId: comment.parentId,
+    replyToAuthor: comment.parent
+      ? comment.parent.author.nickname || comment.parent.author.username
+      : null,
     author: toAuthor(comment.author),
     createdAt: comment.createdAt,
   };
 }
 
 /**
- * 校验文章存在且未软删除。评论相关的两个接口都需要这个前置判断：
- * 文章不存在或已删除时，评论接口统一返回 404。
+ * 校验文章可评论：存在、未软删除、且 status = PUBLISHED。
+ * 评论相关的两个接口都需要这个前置判断。
+ *
+ * 第 7 批（存量洞修复）：补上 `status: 'PUBLISHED'` 过滤——此前只过滤 deletedAt，
+ * 导致可对 DRAFT 草稿发评论 / 拉评论列表（草稿的公开详情虽然 404，评论接口却绕过了
+ * 这层）。修复后草稿的评论区与公开详情同口径 404，草稿整个对外封闭。
  */
 async function requireArticle(articleId) {
   const article = await prisma.article.findFirst({
-    where: whereNotDeleted({ id: articleId }),
+    where: whereNotDeleted({ id: articleId, status: 'PUBLISHED' }),
     select: { id: true },
   });
 
@@ -66,30 +85,58 @@ async function requireArticle(articleId) {
 }
 
 /**
- * 发表评论。评论者取 token 中的 userId，不接受请求体里的作者字段。
+ * 发表评论（含回复）。评论者取 token 中的 userId，不接受请求体里的作者字段。
  *
- * @param {{ articleId: number, content: string }} payload 已校验的请求体
+ * parentId 校验链（docs/API.md，按序判定，第 7 批）：
+ *   ① 文章可评论（requireArticle：存在 / 未软删 / PUBLISHED）→ 否则 404；
+ *   ② 父评论存在且未软删 → 否则 404（message「父评论不存在或已删除」）；
+ *   ③ 父评论 articleId 必须等于本次 articleId → 否则 400（防跨文章挂接）；
+ *   ④ 父评论必须是顶层（自身 parentId 为 null）→ 否则 400（两层硬限制，
+ *      用户拍板 2026-10-18，杜绝无限递归把 UI 撑爆）。
+ *
+ * @param {{ articleId: number, content: string, parentId?: number }} payload 已校验的请求体
  * @param {number} authorId
  */
 export async function createComment(payload, authorId) {
+  // ① 文章可评论（草稿 / 软删 / 不存在一律 404）。
   await requireArticle(payload.articleId);
+
+  let parentId = null;
+  if (payload.parentId !== undefined && payload.parentId !== null) {
+    const parent = await prisma.comment.findFirst({
+      where: whereNotDeleted({ id: payload.parentId }),
+      select: { id: true, articleId: true, parentId: true },
+    });
+
+    // ② 父评论存在且未软删。
+    if (!parent) {
+      throw httpError(404, CODE.NOT_FOUND, '父评论不存在或已删除');
+    }
+
+    // ③ 同文章：不能把 A 文章的回复挂到 B 文章下。
+    if (parent.articleId !== payload.articleId) {
+      throw httpError(400, CODE.PARAM_ERROR, '父评论与文章不匹配，不能跨文章回复');
+    }
+
+    // ④ 父必须是顶层：两层硬限制，回复的回复直接拦截。
+    if (parent.parentId !== null) {
+      throw httpError(400, CODE.PARAM_ERROR, '评论最多两层，不能回复回复');
+    }
+
+    parentId = parent.id;
+  }
 
   const comment = await prisma.comment.create({
     data: {
       articleId: payload.articleId,
       content: payload.content,
       authorId,
+      parentId,
     },
     select: COMMENT_SELECT,
   });
 
-  return {
-    id: comment.id,
-    articleId: comment.articleId,
-    content: comment.content,
-    author: toAuthor(comment.author),
-    createdAt: comment.createdAt,
-  };
+  return toComment(comment);
 }
 
 /**
@@ -164,10 +211,20 @@ export async function deleteComment(id, userId) {
     throw httpError(403, CODE.FORBIDDEN, '无权删除该评论');
   }
 
-  await prisma.comment.update({
-    where: { id },
-    data: { deletedAt: new Date() },
-  });
+  // 第 7 批：软删 + 级联软删子评论在同一事务内。
+  // 两层硬限制下，子评论的 parentId 直接指向本评论，一条 updateMany 覆盖整个子树
+  //（无需递归）；`deletedAt: null` 条件保证已软删的子评论不重复置时间戳。
+  // 删除子评论（parentId 非 null）时 updateMany 命中 0 行，天然无副作用。
+  await prisma.$transaction([
+    prisma.comment.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    }),
+    prisma.comment.updateMany({
+      where: { parentId: id, deletedAt: null },
+      data: { deletedAt: new Date() },
+    }),
+  ]);
 
   return null;
 }

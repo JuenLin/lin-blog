@@ -1,7 +1,7 @@
 import prisma from '../utils/prisma.js';
 import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
-import { parseKeyword, parseCategory } from '../validators/article.validator.js';
+import { parseKeyword, parseCategory, parseTag, TAG_NAME_MAX_LENGTH } from '../validators/article.validator.js';
 import { CODE, httpError } from '../utils/response.js';
 
 // docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id / likeCount，默认 createdAt desc。
@@ -60,6 +60,13 @@ const ARTICLE_DETAIL_SELECT = {
   _count: {
     select: { likes: true },
   },
+  // 第 7 批：标签。与 _count.likes 同思路 —— select 内嵌关联，一次 SQL 拿全，
+  // **不是每篇文章再查一次**（N+1 防坑，docs/API.md「tag 语义」）。
+  // ArticleTag 中间表自身无名字，取 tag.name；orderBy 走关系列保证输出稳定（name asc）。
+  tags: {
+    select: { tag: { select: { name: true } } },
+    orderBy: { tag: { name: 'asc' } },
+  },
 };
 
 // 写入类操作只需要判断存在性与作者，不取正文。
@@ -88,12 +95,19 @@ function toAuthor(author) {
   };
 }
 
+// 第 7 批：从 select 出来的 ArticleTag[] 提取标签名数组。
+// select 已按 tag.name asc 排序（SQL 层），映射只是取字段；无标签时为 []（不是省略键）。
+function toTagNames(article) {
+  return (article.tags || []).map((item) => item.tag.name);
+}
+
 function toArticleDetail(article) {
   return {
     id: article.id,
     title: article.title,
     content: article.content,
     category: article.category,
+    tags: toTagNames(article),
     author: toAuthor(article.author),
     likeCount: article._count ? article._count.likes : 0,
     createdAt: article.createdAt,
@@ -107,6 +121,8 @@ function toArticleListItem(article) {
     title: article.title,
     summary: buildSummary(article.content),
     category: article.category,
+    // 第 7 批：标签名数组（name asc）。与详情同口径，前端 chip 直接渲染。
+    tags: toTagNames(article),
     author: toAuthor(article.author),
     // 与详情口径一致：实时 COUNT(*)。_count 缺失时降级为 0 而不是 undefined，
     // 这样「接口没返回」和「确实是 0」对前端是同一个值（docs/API.md 的约定）。
@@ -119,23 +135,69 @@ function toArticleListItem(article) {
 /**
  * 发布文章。作者取 token 中的 userId，不接受请求体里的作者字段。
  *
- * @param {{ title: string, content: string }} payload 已校验的请求体
- * @param {number} authorId
+ * 第 7 批：tags 处理（upsert 标签 + 建关联）与文章创建同事务，失败整体回滚。
  */
 export async function createArticle(payload, authorId) {
-  const article = await prisma.article.create({
-    data: {
-      title: payload.title,
-      content: payload.content,
-      category: payload.category ?? '未分类',
-      // 第 6 批：status 省略或 PUBLISHED 都是发布；DRAFT 创建草稿。
-      status: payload.status ?? 'PUBLISHED',
-      authorId,
-    },
-    select: ARTICLE_DETAIL_SELECT,
-  });
+  return prisma.$transaction(async (tx) => {
+    const article = await tx.article.create({
+      data: {
+        title: payload.title,
+        content: payload.content,
+        category: payload.category ?? '未分类',
+        // 第 6 批：status 省略或 PUBLISHED 都是发布；DRAFT 创建草稿。
+        status: payload.status ?? 'PUBLISHED',
+        authorId,
+      },
+      select: { id: true },
+    });
 
-  return toArticleDetail(article);
+    // 第 7 批：空数组 = 无标签（跳过中间表写入，省一次空 deleteMany）。
+    if (payload.tags.length > 0) {
+      await applyTags(tx, article.id, payload.tags);
+    }
+
+    // create 的返回发生在关联写入之前，重新查一次拿完整对象（含 tags 与 likeCount）。
+    const full = await tx.article.findUnique({
+      where: { id: article.id },
+      select: ARTICLE_DETAIL_SELECT,
+    });
+
+    return toArticleDetail(full);
+  });
+}
+
+/**
+ * 第 7 批：把 tagNames 全量应用到 articleId（全量替换语义）。
+ *
+ * 必须在事务（tx）内调用——upsert / 删旧 / 建新三步必须原子，否则中途失败
+ * 会留下「旧关联已删、新关联未建」的空窗。
+ *
+ * upsert 的并发语义：同名标签两个并发请求同时 upsert，由 `tags.name` 的
+ * DB 唯一约束兜底（Prisma upsert 在唯一键冲突时走 update 分支），不会产生重复行。
+ *
+ * @param {object} tx Prisma 事务客户端
+ * @param {number} articleId
+ * @param {string[]} tagNames 已过 zod 校验的标签名数组（trim 后非空、≤20 字、≤5 个）
+ */
+async function applyTags(tx, articleId, tagNames) {
+  const tags = await Promise.all(
+    tagNames.map((name) =>
+      tx.tag.upsert({
+        where: { name },
+        update: {},
+        create: { name },
+      }),
+    ),
+  );
+
+  // 全量替换：先清空旧关联再建新的。联合主键 (article_id, tag_id) 防重复关联。
+  await tx.articleTag.deleteMany({ where: { articleId } });
+
+  if (tags.length > 0) {
+    await tx.articleTag.createMany({
+      data: tags.map((tag) => ({ articleId, tagId: tag.id })),
+    });
+  }
 }
 
 /**
@@ -165,11 +227,22 @@ export async function listArticles(query) {
   const category = parseCategory(query);
   const categoryWhere = category ? { category } : {};
 
+  // 第 7 批：标签筛选，与 keyword / category 三者正交可叠加。
+  // some + 关联导航编译成 EXISTS 子查询，仍在同一条 SQL 里（N+1 防坑）。
+  // 标签不存在是合法筛选结果（空列表），parseTag 只做格式校验，不做存在性校验。
+  const tag = parseTag(query);
+  const tagWhere = tag ? { tags: { some: { tag: { name: tag } } } } : {};
+
   // whereNotDeleted 内部是 { ...where, deletedAt: null }，
   // 所以 OR 条件与软删除过滤是 AND 关系：软删除的文章搜不到（docs/API.md 语义第 5 条）。
   // searchWhere(OR...) 与 categoryWhere 平铺合并 → 二者也是 AND 关系，实现「正交可叠加」。
   // 第 6 批：公开广场只认 PUBLISHED，草稿（DRAFT）与已软删都不出现（docs/API.md 该节）。
-  const where = whereNotDeleted({ ...searchWhere, ...categoryWhere, status: 'PUBLISHED' });
+  const where = whereNotDeleted({
+    ...searchWhere,
+    ...categoryWhere,
+    ...tagWhere,
+    status: 'PUBLISHED',
+  });
 
   // 列表要生成 summary，必须取 content。pageSize 上限 100，100 条 MEDIUMTEXT 对 MVP 可接受。
   const [rows, total] = await Promise.all([
@@ -267,39 +340,50 @@ export async function updateArticle(id, payload, userId) {
     },
   });
 
-  // 仅当更新前是 PUBLISHED 才快照；DRAFT 不进版本历史。
-  if (current && current.status === 'PUBLISHED') {
-    await prisma.articleRevision.create({
-      data: {
-        articleId: id,
-        title: current.title,
-        content: current.content,
-        category: current.category,
-        authorId: current.authorId,
-      },
+  // 第 7 批：快照 + 更新 + 标签全量替换放进同一事务——任一步失败整体回滚，
+  // 不会出现「快照已写、正文没更新」或「正文已更新、标签替换失败留下旧关联」的中间态。
+  return prisma.$transaction(async (tx) => {
+    // 仅当更新前是 PUBLISHED 才快照；DRAFT 不进版本历史。
+    if (current && current.status === 'PUBLISHED') {
+      await tx.articleRevision.create({
+        data: {
+          articleId: id,
+          title: current.title,
+          content: current.content,
+          category: current.category,
+          authorId: current.authorId,
+        },
+      });
+    }
+
+    // category 三态：不传（undefined）→ 保留原值（不写该字段）；传了合法值 → 更新。
+    const data = {
+      title: payload.title,
+      content: payload.content,
+    };
+    if (payload.category !== undefined) {
+      data.category = payload.category;
+    }
+    // status 三态：不传（undefined）→ 保留原值；传了 DRAFT/PUBLISHED → 显式切换。
+    if (payload.status !== undefined) {
+      data.status = payload.status;
+    }
+
+    await tx.article.update({ where: { id }, data });
+
+    // tags 三态（第 7 批，与 category 一致）：不传 = 保留原关联（不动中间表）；
+    // 传了（含 []）= 全量替换（applyTags 内先删旧再建新）。
+    if (payload.tags !== undefined) {
+      await applyTags(tx, id, payload.tags);
+    }
+
+    const updated = await tx.article.findUnique({
+      where: { id },
+      select: ARTICLE_DETAIL_SELECT,
     });
-  }
 
-  // category 三态：不传（undefined）→ 保留原值（不写该字段）；传了合法值 → 更新。
-  const data = {
-    title: payload.title,
-    content: payload.content,
-  };
-  if (payload.category !== undefined) {
-    data.category = payload.category;
-  }
-  // status 三态：不传（undefined）→ 保留原值；传了 DRAFT/PUBLISHED → 显式切换。
-  if (payload.status !== undefined) {
-    data.status = payload.status;
-  }
-
-  const updated = await prisma.article.update({
-    where: { id },
-    data,
-    select: ARTICLE_DETAIL_SELECT,
+    return toArticleDetail(updated);
   });
-
-  return toArticleDetail(updated);
 }
 
 /**
@@ -344,7 +428,7 @@ export async function deleteArticle(id, userId) {
  * @param {number} userId 来自 token
  */
 export async function autoSaveArticle(payload, userId) {
-  const { title, content, category, draftId, sourceArticleId } = payload;
+  const { title, content, category, tags, draftId, sourceArticleId } = payload;
 
   // ① 有 draftId：更新已有草稿。
   if (draftId !== undefined && draftId !== null) {
@@ -362,10 +446,18 @@ export async function autoSaveArticle(payload, userId) {
     if (category !== undefined) data.category = category;
     // status 保持 DRAFT，不在此处被改。
 
-    const updated = await prisma.article.update({
-      where: { id: draftId },
-      data,
-      select: { id: true, status: true },
+    // tags 三态（第 7 批同 PUT）：不传 = 不动草稿已有标签；传了 = 全量替换。
+    // 与内容更新同事务，防止「正文存了、标签没存」的半保存态。
+    const updated = await prisma.$transaction(async (tx) => {
+      const u = await tx.article.update({
+        where: { id: draftId },
+        data,
+        select: { id: true, status: true },
+      });
+      if (tags !== undefined) {
+        await applyTags(tx, draftId, tags);
+      }
+      return u;
     });
 
     return { id: updated.id, status: updated.status, saved: true };
@@ -391,15 +483,23 @@ export async function autoSaveArticle(payload, userId) {
     }
   }
 
-  const created = await prisma.article.create({
-    data: {
-      title: titleStr,
-      content: contentStr,
-      category: category ?? '未分类',
-      status: 'DRAFT',
-      authorId: userId,
-    },
-    select: { id: true, status: true },
+  // 第 7 批：新建草稿也接收 tags（用户在首 keystroke 就打了标签的场景）。
+  // create 与建关联同事务；空数组跳过。
+  const created = await prisma.$transaction(async (tx) => {
+    const row = await tx.article.create({
+      data: {
+        title: titleStr,
+        content: contentStr,
+        category: category ?? '未分类',
+        status: 'DRAFT',
+        authorId: userId,
+      },
+      select: { id: true, status: true },
+    });
+    if (tags !== undefined && tags.length > 0) {
+      await applyTags(tx, row.id, tags);
+    }
+    return row;
   });
 
   return { id: created.id, status: created.status, saved: true };
@@ -448,6 +548,62 @@ export async function listDrafts(userId, query) {
     list: rows.map((row) => ({ ...toArticleListItem(row), content: row.content })),
     ...buildPaginationMeta(pagination.page, pagination.pageSize, total),
   };
+}
+
+/**
+ * 热门标签列表。对应 docs/API.md 的 GET /api/tags（第 7 批新增）。
+ *
+ * N+1 防坑：groupBy 一次聚合 + 一次 findMany(where id in) 补名字，
+ * 固定两步查询，不随标签数量增长（docs/API.md 该节「性能口径」）。
+ *
+ * 口径：
+ * - articleCount 只数 PUBLISHED 且未软删的文章（坑 4 同口径）——groupBy 的 where
+ *   下钻到 article 关系，用 whereNotDeleted({ status: 'PUBLISHED' }) 复用统一软删过滤。
+ * - 0 篇文章的标签不出现在列表里（groupBy 只产出有行的分组）。
+ * - 排序 articleCount desc → name asc：groupBy 原生只支持按 _count 排，
+ *   name 次级排序在 JS 侧做（标签总量有限，内存排序可控）。
+ *
+ * @param {object} query Express 的 req.query（limit，默认 20，上限 100）
+ */
+export async function listHotTags(query) {
+  const source = query && typeof query === 'object' ? query : {};
+
+  let limit = 20;
+  if (source.limit !== undefined) {
+    if (Array.isArray(source.limit)) {
+      throw httpError(400, CODE.PARAM_ERROR, 'limit 不允许重复传值');
+    }
+    const parsed = Number(source.limit);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+      throw httpError(400, CODE.PARAM_ERROR, 'limit 必须是 1-100 的整数');
+    }
+    limit = parsed;
+  }
+
+  const grouped = await prisma.articleTag.groupBy({
+    by: ['tagId'],
+    _count: { _all: true },
+    where: { article: whereNotDeleted({ status: 'PUBLISHED' }) },
+    orderBy: { _count: { tagId: 'desc' } },
+  });
+
+  if (grouped.length === 0) {
+    return { list: [] };
+  }
+
+  const tags = await prisma.tag.findMany({
+    where: { id: { in: grouped.map((row) => row.tagId) } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(tags.map((tag) => [tag.id, tag.name]));
+
+  const list = grouped
+    .map((row) => ({ id: row.tagId, name: nameById.get(row.tagId), articleCount: row._count._all }))
+    // 次级排序 name asc（并列计数时输出稳定，探针可断言）。
+    .sort((a, b) => b.articleCount - a.articleCount || a.name.localeCompare(b.name, 'zh-Hans-CN'))
+    .slice(0, limit);
+
+  return { list };
 }
 
 /**

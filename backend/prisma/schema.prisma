@@ -77,6 +77,7 @@ model Article {
   comments  Comment[]
   likes     Like[]
   revisions ArticleRevision[]
+  tags      ArticleTag[]
 
   @@index([deletedAt, createdAt])
   @@index([deletedAt, updatedAt])
@@ -105,13 +106,46 @@ model Comment {
   article   Article   @relation(fields: [articleId], references: [id])
   authorId  Int       @map("author_id")
   author    User      @relation(fields: [authorId], references: [id])
+  // 第 7 批（用户批准）：父评论自引用。NULL = 顶层评论；非空 = 对该评论的回复。
+  // 两层硬限制（parentId 只允许指向顶层评论）由应用层校验，DB 层无法表达该约束。
+  // onDelete: Cascade 兜底硬删场景；软删父评论的级联软删由应用层事务完成。
+  parentId  Int?      @map("parent_id")
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("CommentReplies")
   content   String    @db.VarChar(500)
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
   @@index([articleId, createdAt])
+  @@index([parentId])
   @@map("comments")
+}
+
+// 第 7 批（用户批准）：标签多对多。tags.name 的 DB 唯一约束是「防重复标签」的
+// 唯一真相（应用层 upsert 的竞态兜底，同 likes / follows 的唯一约束纪律）。
+model Tag {
+  id        Int          @id @default(autoincrement())
+  name      String       @unique @db.VarChar(20)
+  createdAt DateTime     @default(now()) @map("created_at")
+  articles  ArticleTag[]
+
+  @@map("tags")
+}
+
+// 中间表与 likes / follows 同构：无 deleted_at / updated_at（关联的存在即事实，
+// 解除关联是物理 DELETE）。联合主键防重复关联；双 Cascade 外键兜底硬删清理
+// （本项目删文章走软删，行不消失、关联保留，所有公开出口已过滤，无泄露）。
+model ArticleTag {
+  articleId Int      @map("article_id")
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tagId     Int      @map("tag_id")
+  tag       Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([articleId, tagId])
+  @@index([tagId])
+  @@map("article_tags")
 }
 
 // 第十批：文章点赞。

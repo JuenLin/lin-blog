@@ -23,6 +23,27 @@ export const ARTICLE_CATEGORIES = ['技术', '生活', '随笔', '未分类'];
 // 第 6 批：发布状态枚举。DRAFT = 仅作者草稿箱可见；PUBLISHED = 公开。
 export const ARTICLE_STATUSES = ['DRAFT', 'PUBLISHED'];
 
+/* ---------- 第 7 批：标签 ---------- */
+
+// 标签名上限（docs/API.md：trim 后 1–20 字符）与每篇标签数上限（≤5）。
+// 后端唯一真相；前端写死同样两个数字，不做常量共享（同 ARTICLE_CATEGORIES 的先例）。
+export const TAG_NAME_MAX_LENGTH = 20;
+export const ARTICLE_TAGS_MAX = 5;
+
+// 单个标签名：trim 后非空、≤20 字符。trim 在 zod 层完成（「 Vue 」入库为「Vue」）。
+// 大小写不敏感是 DB 层行为：tags.name 列为 utf8mb4_unicode_ci，「Vue」与「vue」
+// 在唯一约束判重、upsert 复用、?tag= 筛选时都是同一个标签（2026-10-18 探针实测确认）。
+const tagNameSchema = z
+  .string()
+  .trim()
+  .refine((value) => value.length > 0, '不能为空')
+  .refine((value) => value.length <= TAG_NAME_MAX_LENGTH, `不能超过 ${TAG_NAME_MAX_LENGTH} 个字符`);
+
+// 标签数组：每篇最多 5 个；整组校验，任一非法整体 400 / 40000（不做静默截断/过滤）。
+export const tagsSchema = z
+  .array(tagNameSchema)
+  .max(ARTICLE_TAGS_MAX, `每篇文章最多 ${ARTICLE_TAGS_MAX} 个标签`);
+
 export const createArticleSchema = z.object({
   title: titleSchema,
   content: contentSchema,
@@ -30,6 +51,8 @@ export const createArticleSchema = z.object({
   category: z.enum(ARTICLE_CATEGORIES).optional().default('未分类'),
   // 第 6 批：省略或传 PUBLISHED 都是发布；传 DRAFT 创建草稿（仅作者草稿箱可见）。
   status: z.enum(ARTICLE_STATUSES).optional().default('PUBLISHED'),
+  // 第 7 批：省略 = 空数组（新文章无标签）。
+  tags: tagsSchema.optional().default([]),
 });
 
 // PUT 是全量更新，title 与 content 都必填，校验规则与创建一致。
@@ -40,6 +63,8 @@ export const updateArticleSchema = z.object({
   category: z.enum(ARTICLE_CATEGORIES).optional(),
   // 第 6 批：省略 = 保留原 status；传 DRAFT/PUBLISHED 显式切换。
   status: z.enum(ARTICLE_STATUSES).optional(),
+  // 第 7 批三态（与 category 一致）：不传 = 保留原关联；传（含 []）= 全量替换。
+  tags: tagsSchema.optional(),
 });
 
 // 第 6 批：自动保存草稿请求体。
@@ -55,6 +80,8 @@ export const autoSaveSchema = z.object({
   title: z.string().optional(),
   content: z.string().optional(),
   category: z.enum(ARTICLE_CATEGORIES).optional(),
+  // 第 7 批三态同 PUT：不传 = 不动草稿已有标签；传了 = 全量替换。
+  tags: tagsSchema.optional(),
   draftId: z.coerce.number().int('必须是整数').positive('必须是正整数').optional(),
   sourceArticleId: z.coerce.number().int('必须是整数').positive('必须是正整数').optional(),
 });
@@ -162,6 +189,48 @@ export function parseCategory(query) {
 
   if (!ARTICLE_CATEGORIES.includes(trimmed)) {
     throw httpError(400, CODE.PARAM_ERROR, `category 只能是 ${ARTICLE_CATEGORIES.join(' / ')} 之一`);
+  }
+
+  return trimmed;
+}
+
+/* ---------- 列表 tag（标签筛选，第 7 批） ---------- */
+
+// 与 parseCategory 同款同层：由 service 层的 listArticles 调用。
+// 语义（与 docs/API.md 一致）：
+// - 不传 / 空串 / 纯空白 = 视为不传，返回 null（不过滤）。
+// - 重复传值 / 非字符串 = 抛 400 / 40000。
+// - trim 后超 20 字符（与创建侧 TAG_NAME_MAX_LENGTH 同一口径）= 400 / 40000。
+// - 合法值 = 精确标签名匹配（大小写不敏感：tags.name 列为 ci 排序规则，与创建侧同行为）。
+// - 标签不存在是合法筛选结果（空列表），这里只做**格式**校验，不做存在性校验。
+//
+// @param {object} query Express 的 req.query
+// @returns {string|null} 规范化后的标签名，未传或为空则 null
+// @throws {Error} 400 / 40000（重复传值 / 非字符串 / 超长）
+export function parseTag(query) {
+  const source = query && typeof query === 'object' ? query : {};
+  const value = source.tag;
+
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    throw httpError(400, CODE.PARAM_ERROR, 'tag 不允许重复传值');
+  }
+
+  if (typeof value !== 'string') {
+    throw httpError(400, CODE.PARAM_ERROR, 'tag 必须是字符串');
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed === '') {
+    return null;
+  }
+
+  if (trimmed.length > TAG_NAME_MAX_LENGTH) {
+    throw httpError(400, CODE.PARAM_ERROR, `tag 最多 ${TAG_NAME_MAX_LENGTH} 个字符`);
   }
 
   return trimmed;
