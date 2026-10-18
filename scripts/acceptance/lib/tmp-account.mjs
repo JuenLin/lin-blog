@@ -58,10 +58,42 @@ export async function cleanupProbeAccounts(usernames) {
   const prisma = await getPrisma();
 
   try {
-    const result = await prisma.user.deleteMany({
+    // 先拿到这些账号的 id（用户名 → id）。
+    const users = await prisma.user.findMany({
+      where: { username: { in: targets } },
+      select: { id: true },
+    });
+    const ids = users.map((u) => u.id);
+    if (ids.length === 0) return 0;
+
+    // 这些账号名下造过的文章（用于连带清理其评论 / 点赞 / 通知）。
+    const articleIds = (
+      await prisma.article.findMany({ where: { authorId: { in: ids } }, select: { id: true } })
+    ).map((a) => a.id);
+
+    // 外键顺序（全部 RESTRICT，必须按依赖反向删）：
+    // 通知 → 点赞 → 关注 → 评论 → 文章 → 用户。
+    // ⚠️ 第 8 批新增 notifications 表，actor_id / user_id 都指向 users 且 RESTRICT；
+    //    之前的探针账号只要在评论 / 点赞 / 关注里当过触发者或接收者，就会在硬删用户时
+    //    触发 P2003。这里按 `id: { in: [...] }` 精确清理，绝不误伤真实数据。
+    await prisma.notification.deleteMany({
       where: {
-        username: { in: targets },
+        OR: [{ actorId: { in: ids } }, { userId: { in: ids } }, { articleId: { in: articleIds } }],
       },
+    });
+    await prisma.like.deleteMany({
+      where: { OR: [{ userId: { in: ids } }, { articleId: { in: articleIds } }] },
+    });
+    await prisma.follow.deleteMany({
+      where: { OR: [{ followerId: { in: ids } }, { followingId: { in: ids } }] },
+    });
+    await prisma.comment.deleteMany({
+      where: { OR: [{ authorId: { in: ids } }, { articleId: { in: articleIds } }] },
+    });
+    await prisma.article.deleteMany({ where: { id: { in: articleIds } } });
+
+    const result = await prisma.user.deleteMany({
+      where: { username: { in: targets } },
     });
 
     return result.count;

@@ -265,9 +265,14 @@ if (s) try {
     const rest = await s.evaluate(`document.querySelectorAll('.article-card').length`);
     await shot('03-page2');
     okP ? pass('A3-1', '点第 2 页发出 page=2', (net.find((n) => n.url.includes('page=2')) || {}).url || '') : fail('A3-1', '点第 2 页发出 page=2', '未捕获');
-    rest === totalAfter - PAGE_SIZE
-      ? pass('A3-2', `第 2 页渲染剩余 ${totalAfter - PAGE_SIZE} 条`, `实测 ${rest} 条`)
-      : fail('A3-2', `第 2 页渲染剩余 ${totalAfter - PAGE_SIZE} 条`, `实测 ${rest} 条`);
+    // ⚠️ 第 2 页条数要按 PAGE_SIZE 截断：总数 > 2×PAGE_SIZE 时第 2 页是满页（PAGE_SIZE 条），
+    // 剩下的进第 3 页。原先直接写 `totalAfter - PAGE_SIZE`，在基线漂移（可见文章 > 20）
+    // 后会算出一个超过 PAGE_SIZE 的期望值（如 21-10=11），而第 2 页最多只有 PAGE_SIZE(10) 条，
+    // 于是恒 FAIL。正确期望 = min(PAGE_SIZE, totalAfter - PAGE_SIZE)。
+    const expectedPage2 = Math.min(PAGE_SIZE, totalAfter - PAGE_SIZE);
+    rest === expectedPage2
+      ? pass('A3-2', `第 2 页渲染 ${expectedPage2} 条`, `实测 ${rest} 条`)
+      : fail('A3-2', `第 2 页渲染 ${expectedPage2} 条`, `实测 ${rest} 条`);
 
     net = [];
     await clickText('.el-pagination__sizes .el-select__wrapper, .el-pagination__sizes input', '条/页');
