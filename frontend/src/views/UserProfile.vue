@@ -85,6 +85,10 @@
       <template v-else>
         <el-tabs v-model="activeTab" class="profile-tabs" @tab-change="handleTabChange">
           <el-tab-pane label="文章" name="articles" />
+          <!-- 第 10 批：系列 Tab。**公开**（不对 isOwner 设限）—— 系列列表和文章列表
+               一样是公开数据（GET /users/:id/series 无需登录），点赞 / 收藏 / 草稿
+               才是「需要登录才能看的自己专属数据」（/me 系列语义，用户拍板）。 -->
+          <el-tab-pane label="系列" name="series" />
           <!-- 点赞 / 收藏 / 草稿 Tab 仅本人可见：查的是 /users/me/*，接口只允许查自己。
                isOwner 是 computed，userStore.user 到位后（AppHeader 的 fetchMe 返回）
                Tab 自动出现，不需要刷新页面。首屏 user 还没到位时会短暂只有文章 Tab。 -->
@@ -153,6 +157,26 @@
             />
           </template>
 
+          <!-- 第 10 批：系列列表。自定义行（不复用 ArticleCard）：系列没有详情页可跳，
+               行内容是标题 / 描述 / 篇数 / 创建时间，纯展示不可点。 -->
+          <template v-else-if="activeTab === 'series'">
+            <div v-for="item in currentState.list" :key="item.id" class="series-row">
+              <div class="series-row-head">
+                <span class="series-row-title">{{ item.title }}</span>
+                <span class="series-row-count">{{ item.articleCount }} 篇</span>
+              </div>
+              <p v-if="item.description" class="series-row-desc">{{ item.description }}</p>
+              <span class="series-row-time">创建于 {{ formatRelativeTime(item.createdAt) }}</span>
+            </div>
+
+            <Pagination
+              :page="currentState.page"
+              :page-size="currentState.pageSize"
+              :total="currentState.total"
+              @change="handlePageChange"
+            />
+          </template>
+
           <template v-else>
             <ArticleCard v-for="item in currentState.list" :key="item.id" :article="item" />
 
@@ -177,6 +201,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getUser, listMyBookmarks, listMyLikes, listUserArticles, followUser, unfollowUser } from '../api/user.js';
+import { listUserSeries } from '../api/series.js';
 import { deleteDraft, listMyDrafts } from '../api/article.js';
 import {
   formatRelativeTime,
@@ -233,12 +258,15 @@ function makeTabState(emptyText) {
 }
 
 const articlesState = makeTabState('还没有发布文章');
+// 第 10 批：系列 Tab（公开）。
+const seriesState = makeTabState('还没有创建任何系列');
 const likesState = makeTabState('还没有点赞过任何文章');
 // 第 9 批：收藏 Tab。与点赞 Tab 完全对镜（同样的 makeTabState 模式）。
 const bookmarksState = makeTabState('还没有收藏过任何文章');
 const draftsState = makeTabState('还没有草稿，去写一篇吧');
 
 const currentState = computed(() => {
+  if (activeTab.value === 'series') return seriesState;
   if (activeTab.value === 'likes') return likesState;
   if (activeTab.value === 'bookmarks') return bookmarksState;
   if (activeTab.value === 'drafts') return draftsState;
@@ -365,6 +393,7 @@ function resetTabState(state) {
 
 function resetAll() {
   resetTabState(articlesState);
+  resetTabState(seriesState);
   resetTabState(likesState);
   resetTabState(bookmarksState);
   resetTabState(draftsState);
@@ -444,6 +473,27 @@ async function loadBookmarks() {
   }
 }
 
+// 第 10 批：某用户的系列列表（公开接口 GET /users/:id/series，无需登录）。
+// 固定 createdAt desc（接口无排序参数）；list[] 不带 author（路径已指定用户）。
+async function loadSeries() {
+  const id = targetId.value;
+  if (id === null) return;
+  seriesState.loading = true;
+  try {
+    const data = await listUserSeries(id, {
+      page: seriesState.page,
+      pageSize: seriesState.pageSize,
+    });
+    seriesState.list = (data && data.list) || [];
+    seriesState.total = (data && data.total) || 0;
+  } catch (error) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    seriesState.loading = false;
+    seriesState.initialized = true;
+  }
+}
+
 // 第 6 批：草稿箱列表。默认 updatedAt 倒序（最近编辑的在前），Tab 不暴露排序控件。
 // list[] 每条带 content 全文（回填编辑器用），本页只渲染 summary，不浪费渲染。
 async function loadDrafts() {
@@ -514,20 +564,23 @@ async function handleDeleteDraft(item) {
  */
 function handleTabChange(name) {
   const state =
-    name === 'likes'
-      ? likesState
-      : name === 'bookmarks'
-        ? bookmarksState
-        : name === 'drafts'
-          ? draftsState
-          : articlesState;
+    name === 'series'
+      ? seriesState
+      : name === 'likes'
+        ? likesState
+        : name === 'bookmarks'
+          ? bookmarksState
+          : name === 'drafts'
+            ? draftsState
+            : articlesState;
   state.page = 1;
   state.list = [];
   state.total = 0;
   // 让骨架屏重新出现：这次是「换数据集」，不是「翻页保旧列表」
   state.initialized = false;
 
-  if (name === 'likes') loadLikes();
+  if (name === 'series') loadSeries();
+  else if (name === 'likes') loadLikes();
   else if (name === 'bookmarks') loadBookmarks();
   else if (name === 'drafts') loadDrafts();
   else loadArticles();
@@ -541,7 +594,8 @@ function handlePageChange({ page, pageSize }) {
   const state = currentState.value;
   state.page = page;
   state.pageSize = pageSize;
-  if (activeTab.value === 'likes') loadLikes();
+  if (activeTab.value === 'series') loadSeries();
+  else if (activeTab.value === 'likes') loadLikes();
   else if (activeTab.value === 'bookmarks') loadBookmarks();
   else if (activeTab.value === 'drafts') loadDrafts();
   else loadArticles();
@@ -799,5 +853,63 @@ onMounted(() => {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+}
+
+/* 第 10 批：系列行。与草稿行同款布局（分隔线列表行），纯展示不可点。 */
+.series-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.series-row:last-of-type {
+  border-bottom: none;
+}
+
+.series-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.series-row-title {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.series-row-count {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.series-row-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.series-row-time {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-faint);
 }
 </style>

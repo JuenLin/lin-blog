@@ -138,3 +138,34 @@ export function listHotTags(params) {
 export function recordArticleView(id) {
   return request.post(`/articles/${id}/view`);
 }
+
+// ---------- 第 10 批：文章配图上传 ----------
+
+/**
+ * 上传文章配图，返回站内 URL 供正文 Markdown 引用。对应 docs/API.md 的
+ * POST /api/articles/upload-image。**需要登录**。
+ *
+ * **只落盘、不写库**：URL 由调用方（ArticleEditor）插入正文 `![](url)`，
+ * 随文章 content 一起存储；articles 表没有图片列。
+ *
+ * 约束（与头像上传同款，前端先拦一道、后端 zod/multer 再拦一道）：
+ *   - 字段名 **image**（与后端 multer single('image') 对齐）
+ *   - ≤ 2MB；仅 image/jpeg / image/png / image/webp（不收 SVG / GIF）
+ *
+ * ⚠️ Content-Type 置 undefined 的两道保险与 uploadAvatar 完全相同
+ * （request.js 默认 application/json 会破坏 multipart boundary），
+ * 详见 api/user.js 的 uploadAvatar 注释——这个坑改请求库时必看。
+ *
+ * @param {File} file 来自 <input type="file"> 或粘贴 / 拖拽的图片文件
+ * @returns {Promise<{url: string}>} 形如 `/uploads/articles/12/xxx.png`
+ */
+export function uploadArticleImage(file) {
+  const form = new FormData();
+
+  // 字段名必须是 image，与后端 multer 的 single('image') 对齐
+  form.append('image', file);
+
+  return request.post('/articles/upload-image', form, {
+    headers: { 'Content-Type': undefined },
+  });
+}

@@ -131,6 +131,43 @@
           ># {{ t }}</span>
         </div>
 
+        <!-- 第 10 批：系列横幅。文章绑定了系列（seriesId != null）且系列详情已拉到、
+             当前篇在系列列表里时渲染。位置：meta 行/标签行下方、正文上方（用户拍板）。
+             与底部全局 prev/next 语义正交（时间线维度 vs 系列内顺序），不混装。
+             N = 系列列表下标 + 1，M = 系列文章总数（接口只返回已发布文章，
+             草稿不在列表里 → seriesIndex < 0 时横幅不渲染，防止「第 0 篇」）。 -->
+        <div
+          v-if="seriesBannerVisible"
+          class="series-banner"
+          data-testid="series-banner"
+        >
+          <div class="series-banner-main">
+            <span class="series-banner-tag">系列</span>
+            <span class="series-banner-title">{{ seriesTitle }}</span>
+            <span class="series-banner-pos">第 {{ seriesPosition }} 篇 / 共 {{ seriesTotal }} 篇</span>
+          </div>
+          <div class="series-banner-nav">
+            <span
+              class="series-banner-link"
+              :class="{ 'is-disabled': !seriesPrev }"
+              role="link"
+              tabindex="0"
+              :aria-disabled="!seriesPrev"
+              @click="goSeriesNeighbor(seriesPrev)"
+              @keydown.enter.prevent="goSeriesNeighbor(seriesPrev)"
+            >← 上一篇</span>
+            <span
+              class="series-banner-link"
+              :class="{ 'is-disabled': !seriesNext }"
+              role="link"
+              tabindex="0"
+              :aria-disabled="!seriesNext"
+              @click="goSeriesNeighbor(seriesNext)"
+              @keydown.enter.prevent="goSeriesNeighbor(seriesNext)"
+            >下一篇 →</span>
+          </div>
+        </div>
+
         <!-- 第 5 批：右侧悬浮目录（el-anchor，零新增依赖）。
              标题少于 2 个时组件自身不渲染。fixed 定位，DOM 位置不影响视觉。 -->
         <ArticleToc v-if="article.content" :content="article.content" />
@@ -235,6 +272,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { deleteArticle, getArticle, listArticles, listRevisions, recordArticleView, restoreArticle } from '../api/article.js';
+import { getSeries } from '../api/series.js';
 import { likeArticle, unlikeArticle, getArticleLiked } from '../api/like.js';
 import { bookmarkArticle, unbookmarkArticle, getArticleBookmarked } from '../api/bookmark.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
@@ -544,12 +582,83 @@ async function toggleLike() {
   }
 }
 
+/* --------------------------------------------------------------------------
+ * 第 10 批：系列横幅（系列内上/下篇）
+ * ------------------------------------------------------------------------ */
+
+// 系列详情（getSeries 的 data：{ id, title, articles: [{id,title,seriesOrder,summary}] }）。
+// 文章未绑定系列时恒为 null；换文章（load）时复位防串。
+const series = ref(null);
+
+// 只在 article.seriesId != null 时拉一次系列详情。闭包比对防过期响应
+// （请求期间切到另一篇文章，这份系列数据就作废了）——与 fetchLiked 同口径。
+// 失败静默：横幅不渲染，不影响正文阅读。
+async function fetchSeries() {
+  const target = article.value;
+
+  if (!target || target.seriesId == null) {
+    series.value = null;
+    return;
+  }
+
+  const requestedId = articleId.value;
+
+  try {
+    const data = await getSeries(target.seriesId);
+
+    if (requestedId !== articleId.value) return;
+
+    series.value = data && typeof data === 'object' ? data : null;
+  } catch {
+    if (requestedId === articleId.value) series.value = null;
+  }
+}
+
+// 当前篇在系列列表（已发布、seriesOrder 升序）里的下标。-1 = 不在列表
+// （典型：作者后来把文章改成草稿/软删后从详情页旧标签页进来）→ 横幅不渲染。
+const seriesIndex = computed(() => {
+  if (!series.value || !Array.isArray(series.value.articles)) return -1;
+  return series.value.articles.findIndex((a) => Number(a.id) === articleId.value);
+});
+
+const seriesBannerVisible = computed(
+  () => Boolean(article.value && article.value.seriesId != null && seriesIndex.value >= 0)
+);
+
+const seriesTitle = computed(() => (series.value && series.value.title) || '');
+
+// 「第 N 篇 / 共 M 篇」：N = 下标 + 1，M = 系列文章总数（接口只返回已发布文章）。
+const seriesPosition = computed(() => seriesIndex.value + 1);
+const seriesTotal = computed(() =>
+  series.value && Array.isArray(series.value.articles) ? series.value.articles.length : 0
+);
+
+// 系列内邻居：上 = seriesOrder 更早（下标 -1），下 = 更晚（下标 +1）。
+// 与全局 prev/next（时间线：上=更旧）语义不同，两套 computed 各自独立，不共用。
+const seriesPrev = computed(() => {
+  const i = seriesIndex.value;
+  if (i <= 0 || !series.value) return null;
+  return series.value.articles[i - 1];
+});
+const seriesNext = computed(() => {
+  const i = seriesIndex.value;
+  if (i < 0 || !series.value || i >= series.value.articles.length - 1) return null;
+  return series.value.articles[i + 1];
+});
+
+// 系列内跳转（客户端路由跳转，同组件复用，watch route.params.id 会触发 load）。
+function goSeriesNeighbor(target) {
+  if (!target) return;
+  router.push({ name: 'article-detail', params: { id: target.id } });
+}
+
 async function load() {
   loading.value = true;
   notFound.value = false;
   neighborWindow.value = []; // 重置，避免从上一篇/下一篇跳转时残留旧文章的邻居
   liked.value = false; // 换文章先复位，已登录时由下面的 fetchLiked() 拉真实值回填
   bookmarked.value = false; // 第 9 批：星标同理，由下面的 fetchBookmarked() 回填
+  series.value = null; // 第 10 批：系列横幅同理，复位后按新文章的 seriesId 重新拉
 
   try {
     article.value = await getArticle(route.params.id);
@@ -564,6 +673,9 @@ async function load() {
 
     // 第 9 批：记录一次阅读（免登录，不 await 阻塞渲染；判重在后端）。
     recordView();
+
+    // 第 10 批：文章绑定了系列时拉系列详情（不 await，横幅慢点出现没关系）。
+    fetchSeries();
   } catch (error) {
     // 文章不存在 / 已被软删除，后端返回 40400；详情页不抛红，按空态处理。
     article.value = null;
@@ -1052,5 +1164,84 @@ onBeforeUnmount(() => {
 .article-nav-link.is-disabled .article-nav-title {
   color: var(--text-faint);
   font-weight: 400;
+}
+
+/* 第 10 批：系列横幅。位于标签行下、正文上（用户拍板），琥珀色系呼应收藏星标
+   （同属「内容组织」类元素，不抢品牌色）。 */
+.series-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: -6px 0 20px;
+  padding: 10px 14px;
+  border: 1px solid var(--bookmark-border);
+  border-radius: 10px;
+  background: var(--bookmark-bg);
+}
+
+.series-banner-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.series-banner-tag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--chip-radius);
+  background: var(--bookmark-bg-active);
+  color: var(--bookmark-color);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.series-banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.series-banner-pos {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.series-banner-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.series-banner-link {
+  font-size: 13px;
+  color: var(--bookmark-color);
+  cursor: pointer;
+  user-select: none;
+  transition: opacity var(--transition-base);
+}
+
+.series-banner-link:hover,
+.series-banner-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.series-banner-link.is-disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  text-decoration: none;
 }
 </style>
