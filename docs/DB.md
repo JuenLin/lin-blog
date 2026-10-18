@@ -29,12 +29,13 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | 表名 | 说明 | 状态 |
 |---|---|---|
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`），第 5 批新增 `role` / `status` 两列（迁移 `add_user_role_status`） |
-| `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`） |
+| `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`），第 6 批新增 `status` 一列（迁移 `20261017125847_add_article_status`），第 9 批新增 `view_count` 一列（迁移待执行，见「第 9 批」小节） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`），第 7 批新增 `parent_id` 一列（同批迁移 `20261018014846_add_tags_and_article_tags`） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
+| `bookmarks` | 文章收藏表（第 9 批） | 待建（迁移待执行，草案见下方「bookmarks（收藏表）」小节） |
 | `tags` | 标签表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
 | `article_tags` | 文章-标签中间表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
-| `follows` | 关注关系表（第 4 批） | 待建（迁移待执行，草案见下方「follows（关注表）」小节） |
+| `follows` | 关注关系表（第 4 批） | 已建（迁移 `20261011083029_add_follows`） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
 
 ---
@@ -74,6 +75,7 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
 | category | category | VARCHAR(20) | 否 | '未分类' | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单校验，非法值返回 400/40000；老文章由迁移 `NOT NULL DEFAULT '未分类'` 自动回填，零 NULL |
 | status | status | ENUM('DRAFT','PUBLISHED') | 否 | 'PUBLISHED' | 发布状态；`DRAFT`=草稿（仅作者本人「草稿箱」可见，不进广场 / 不进公开详情）；`PUBLISHED`=已发布（进广场）。默认 PUBLISHED，INSTANT 回填零 NULL |
+| viewCount | view_count | INT | 否 | 0 | 累计阅读量（第 9 批），只由 `POST /api/articles/:id/view` 原子 +1（`prisma increment`）；与 `likeCount`（likes 表实时 COUNT）是两种口径。**不建索引**（理由见「第 9 批」小节） |
 
 ### `category` 分类列（分类功能，经用户批准新增）
 
@@ -124,6 +126,8 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 > **搜索（`keyword`）没有索引，是刻意为之**：`GET /api/articles` 的 `keyword` 走 `LIKE '%kw%'`（前缀带 `%`），B-tree 索引在这种模式下用不上，加普通索引只会成为**死索引**（白白占写入开销却从不命中）。真正的提速方案是 MySQL `FULLTEXT` 全文索引（需 `ngram` 解析器支持中文分词），但那要先确认 MySQL 版本与分词器可用性，属独立需求。
 >
 > 当前 MVP 数据量（文章两位数）下全表扫描完全可接受，故**暂不建任何搜索索引**。若将来文章量增长到扫描变慢，再评估 `FULLTEXT` 并按第 6 节的迁移流程登记。
+>
+> **不按 `viewCount`（`view_count`）建索引，是刻意的（第 9 批）**：「阅读最多」排序 `ORDER BY view_count DESC` 在 MVP 数据量下 filesort 无感；`view_count` 是**高频写入列**（每次阅读 +1），索引会拖慢每一次写入，而读取收益在当前量级为零。若将来文章量上百且「阅读最多」成为高频入口，再评估（按第 6 节迁移流程登记）。
 
 ### 建表 SQL（迁移生成，未手工改写）
 
@@ -623,6 +627,101 @@ LIMIT 10 OFFSET 0
 #### 并列与分页稳定
 
 `likeCount` 大量并列（多数文章都是 0 赞）时，**次级排序 `id` 是必需的** —— 否则同一批数据在相邻两页可能重复出现或整行丢失。`buildOrderBy()` 的 `DEFAULT_SECONDARY_SORT = 'id'` 会自动补上，`sortBy=likeCount` 无需额外配置。
+
+---
+
+## bookmarks（收藏表）
+
+Prisma 模型名 `Bookmark`，`@@map("bookmarks")`。**第 9 批新增，迁移待执行（`add_bookmarks_and_view_count`，与 `articles.view_count` 同批一次 migrate）。**
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键（代理键，无业务含义） |
+| userId | user_id | INT | 否 | 无 | 收藏人 id，外键 → `users.id` |
+| articleId | article_id | INT | 否 | 无 | 被收藏文章 id，外键 → `articles.id` |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 收藏时间（API 层平铺为虚拟字段 `bookmarkedAt`） |
+
+**本表刻意不设 `updated_at` 与 `deleted_at`**，与 `likes` / `follows` 同族，原因见下方「为什么没有软删除列」。
+
+### schema 变更已获批准（豁免登记）
+
+> **本节是一次「禁止修改数据库 schema」例外的书面登记。**
+> 契约 §2 禁止事项里的「禁止修改数据库 schema」在本次**经用户明确批准后豁免**。
+> 批准范围：**仅限新建 `bookmarks` 一张表**（含两条外键与两个索引）
+> **外加** `articles` 表新增 `view_count INT NOT NULL DEFAULT 0` 一列（两项同批但**独立登记**，见 `docs/AI_CONTRACT.md` §2「已批准的例外」第 13、14 项）。
+> 不含修改 `users` / `articles`（`view_count` 除外）/ `comments` / `likes` / `follows` 任何其他一列。
+> 批准依据与决策过程见 `docs/API.md`「收藏与阅读量（第 9 批）」章节。
+>
+> 注意：与第十批 `likes`、第 4 批 `follows` 一样，本次是**独立的一次批准**；其余 schema 变更仍需重新批准。
+
+### 与 likes 的逐项对镜，以及一处刻意相反
+
+| 维度 | likes（点赞） | bookmarks（收藏） |
+|---|---|---|
+| 表结构 | id / user_id / article_id / created_at | **同构** |
+| 唯一约束 | `likes_user_id_article_id_key` | `bookmarks_user_id_article_id_key`（同规则） |
+| 物理 DELETE（无 deleted_at） | 是 | **是（同族）** |
+| 外键 | 双 RESTRICT | 双 RESTRICT |
+| 重复 POST | **40900**（动作冲突，暴露给前端处理） | **200 幂等**（目标状态已达成，无冲突） |
+| 取消未做过的 | **40400** | **200 幂等** |
+| 通知（第 8 批） | 接 `LIKE` 通知 | **不产生通知**（纯个人整理） |
+
+**为什么收藏是幂等 200 而点赞是 409 / 404**：点赞的重复 / 误取消被定义为「调用方的错误假设」（按钮点两次、状态不同步），用错误码把问题暴露给前端；收藏是「稍后看」的整理行为，重复收藏 / 重复取消都意味着目标状态已达成，没有冲突可言——与 `follows`（关注 / 取关均幂等 200）同一条设计线。`bookmarks` 与 `follows` 在数据层同族（唯一约束 + 物理 DELETE + RESTRICT 外键），错误码语义随家族，不随 likes。
+
+### 唯一约束是防重复收藏的唯一真相
+
+`@@unique([userId, articleId])`（`bookmarks_user_id_article_id_key`）。应用层「先查后写」存在竞态窗口，与 likes / follows 同一纪律：**直接 `create`，由 DB 唯一约束最终拦截**。区别只在拦截后的语义——`P2002` 在这里**不是错误**，转成「已收藏」的幂等成功（200）；而 likes 转 409、follows 直接幂等成功。
+
+### 索引
+
+- `bookmarks_user_id_article_id_key`（唯一约束）：防重复收藏；左前缀承担 `WHERE user_id = ?`（「我的收藏」按人查）。
+- `bookmarks_article_id_idx`：支撑两处查询——①「某篇文章的收藏数」实时 `COUNT(*)`（`POST` / `DELETE` 响应的 `bookmarkCount`）；②`GET /api/users/me/bookmarks` 的 `articleId` 侧回表。
+- `user_id` 侧**不另建索引**：唯一索引左前缀已承担，MySQL 不会重复创建（同 likes 纪律，迁移后用 `SHOW INDEX FROM bookmarks` 核实）。
+
+### 为什么没有软删除列
+
+与 `likes` 完全相同的三条理由（本项目第二、三张不做软删除的业务表，是刻意偏离契约第 9 节「每张业务表建议包含 `deleted_at`」的结果）：
+
+- **收藏是关系状态，不是可隐藏的内容**：没有「隐藏但保留」的语义。
+- **软删会与唯一约束直接冲突**：取消后再收藏会撞唯一约束，只能改成 `UPDATE ... SET deleted_at = NULL`，「收藏 = 该行存在」这个不变式不再直观。
+- **物理 DELETE 让不变式始终成立**：表里存在一行 ⟺ 该用户收藏了这篇文章。计数只需 `COUNT(*)`，无需任何额外条件。
+
+### 软删除联动：文章 / 用户软删后收藏行会残留
+
+与其他表一致，**软删除不触发外键**，因此：
+
+| 场景 | 行为 |
+|---|---|
+| 文章软删 | `bookmarks` 行**保留**。`GET /api/articles` / `/:id` 已按 `deleted_at IS NULL` 过滤，收藏列表（`/users/me/bookmarks`）也只返回未软删文章，收藏数不会因文章隐藏而外泄 |
+| 对已软删 / 草稿文章调收藏三接口 | **404**。service 层先复用 `requireArticleForWrite(id)` 判定存在性（与点赞 / 评论完全同一条路径） |
+| 用户软删 | 该用户的 `bookmarks` 行保留。当前 MVP 无用户删除功能故不触发，同 likes 登记在「已知限制」 |
+| 将来物理清理（硬删除） | 顺序见「软删除与外键的交互」：`bookmarks → notifications → likes → follows → comments → articles → users` |
+
+### 建表 SQL
+
+迁移 `20261018053624_add_bookmarks_and_view_count` 实际执行（已核对）：
+
+```sql
+ALTER TABLE `articles` ADD COLUMN `view_count` INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE `bookmarks` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `user_id` INTEGER NOT NULL,
+    `article_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `bookmarks_article_id_idx`(`article_id`),
+    UNIQUE INDEX `bookmarks_user_id_article_id_key`(`user_id`, `article_id`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+ALTER TABLE `bookmarks` ADD CONSTRAINT `bookmarks_user_id_fkey` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `bookmarks` ADD CONSTRAINT `bookmarks_article_id_fkey` FOREIGN KEY (`article_id`) REFERENCES `articles`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+迁移后已用 `SHOW INDEX FROM bookmarks` 核实：`bookmarks_user_id_article_id_key`（两列，唯一）+ `bookmarks_article_id_idx`（单列，非唯一）+ PRIMARY，**`user_id` 未被 MySQL 额外补单列索引**（唯一索引左前缀已承担，与 `likes` 同纪律）。
 
 ---
 
@@ -1162,6 +1261,33 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ---
 
+## 第 9 批：收藏夹 + 阅读量（bookmarks 表 + articles.view_count 列）
+
+### schema 变更
+
+| 变更 | 内容 |
+|---|---|
+| 新建 `bookmarks` 表 | `id` / `user_id` / `article_id` / `created_at`；唯一约束 `bookmarks_user_id_article_id_key` + 索引 `bookmarks_article_id_idx`；两条外键（`user_id` → `users.id`、`article_id` → `articles.id`）均 `ON DELETE RESTRICT`；无 `deleted_at` / `updated_at` |
+| `articles` 新增 `view_count` 列 | `INT NOT NULL DEFAULT 0`，INSTANT 算法回填既有行为 0，零 NULL、零回填脚本；**不建索引** |
+
+### 设计要点（详见 `docs/API.md`「收藏与阅读量（第 9 批）」）
+
+- **幂等 200 与点赞刻意相反**：`POST` / `DELETE` bookmark 均幂等（重复收藏 / 取消未收藏都 200），与 like 的 40900 / 40400 相反、与 follow 一致；`bookmarks` 与 `follows` 数据层同族，错误码语义随家族。并发拦截同纪律：直接 `create` 靠唯一约束，`P2002` 在收藏侧转幂等成功。
+- **阅读量是累加计数器，不是实时 COUNT**：`viewCount` 落 `articles.view_count` 真实列，`prisma increment` 原子 +1；与 `likeCount`（likes 表实时 COUNT）是两种口径，API 层同名风格（都返回 number）。
+- **防刷最简**：内存 Map 同 IP + 同文章 5 分钟判重，不建明细表、不做 CSRF / WAF；重启丢窗口是已知代价（API.md 已写明「尽力而为，重启不保证连续性」）。
+- **`bookmarkedAt` 平铺三约束**（照 `likedAt`）：不改 `toArticleListItem`、map 后单独附加、虚拟名排序靠 map 翻译成 `bookmarks.createdAt`。
+- **前端对镜**：bookmarksStore 仿 likedStore（100 条/页 × 10 页、truncated 降级、setToken reset）；星标按钮复用 `--like-*` 令牌与 `span role=button` 范式；UserProfile「收藏」Tab 仅本人；Home「阅读最多」Tab 走 `sortBy=viewCount`。
+
+### 加权热度排序挂账
+
+「综合热度」（`viewCount*0.3 + likeCount*0.7`）**本批不做**：Prisma `orderBy` 不支持表达式排序，要么 `$queryRaw` 重写分页全链，要么维护 `hot_score` 冗余列（写路径 +2 处），MVP 不值。已挂 `docs/ROADMAP.md` 远期储备；「阅读最多」Tab 先用 `viewCount` 纯列排序。
+
+### 与「已批准的例外」的关系（例外现共 14 项：schema 12 + 依赖 2）
+
+本批新增两项 schema 例外（第 13 项 `bookmarks` 表、第 14 项 `articles.view_count` 列），已登记 `docs/AI_CONTRACT.md` §2。零新依赖。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -1175,18 +1301,19 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ## 软删除与外键的交互
 
-> 关注表（第 4 批）起共**七条**外键（原有五条 + `follows` 表的两条），全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`（Prisma 默认值，schema 中未显式声明 `onDelete`，已在迁移 SQL 中核对确认）。
+> 全库外键现共**十一条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条，后三批为第 4 / 8 / 9 批新增），全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`。
+> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致。
 
 - **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 与 `likes.article_id` 的引用依然有效，因此**评论与点赞都不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
 - 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。点赞同理。
 - **将来若要物理清理**（硬删除），顺序必须是：
 
 ```text
-likes → follows → comments → articles → users
+bookmarks → notifications → likes → follows → comments → articles → users
 ```
 
-  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注会报错；`DELETE FROM articles` 若还有评论或点赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
-  特别注意**必须先清 `likes` 与 `follows`**：这两张关系表都可能「悬挂」在被软删对象上（`likes` 挂在文章 / 用户、`follows` 挂在用户），是硬删顺序的最上游。
+  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  特别注意**必须先清 `bookmarks` / `notifications` / `likes` / `follows`**：这四张表都可能「悬挂」在被软删对象上（`bookmarks` / `likes` / `notifications` 挂文章与用户、`follows` 挂用户），是硬删顺序的最上游。
 
 ---
 
@@ -1290,6 +1417,7 @@ const summary = [...content].slice(0, 100).join('');
 | `20261017130010_add_article_revisions` | 新建 `article_revisions` 表（版本快照）+ `article_id` 外键（`ON DELETE CASCADE`）+ `author_id` 外键（`ON DELETE RESTRICT`）+ 索引 `(article_id, created_at)`；**不含数据回填**（新表无既有数据） | **已应用** |
 | `20261017130223_add_article_status_idx` | `articles` 表新增索引 `(status, created_at)`（命名 `articles_status_created_at_idx`），覆盖广场列表主查询（`WHERE status='PUBLISHED' ORDER BY created_at`）；**独立小迁移**，与 `status` 列分离以便回滚 | **已应用** |
 | `add_tags_and_article_tags`（第 7 批，实际名 `20261018014846_add_tags_and_article_tags`） | **一次迁移包含全部三项变更**（改 schema 一次跑 migrate 时 Prisma 将变更合并打包）：① 新建 `tags` 表（`name VARCHAR(20)` + **唯一约束** `tags_name_key`）；② 新建 `article_tags` 中间表（联合主键 `(article_id, tag_id)` + 两条外键均 `ON DELETE CASCADE` + `article_tags_tag_id_idx` 索引）；③ `comments` 表新增 `parent_id INT NULL` + 外键 `comments_parent_id_fkey`（→ `comments.id`，`ON DELETE CASCADE ON UPDATE CASCADE`）+ 索引 `comments_parent_id_idx`，既有行 `parent_id` 全部为 `NULL`（全是顶层评论，零回填）。**不含数据回填**（新表无既有数据） | **已应用** |
+| `add_bookmarks_and_view_count`（第 9 批，实际名 `20261018053624_add_bookmarks_and_view_count`） | 新建 `bookmarks` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键（`user_id` → `users.id`、`article_id` → `articles.id`，均 `ON DELETE RESTRICT`）+ 唯一约束 `bookmarks_user_id_article_id_key` + 索引 `bookmarks_article_id_idx`；`articles` 表新增 `view_count INT NOT NULL DEFAULT 0`（INSTANT 回填既有行为 0）。**不含数据回填**（新表无既有数据） | **已应用**（2026-10-18，`SHOW INDEX` 核实：唯一约束两列 + article_id 单列索引，`user_id` 未被额外补索引） |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，

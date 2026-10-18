@@ -264,7 +264,7 @@ Authorization: Bearer <token>
 - 作者身份一律从 token 解析，**不接受请求体中的 `userId` / `authorId`**。
 - 删除为软删除（设置 `deletedAt`），列表与详情自动过滤已删除数据（契约 §9 删除小节）。
 - 分页沿用契约 §7：入参 `page` / `pageSize` / `sortBy` / `order`，返回 `{ list, page, pageSize, total, totalPages }`。
-- `sortBy` 白名单：文章 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt desc`；评论 `createdAt` / `id`，默认 `createdAt desc`。
+- `sortBy` 白名单：文章 `createdAt` / `updatedAt` / `id` / `likeCount` / `viewCount`（第 9 批新增），默认 `createdAt desc`；评论 `createdAt` / `id`，默认 `createdAt desc`。
 - **排序一律在数据库层完成**（SQL 的 `ORDER BY` + `LIMIT/OFFSET`），不是拉全量再在应用层排。`likeCount` 是计算字段（不是 `articles` 的列），它的排序由 Prisma 的关联计数排序表达，同样编译进单条 SQL（「热门」Tab 引入，详见 `GET /api/articles` 的 `sortBy` 说明与 `docs/DB.md`「按点赞数排序」）。
 - 排序值并列时**自动追加次级排序 `id`**（同 `order` 方向），保证分页稳定 —— 否则同一批数据在相邻两页可能重复出现或整行丢失（见 `backend/src/utils/query.js` 的 `DEFAULT_SECONDARY_SORT`）。
 - 文章列表支持 `keyword` 模糊搜索，命中范围为**标题 + 正文**（不含作者昵称），详见 `GET /api/articles`。
@@ -272,6 +272,7 @@ Authorization: Bearer <token>
 - 时间字段返回 ISO 8601 UTC 字符串（契约 §9 时间小节）。
 - 文章详情页需要显示评论数时，用 `GET /api/articles/:id/comments` 返回的 `total`；不额外开接口，不在文章表加冗余字段。
 - **文章的点赞数 `likeCount` 由 `likes` 表实时 `COUNT(*)` 得出**（第十批），同样不在 `articles` 表加冗余列。列表与详情都返回它；**不返回 `liked`（当前用户是否已赞）**，原因见 `POST /api/articles/:id/like`。已登录用户想拿 `liked`，另调 `GET /api/articles/:id/liked`（需登录），列表 / 详情的返回结构不受影响。它同时也是 `sortBy` 的合法值（「热门」Tab 按它倒序），语义见 `GET /api/articles`。
+- **文章的阅读量 `viewCount`（第 9 批）**：`articles` 表新增 `viewCount INT NOT NULL DEFAULT 0` **真实列**——与 `likeCount` 的实时 `COUNT(*)` 是两种口径，它是**累加计数器**（只增不减）。列表与详情都返回它；**不返回 `viewed`（当前用户是否浏览过）**——阅读免登录、无用户维度，与点赞 / 收藏的按钮态接口刻意不同。写入只走 `POST /api/articles/:id/view`（免登录），**同一 IP + 同一文章 5 分钟内不重复计数**（内存 Map 判重，尽力而为，进程重启后判重窗口清零，见该接口小节）。它同时也是 `sortBy` 的合法值（「阅读最多」Tab 按它倒序）。软删 / 草稿文章不计阅读量（接口层 404 前置），作者浏览自己的文章也计数（与「允许自赞」同原则）。
 - 作者信息以**内嵌 `author` 对象**（`id` / `username` / `nickname` / `avatar` / `role`）返回，不依赖用户接口。`avatar` 为第九批新增，语义与 `PUT /api/users/me` 的三态一致（可能为 `null`）；`bio` **不在** `author` 内，仅在 `PUT /api/users/me` 与个人主页相关位置返回。`role` 为第 5 批新增（`USER` / `ADMIN`），供前端渲染管理员徽章与管理端入口；**`status` 不在 `author` 内**，封禁态只通过 401 / 40101 表现。
 - **`role` 透出（第 5 批）**：`role` 同时进入 `toPublicUser`（`auth.service.js` 与 `user.service.js` 两份重复定义都加）与 `AUTHOR_SELECT`（`article.service.js` 与 `comment.service.js` 两份都加），因此 `GET /api/auth/me`、`GET /api/users/:id`、登录 / 注册响应的 `user`、所有文章 / 评论列表项的内嵌 `author` 都带 `role`。沿用第九批 `avatar` 的「只加字段、不做重构」先例，两份重复定义的抽取单独排批。
 - **`avatar` 只有一种形态**（外链下线后）：**站内相对路径** `/uploads/avatars/{userId}/{filename}`，由 `POST /api/users/me/avatar` 上传产生。它可能出现在 `author` 内嵌对象里。**前端渲染时必须补上后端 origin**，规则见文末「前端调用约定」。
@@ -323,6 +324,11 @@ Authorization: Bearer <token>
 | GET    | /api/articles/:id/revisions | 文章版本历史（全量 content；仅作者，需登录）                           | 是  |
 | POST   | /api/articles/:id/restore   | 回滚到指定版本（先快照当前版，仅作者，需登录）                           | 是  |
 | GET    | /api/tags                   | 热门标签列表（带每个标签下的已发布文章数）                              | 否  |
+| POST   | /api/articles/:id/bookmark  | 收藏文章（需登录，**幂等 200**，可收藏自己的文章）                       | 是  |
+| DELETE | /api/articles/:id/bookmark  | 取消收藏（需登录，**幂等 200**，未收藏也返回 200）                      | 是  |
+| GET    | /api/articles/:id/bookmarked | 查询当前用户是否已收藏该文章（刷新后取按钮态，需登录）                     | 是  |
+| GET    | /api/users/me/bookmarks     | 我的收藏列表（分页，**仅本人**）                                 | 是  |
+| POST   | /api/articles/:id/view      | 记录一次阅读，`viewCount` +1（**免登录**，同 IP 同文章 5 分钟内只计一次）      | 否  |
 
 ---
 
@@ -369,7 +375,8 @@ Authorization: Bearer <token>
     "content": "正文……",
     "category": "技术",
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
-    "likeCount": 0,
+    "likeCount": 3,
+    "viewCount": 0,
     "createdAt": "2026-09-29T14:00:00.000Z",
     "updatedAt": "2026-09-29T14:00:00.000Z"
   }
@@ -378,6 +385,7 @@ Authorization: Bearer <token>
 
 > 新建文章的 `likeCount` **恒为 0**（`likes` 表里还没有任何行）。这里显式返回 0 而不是省略该键 ——
 > 文章对象在任何接口里都带 `likeCount`，前端不需要区分「接口没返回」和「确实是 0」。
+> `viewCount`（第 9 批）同理恒为 0：列默认值 0，同样显式返回。
 
 失败：
 
@@ -398,7 +406,7 @@ Authorization: Bearer <token>
 | -------- | ------ | -- | --------------------------------------------------- |
 | page     | number | 否  | 默认 1                                                |
 | pageSize | number | 否  | 默认 10，最大 100                                        |
-| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt` |
+| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount` / `viewCount`，默认 `createdAt` |
 | order    | string | 否  | `asc` 或 `desc`，默认 `desc`                            |
 | keyword  | string | 否  | 标题 + 正文模糊搜索；trim 后最长 50 字符，**空串或纯空白视为不搜索（等价于不传）**，返回全量列表       |
 | category | string | 否  | 分类筛选，枚举 `技术` / `生活` / `随笔` / `未分类`；非法值返回 `400 / 40000`；**不传或传空串视为不过滤（返回全部分类）** |
@@ -408,9 +416,10 @@ Authorization: Bearer <token>
 
 - `createdAt` / `updatedAt` / `id` 直接映射 `articles` 表的真实列。
 - **`likeCount`（「热门」）**：按 `likes` 表对该文章的**累计点赞条数**排序。口径是 **all-time**——不做时间窗衰减、不引入阅读量（`docs/DB.md`「按点赞数排序」）。0 赞的文章也参与排序（聚合为 `NULL` 时按 `0` 处理），不会从列表里消失。
-- **次级排序**：排序值并列时追加 `id`（同 `order` 方向）。`likeCount` 大量并列（多数文章都是 0 赞）时这条尤其重要，否则翻页会重复/丢行。
-- **非法值**：不在白名单内返回 `400 / 40000`，message 形如 `sortBy 不合法，可选值：createdAt, updatedAt, id, likeCount`。**大小写敏感**（`likecount` 不合法）。
-- **性能**：`likeCount` 排序会让查询带上 `LEFT JOIN` 聚合派生表并走 `Using temporary; Using filesort`（按聚合值排序不可避免）。当前数据量下无感，量级上来后这里是第一个瓶颈——取舍与实测 EXPLAIN 见 `docs/DB.md`「按点赞数排序」。
+- **`viewCount`（「阅读最多」，第 9 批新增）**：按 `articles.view_count` **真实列**排序（不是计算字段，直映射、无 JOIN 聚合，比 `likeCount` 轻）。口径是 all-time 累计阅读量，0 阅读的文章（含新建文章）也参与排序，不会从列表里消失。
+- **次级排序**：排序值并列时追加 `id`（同 `order` 方向）。`likeCount` / `viewCount` 大量并列（多数文章都是 0 赞 / 0 阅读）时这条尤其重要，否则翻页会重复/丢行。
+- **非法值**：不在白名单内返回 `400 / 40000`，message 形如 `sortBy 不合法，可选值：createdAt, updatedAt, id, likeCount, viewCount`。**大小写敏感**（`likecount` / `viewcount` 不合法）。
+- **性能**：`likeCount` 排序会让查询带上 `LEFT JOIN` 聚合派生表并走 `Using temporary; Using filesort`（按聚合值排序不可避免）。当前数据量下无感，量级上来后这里是第一个瓶颈——取舍与实测 EXPLAIN 见 `docs/DB.md`「按点赞数排序」。`viewCount` 是真实列，排序为普通 filesort，**不建索引**（高频写入列，索引拖慢每次 +1 而读取收益在当前量级为零，理由见 `docs/DB.md`「第 9 批」）。
 
 `keyword` 语义（三条，逐条都有验收断言）：
 
@@ -475,6 +484,7 @@ Authorization: Bearer <token>
 | list[].tags      | string[] | 标签名字符串数组（第 7 批新增），按 `name` asc；无标签时为 `[]`（不是省略该键） |
 | list[].author    | object | 作者 `id` / `username` / `nickname`  |
 | list[].likeCount | number | 该文章的点赞数（第十批新增），实时 `COUNT(*)`；不含 `liked`（已登录用户改调 `GET /api/articles/:id/liked`） |
+| list[].viewCount | number | 该文章的累计阅读量（第 9 批新增），`articles.view_count` 累加计数器；不含 `viewed`（阅读免登录，无用户维度） |
 
 - `likeCount` 是**实时统计**而非冗余字段：由 `likes` 表 `COUNT(*)` 得出，不在 `articles` 表存列，因此永远不会与真实点赞数不一致。
 - 列表**不返回 `liked`**（当前用户是否已赞）。这两个接口无需登录，若要在它们里区分「当前用户是否已赞」，就必须给 `auth` 中间件加「token 无效也不报错」的可选模式 —— 那会改动所有接口共用的中间件，影响面超出点赞功能本身。改由独立接口 `GET /api/articles/:id/liked`（需登录）提供，列表与详情本身不动。详见 `POST /api/articles/:id/like` 的「为什么不返回 `liked`」。
@@ -505,13 +515,14 @@ Authorization: Bearer <token>
     "tags": ["Vue", "前端"],
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
     "likeCount": 3,
+    "viewCount": 128,
     "createdAt": "2026-09-29T14:00:00.000Z",
     "updatedAt": "2026-09-29T14:00:00.000Z"
   }
 }
 ```
 
-`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`** —— 详情页刷新后要还原按钮态，由前端在已登录时调 `GET /api/articles/:id/liked`。`category` 为文章的分类枚举值。`tags` 为标签名字符串数组（第 7 批新增），无标签时为 `[]`。
+`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`** —— 详情页刷新后要还原按钮态，由前端在已登录时调 `GET /api/articles/:id/liked`。`viewCount`（第 9 批新增）是累计阅读量（`articles.view_count` 累加计数器），阅读免登录、无用户维度，因此**不返回 `viewed`**。`category` 为文章的分类枚举值。`tags` 为标签名字符串数组（第 7 批新增），无标签时为 `[]`。
 
 失败：
 
@@ -1260,7 +1271,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 | -------- | ------ | -- | --------------------------------------------------------- |
 | page     | number | 否  | 默认 1                                                      |
 | pageSize | number | 否  | 默认 10，最大 100                                               |
-| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount`，默认 `createdAt` |
+| sortBy   | string | 否  | 白名单 `createdAt` / `updatedAt` / `id` / `likeCount` / `viewCount`，默认 `createdAt` |
 | order    | string | 否  | `asc` 或 `desc`，默认 `desc`                                  |
 
 - **不支持 `keyword` / `category`**：搜索与分类是「广场」维度的筛选，个人主页不叠加（将来要加再扩，不影响现有字段）。
@@ -2101,6 +2112,131 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 ### PUT /api/notifications/:id/read
 
 单条标记已读，需登录。`:id` 非法 → `400 / 40000`。已读 / 不存在 / 不属于自己 → `200` 幂等（不报 404，与取消关注同口径），`data` 为 `null`。
+
+---
+
+## 收藏与阅读量（第 9 批）
+
+收藏夹把「点赞（认可）」与「收藏（稍后看 / 反复用）」区分开，对标掘金 / 知乎；阅读量给文章一个「被看过」的热度信号，支撑 Home「阅读最多」Tab。
+本批新建 `bookmarks` 表 + `articles` 表新增 `view_count` 列（见 `docs/DB.md`）。接口全部有现成对镜：收藏三接口对镜点赞三接口、`/users/me/bookmarks` 对镜 `/users/me/likes`、`POST /view` 是唯一无对镜的新接口。
+
+> **幂等语义与点赞刻意相反（本批最重要的一条差异）**：`POST` / `DELETE /api/articles/:id/bookmark` 都是**幂等 200**——重复收藏、取消未收藏的文章，都返回 `200 / code 0`。与 `POST /like`（重复 40900）、`DELETE /like`（未赞 40400）**刻意相反**、与关注（`POST` / `DELETE /follow` 均 200）一致。理由：收藏是「关系状态」而非「动作报错」——重复收藏 / 重复取消都意味着目标状态已达成，没有冲突可言；`bookmarks` 与 `follows` 数据层同族（唯一约束 + 物理 DELETE + RESTRICT 外键），错误码语义随家族。**前端不得照抄点赞按钮的 409 catch 纠正逻辑（收藏不存在 409）**。
+> **允许自收藏、自浏览计数**：与「允许自赞」同原则（技术上无障碍、主流平台均允许、禁止会让「用户给自己文章做功能验证」的正常场景失败）。
+> **收藏不产生通知**：第 8 批通知中心只覆盖评论 / 回复 / 关注 / 点赞四类；收藏是纯个人整理行为，不打扰任何人。
+> **软删联动**：文章软删后 `bookmarks` 行保留（软删不触发外键），但所有出口已过滤；对已软删 / 草稿文章调收藏三接口与 `POST /view` 一律 404。收藏列表只返回未软删文章。
+
+### POST /api/articles/:id/bookmark
+
+收藏文章。**需要登录**。收藏者取 token 中的 `userId`，不接受请求体里的身份字段。
+
+路径参数：`id`，正整数。**无请求体**（传了也忽略）。
+
+成功：HTTP 200（**幂等**：已收藏时同样 200，不报 409）
+
+```json
+{
+  "code": 0,
+  "message": "已收藏",
+  "data": {
+    "bookmarked": true,
+    "bookmarkCount": 4
+  }
+}
+```
+
+| 字段                 | 类型      | 说明                                   |
+| ------------------ | ------- | ------------------------------------ |
+| data.bookmarked    | boolean | 恒为 `true`（收藏后的状态）                     |
+| data.bookmarkCount | number  | **收藏后**该文章的总收藏数，已包含本次                 |
+
+失败：
+
+| HTTP | code  | message        | 场景                       |
+| ---- | ----- | -------------- | ------------------------ |
+| 400  | 40000 | id 非正整数        | 路径参数非法                   |
+| 401  | 40100 | 未登录或 token 无效  | 未提供 token、token 无效或过期    |
+| 404  | 40400 | 文章不存在          | 文章不存在**或已被软删除**          |
+
+判断顺序：**先校验路径参数 → 再鉴权（401）→ 再判定文章存在性（404）→ 最后才写库**。与 `POST /like` 一致，文章不存在必须先于任何写操作返回。
+
+#### 并发：唯一约束兜底，命中即成功
+
+`bookmarks` 表有唯一约束 `bookmarks_user_id_article_id_key (user_id, article_id)`。实现**直接 `create`**，捕获 Prisma 的 `P2002`（底层 MySQL `1062`）时**当作「已收藏」成功返回 200**——与 `follows` 的 `create` + P2002 → 幂等成功同一模式（见 `POST /api/users/:id/follow`）。应用层「先查后写」不作为正确性保障，只用于（也不需要）友好提示。
+
+### DELETE /api/articles/:id/bookmark
+
+取消收藏。**需要登录**。**幂等**：未收藏时同样返回 `200 / code 0`（与 `DELETE /like` 的 40400 刻意相反、与 `DELETE /follow` 一致——「本来就没收藏」就是目标状态本身，不是错误）。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "已取消收藏",
+  "data": {
+    "bookmarked": false,
+    "bookmarkCount": 3
+  }
+}
+```
+
+失败：400 / 40000（id 非正整数）、401 / 40100（未登录）、404 / 40400（文章不存在或已软删）。
+
+物理 DELETE（`bookmarks` 无 `deleted_at`，与 `likes` / `follows` 同族），用 `deleteMany` 拿 `count`；`count === 0` 即「本来就没收藏」，静默成功、仍返回操作后的总数。
+
+### GET /api/articles/:id/bookmarked
+
+查询当前登录用户是否已收藏该文章（刷新详情页 / 切换文章后还原星标按钮态）。**需要登录**。
+
+- 响应 `data`：`{ bookmarked: boolean }`，**不带 `bookmarkCount`**——与 `GET /:id/liked` 同纪律：计数唯一来源是文章接口，同一个值两个口径将来无法判断哪个对。
+- 文章不存在或已软删 → `404 / 40400`（与 `POST` / `DELETE` 一致；返回 `false` 会让前端渲染成「未收藏 + 可点」，用户一点就吃 404）。
+- 未登录 → `401 / 40100`。**前端只在已登录态调用**（`request.js` 的 401 拦截器会清 token 跳登录，匿名路过不能触发）。
+
+### GET /api/users/me/bookmarks
+
+我的收藏列表（个人主页「收藏」Tab）。**需要登录**。对镜 `GET /api/users/me/likes`，语义逐条相同：
+
+- 路径 `/me/bookmarks` 而**不是** `/:id/bookmarks`：**只提供查自己**，「谁收藏了什么」属个人隐私维度（同 `/me/likes` 原则）。
+- `list[]` 与 `GET /api/users/:id/articles` 的 `list[]` **逐字相同**（同一个 `toArticleListItem()`），**只多一个平铺字段 `bookmarkedAt`**（= `bookmarks.createdAt`，收藏发生时间）。⚠️ **`bookmarkedAt` 与文章自己的 `createdAt` 是两个时间**（收藏时间 vs 发布时间），断言时别拿错。平铺而非包一层 `{ bookmarkedAt, article }`，是为了让 `ArticleCard` 原样复用（`:article="item"`）。
+- 排序白名单 `bookmarkedAt` / `createdAt` / `likeCount`，默认 `bookmarkedAt desc`（最近收藏的在前）；前端 Tab **不暴露排序控件**。
+- 只返回未软删的文章；`total` 是「已收藏且文章未软删」的条数（物理 DELETE，取消收藏后立即下降）。
+
+**实现说明 · `bookmarkedAt` 怎么平铺进去（三条硬约束，与 `likedAt` 完全一致，照做别走样）**：
+
+1. **禁止改 `toArticleListItem()`**——它是广场 / 个人主页文章列表共用的塑形函数，加 `bookmarkedAt` 会污染没有收藏记录的接口。
+2. **在 `map` 之后单独附加**：`list.map((row) => ({ ...toArticleListItem(row.article), bookmarkedAt: row.createdAt }))`。
+3. **`bookmarkedAt` 是虚拟字段，不是数据库列**：Prisma 侧无此列（直接 `orderBy: { bookmarkedAt }` 会报 `Invalid`），排序靠 map 翻译成 `bookmarks.createdAt`。写探针时断言响应体的 `bookmarkedAt`，不要去库里找列。
+
+失败：
+
+| HTTP | code  | message       | 触发                                                      |
+| ---- | ----- | ------------- | ------------------------------------------------------- |
+| 400  | 40000 | 见 `GET /api/articles` | 分页参数 / `sortBy` 非法                                    |
+| 401  | 40100 | 未登录或 token 无效   | **未登录直接访问**（`auth` 中间件现行行为，本批不改中间件）                     |
+| 404  | 40400 | `用户不存在`       | token 里的用户已软删（理论路径：软删后旧 token 在有效期内仍可用）                |
+
+### POST /api/articles/:id/view
+
+记录一次阅读，`viewCount` +1。**无需登录**（阅读是匿名行为，与点赞 / 收藏刻意不同）。
+
+路径参数：`id`，正整数。**无请求体**。
+
+成功：HTTP 200。返回 `data`：`{ viewCount: number }`（+1 后的最新值；被判重未 +1 时返回当前值，仍 200）。
+
+失败：
+
+| HTTP | code  | message    | 场景                          |
+| ---- | ----- | ---------- | --------------------------- |
+| 400  | 40000 | id 非正整数     | 路径参数非法                      |
+| 404  | 40400 | 文章不存在       | 文章不存在、已软删**或是草稿**（与公开详情同口径） |
+
+#### 防刷（最简方案，用户明确不做生产级安全）
+
+- **前端调用时机**：仅文章详情页 `mounted` 时调一次。列表页不调——避免翻页 / 刷新列表刷阅读量。
+- **后端判重**：内存 `Map`，key = `${articleId}:${req.ip}`，value = 时间戳；同一 key **5 分钟内**的重复请求不 +1（直接返回当前值，仍 200）。不建 `article_views` 明细表。
+- **尽力而为，重启不保证连续性**：Map 在进程内存里，`node --watch` 重启 / 部署重启后判重窗口清零——这是已知代价，博客量级下接受。不做 CSRF、不做频率 WAF。
+- **计数原子性**：`prisma.article.update({ data: { viewCount: { increment: 1 } } })`，禁止 read-modify-write（并发下丢计数）。
+- **IP 口径**：`req.ip`。当前无反向代理，同一 NAT 后的多用户会被判为同一 IP（5 分钟内只计一次）——已知降级，接受。
 
 ---
 

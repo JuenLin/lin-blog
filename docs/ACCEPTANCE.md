@@ -56,10 +56,11 @@ SKIP | A3-1 | 分页翻页 | 总条数 1 ≤ 每页 10，无第 2 页
 scripts/acceptance/
 ├── run.mjs              # 主脚本：前置检查 → 造数据 → 起浏览器 → 跑 50 条 → 清理 → 出报告
 ├── cleanup.mjs          # 单独清理临时数据（脚本被中断时用它兜底）
-├── probe-*.mjs          # 各批次的量化探针（23 个：search / search-ui / password / profile /
+├── probe-*.mjs          # 各批次的量化探针（25 个：search / search-ui / password / profile /
 │                        #   profile-edit / like / liked / upload / dark / styles / batch2 /
 │                        #   batch3 / card-visual / card-liked / prevnext / author-others / entries /
-│                        #   category / user-detail / profile-tabs / comment-delete / follow / admin）
+│                        #   category / user-detail / profile-tabs / comment-delete / follow / admin /
+│                        #   draft / bookmark / view）
 ├── shot-*.mjs           # 截图辅助脚本（3 个：hover / before / detail-title，不改源码，仅 CDP 注入）
 └── lib/
     ├── config.mjs       # 路径与配置，全部相对脚本位置推算，和 cwd 无关
@@ -231,6 +232,12 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 
 第 6 批 草稿/自动保存/版本历史新增 `node scripts/acceptance/probe-draft.mjs` → **25/25 全绿、exit 0**（门槛 IDLE / 建+更新含清空 0 字 / 草稿箱带 content 全文 / DRAFT 详情 404 / draftId 与 sourceArticleId 越权 404 / 快照产生+倒序 / restore 先快照后覆盖 / 跨文章 revisionId 404 / 非作者 403 / 计数只数 PUBLISHED / 未登录 401，详见探针表）。同轮回归（2026-10-17）：`run.mjs` **50/50**、`probe-like` **24/24**（B1 并发本轮通过，历史偶发 500 挂账仍在）、`probe-follow` **22/22**（基线相对写法复核 users 6→6、follows 1→1 一致）、`probe-admin` **59/59**，全部 exit 0。前端 build 绿；`probe-draft` 自建 A/B 双账号，finally 按 revisions → articles → users 清理，跑后零残留。
 
+第 9 批 收藏夹 + 阅读量新增 `node scripts/acceptance/probe-bookmark.mjs` → **26/26 全绿、exit 0**（A 组幂等语义 11 项：重复收藏/取消未收藏都 200，与 like 的 409/404 刻意相反已钉死；B 组列表 6 项：默认 bookmarkedAt desc、bookmarkedAt≠createdAt、分页、白名单；C 组串号 3 项；D 组 UI 6 项：刷新后金星不丢、收藏 Tab、.prevent.stop）与 `node scripts/acceptance/probe-view.mjs` → **15/15 全绿、exit 0**（V 组 13 项：免登录 +1、同 IP 同文章判重不 +1、换文章正常 +1（证明是判重不是链路坏）、viewCount 三处透出、sortBy=viewCount 双向排序（Prisma 造数 5 vs 1）、软删/草稿/不存在 404、非法 id 400；U 组 2 项：详情页 POST /view 恰好 1 次、「阅读 N」chip 与接口一致）。同轮回归（2026-10-18）：`run.mjs` **50/50**、前端 build 绿。跑前跑后库一致：users 6 / 文章 17（可见 14）/ 评论 2 / likes 3 / follows 1 / **bookmarks 0** / notifications 0。两探针均走 `tmp-account` 统一清理（本轮已给该库函数补上 bookmarks 清理——第 9 批新表双 RESTRICT 外键，不补会在硬删账号时撞 P2003）。
+
+同轮附加回归还抓到并修复了**第 8 批漏网的一个探针清理问题**：`probe-liked` 断言 26/26 全绿但清理阶段崩（`article.deleteMany` 撞 notifications 外键）——第 8 批给 like 服务加了通知钩子后，「次账号给主账号靶子文章点赞」会产生 LIKE 通知，而 probe-liked 自有清理顺序还是旧的 likes→articles→users（不走 tmp-account，所以第 8 批当天修公共库时漏了它）。已按同款顺序补 notifications（+bookmarks 防护）并复跑全绿；`probe-card-liked` 的自定义 cleanup 同款前置（防将来型）。**教训：新增关系表 + RESTRICT 外键时，所有自带清理逻辑的探针都要过一遍，不能只修两个公共清理库。** 连带确认：`probe-like` 24/24、`probe-liked` 26/26、`probe-card-liked` 全绿，exit 全 0。
+
+同轮按上述教训做了**全量排查**（grep 全部 `probe-*.mjs` 的 deleteMany/cleanup，逐个核对通知/收藏覆盖），又修复 7 个探针并复跑全绿：`probe-comment-delete`（14/14，清理实证删通知 3 条）、`probe-nested-comment`（19/19，删通知 7 条）、`probe-user-detail`（88/88，删通知 3 条）——这三个不清通知则删文章/账号必撞 P2003；`probe-like`（24/24，删通知 1 条：E4 点的列表第一张卡是真实用户文章，跨账号点赞产 LIKE 通知、actor_id 指向探针账号，不清则账号删不掉）、`probe-draft`（25/25）、`probe-tag`（19/19）、`probe-profile-tabs`（29/29）为同顺序加固。公共路径 `lib/fixtures.mjs` 补 bookmarks（自愈路径 cleanupKnownArtifacts 同享）、`run.mjs` 清理日志加通知/收藏计数。复跑后库与基线一致（notifications 0 / bookmarks 0）。`probe-admin` 的 hardDeleteUser 同款加固因文件读取被敏感门控拦截，顺延第 10 批（与 probe-notification preflight 自愈一起）。
+
 历史上一共出现过 2 条 FAIL，**都是脚本自己的断言写错，不是产品问题**，已修复：
 
 1. 把评论接口断言成 `/api/articles/:id/comments`，实际是顶层资源 `/api/comments`（`docs/API.md` 就是这么定的）。
@@ -264,6 +271,8 @@ Tab 排序差异要 ≥2 篇文章且其中一篇改过、分页要总数 > 每�
 | `node scripts/acceptance/probe-follow.mjs` | 第 4 批 关注功能 `POST` / `DELETE /api/users/:id/follow` 与 `GET /api/users/:id/followers` / `following`：A 组纯 API（7 项）：首关 200 且 **`followerCount` 属于路径 `:id` 这个人、`followingCount` 属于操作者本人**（计数归属断言，两者不是同一个对象）、**重复关注 200 幂等（非 409）**、关注自己 400、关注不存在的人 404、取消关注 200、**取消未关注的 200 no-op（非 404）**、跑完 A/B 之间 follows 行数归零（给 B 组干净起点）；B 组 Chrome（B1-B9 + B5b + B10 拆 5 条，共 15 项）：自己主页按钮是「编辑资料」而非关注且文案「N 关注 + 我的粉丝」、别人主页按钮三态（关注 / 已关注）与文案「他关注 / 他的粉丝」（纯文字链接，零额外请求）、点关注切「已关注」且自己主页计数 +1、取关回「关注」且计数 -1 且**无二次确认框**、粉丝 / 关注列表页（标题带昵称 / 40px 头像 / **不含 bio** / `followedAt` 相对时间且悬停出绝对时间 / 点整行进主页）、双空态文案分开、非法 type 重定向回 `/user/:id`、**换账号 followingStore 已 reset 不串号**（全程客户端路由，不用整页刷新）（**启 Chrome + Network 域，共 22 项**） |
 | `node scripts/acceptance/probe-admin.mjs [报告目录]` | 第 5 批 管理员后台 + 权限系统 + 代码块/TOC 渲染 + XSS 防护：A 组 非管理员访问 `/api/admin/*` 全部 403/40300；B 组 管理员操作（stats / users 列表 / 改 status 封禁 / 删文章 / 删评论，含「管理员不能封禁或解封管理员」→ 40000 防呆、admin 与 lin 已置 ADMIN）；C 组 role 透出（toPublicUser 与两份 AUTHOR_SELECT 含 role）；D 组 Chrome 管理后台页渲染（含 `/admin` 路由守卫非 admin 回首页、统计卡渲染、金色徽章、UserDropdown 管理后台入口只对 ADMIN 显示，共 6 项）；E 组 代码块高亮 + TOC 锚点 + DOMPurify XSS 防护（**启 Chrome + 报告目录，共 59 项**，实测 59/59 全绿、exit 0） |
 | `node scripts/acceptance/probe-draft.mjs` | 第 6 批 草稿 / 自动保存 / 版本历史 / 回滚（**纯 API，双账号 A 作者 + B 越权者，不启 Chrome，共 25 项**，实测 25/25 全绿、exit 0）：G1 建草稿门槛（title 空且 content<10 字 → `{id:null,status:'IDLE',saved:false}` 且草稿箱仍为 0，**补丁 3 第一道闸**）；G2 auto-save 建草稿（`{status:'DRAFT',saved:true}`）→ 草稿箱列表 **带 `content` 全文**（继续编辑回填的唯一来源，坑 3 决定了草稿没有公开详情可拿）→ **持有 draftId 后清空到 0 字仍保存成功且确实落库**（补丁 3 第二道闸）；G3 草稿隔离（DRAFT 公开详情 404/40400；B 用 A 的 draftId auto-save → **404 非 403**、B 删 A 草稿 → 404、不存在的 draftId → 404）；G4 PUT 已发布文章产生快照（total=1 且快照=更新前内容）→ 再 PUT total=2 且**倒序**（最新在前）、草稿查版本历史 → 404（草稿无版本）、非作者查 → **403/40300**（此处与草稿口径刻意不同）；G5 restore 回滚后正文/标题回到所选版本、**回滚本身也产生快照**（先快照后覆盖，total 2→3 且最新=回滚前）、revisionId 属于别的文章 → 404（防跨文章回滚）、非作者 restore → 403；G6 补丁 1（sourceArticleId 指向他人文章 → 404；本人建独立草稿成功 → PUT 原文覆盖 + DELETE 临时草稿 → 已删 draftId 再 auto-save → 404 物理删生效）；G7 坑 4（articleCount 与个人主页列表**只数 PUBLISHED**，草稿不计入）；G8 未登录 401/40100。清理按 **revisions → articles → users** 顺序（两条 author 外键 RESTRICT） |
+| `node scripts/acceptance/probe-bookmark.mjs` | 第 9 批 收藏 `POST` / `DELETE /api/articles/:id/bookmark` + `GET /:id/bookmarked` + `GET /users/me/bookmarks`：A 组 **幂等语义与 like 刻意相反**（重复收藏 / 取消没收藏过的都 **200 / code 0**，断言「不是 409 / 404」钉死差异，防将来被「统一」）、查询接口只回 `{ bookmarked }` **不带 bookmarkCount 键**、未登录 / 非法 token 四接口各 40100、软删文章三接口全 404；B 组 收藏列表（total、默认 `bookmarkedAt` desc、`bookmarkedAt` 与文章 `createdAt` 是两个时间、pageSize=1 翻两页、sortBy 白名单内 200 / 越界 40000、列表项与文章列表同形带 viewCount/likeCount）；C 组 换账号不串号（B 的列表为空、B 收藏 A 已收藏的靶子 → `bookmarkCount=2` 证明是**全站该文章**口径而非「我的」）；D 组 Chrome（未登录不打 `/users/me/bookmarks`、登录恰好 1 次无 N+1、**刷新后收藏过的卡片仍是金色 ★**、收藏 Tab 全星标且顺序=默认排序、点星标 `.prevent.stop` 生效不跳详情页且完整往返）（**启 Chrome + Network 域，双账号，共 26 项**） |
+| `node scripts/acceptance/probe-view.mjs` | 第 9 批 阅读量 `POST /api/articles/:id/view` + `viewCount` 透出 + `sortBy=viewCount`：新建文章响应带 `viewCount:0`、**未登录**首次 +1（阅读免登录，与点赞/收藏刻意不同）、同 IP 同文章立即重发**不 +1**（判重窗口）、**同 IP 换一篇文章正常 +1**（证明上一条是判重而非计数链路坏）、详情与列表 viewCount 透出且口径一致、`sortBy=viewCount` desc/asc 双向排序（Prisma 造数 5 vs 1）+ `viewcount` 小写 40000（大小写敏感）、软删 / 草稿 / 不存在 id 各 40400、非法 id 40000；U 组 Chrome：详情页 mounted 后 **POST /view 恰好 1 次**（未登录也计）、meta 行「阅读 N」chip 与接口 viewCount 一致（轮询等 fire-and-forget 响应，不睡死）（**启 Chrome + Network 域，共 15 项**） |
 | `node scripts/acceptance/shot-hover.mjs` | 真移鼠标后截 hover 态 |
 | `node scripts/acceptance/shot-before.mjs` | 注入覆盖样式还原「改前观感」并拍对照图 |
 | `node scripts/acceptance/shot-detail-title.mjs` | 详情页标题随文章变 + 复原 |

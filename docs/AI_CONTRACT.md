@@ -66,14 +66,14 @@
 - 禁止擅自升级依赖大版本。
 - 禁止擅自引入新依赖。**例外见「已批准的例外」第 3、7 项**。
 - 禁止修改接口契约。
-- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9、10、11 项**。
+- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9、10、11、12、13、14 项**。
 
 ### 已批准的例外
 
-以下十二项（schema 十项：第 1、2、4、5、6、8、9、10、11、12 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下十四项（schema 十二项：第 1、2、4、5、6、8、9、10、11、12、13、14 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6、8、9、10、11、12 项是「禁止改 schema」的十条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications），  
+**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14 项是「禁止改 schema」的十二条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -138,6 +138,16 @@
     - **范围**：**仅限新建 `notifications` 一张表 + `NotificationType` 一个枚举**。不含修改 `users` / `articles` / `comments` / `likes` / `follows` / `tags` / `article_tags` 任何一列，也不含给已建表补列。
     - **依据**：见 `docs/DB.md`「notifications（通知表）」小节，决策过程见 `docs/API.md` 的「通知中心接口（第 8 批）」4 个接口章节。
     - **是否援引前例**：无，与前述各批各自独立。
+13. **第 9 批 · schema 变更（bookmarks 收藏表，2026-10-18 批准）**
+    - **批准内容**：新建 `bookmarks` 表一张（`id` / `user_id` / `article_id` / `created_at`），含两条外键（`user_id` → `users.id`、`article_id` → `articles.id`，均 `ON DELETE RESTRICT`）与唯一约束 `bookmarks_user_id_article_id_key` + 索引 `bookmarks_article_id_idx`。迁移名 `add_bookmarks_and_view_count`（与第 14 项同批一次 migrate）。
+    - **范围**：**仅限新建 `bookmarks` 一张表**。不含修改 `users` / `articles` / `comments` / `likes` / `follows` 任何一列，也不含给已建表补 `deleted_at`（`bookmarks` 刻意不做软删除，与 `likes` / `follows` 同族，理由见 `docs/DB.md`「bookmarks（收藏表）」）。
+    - **依据**：见 `docs/DB.md`「bookmarks（收藏表）」小节，决策过程见 `docs/API.md`「收藏与阅读量（第 9 批）」章节。
+    - **是否援引前例**：援引第十批 `likes` 建表的结构先例（内容上是独立的一次批准）。
+14. **第 9 批 · schema 变更（articles.view_count，2026-10-18 批准）**
+    - **批准内容**：`articles` 表新增 `view_count INT NOT NULL DEFAULT 0` 一列（累计阅读量计数器，`POST /api/articles/:id/view` 原子 +1）；INSTANT 算法回填既有行为 0，零 NULL、零回填脚本；**不含索引**。
+    - **范围**：仅限此一列。不含其他表结构变更、不含改列名 / 类型 / 删列、不含加权热度 `hot_score` 冗余列（已挂 ROADMAP 远期储备）。
+    - **依据**：见 `docs/DB.md`「articles（文章表）」`viewCount` 字段与「第 9 批」小节，决策过程见 `docs/API.md` 的 `POST /api/articles/:id/view` 章节。
+    - **是否援引前例**：援引第 6 批 `articles.status` 加列先例（内容上是独立的一次批准）。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -328,6 +338,11 @@ DELETE /api/comments/:id       删除评论（评论作者或文章作者，软�
 POST   /api/articles/:id/like       点赞
 DELETE /api/articles/:id/like       取消点赞
 GET    /api/articles/:id/liked      查询当前用户是否已点赞（需登录）
+POST   /api/articles/:id/bookmark   收藏文章（需登录，幂等 200，第 9 批）
+DELETE /api/articles/:id/bookmark   取消收藏（需登录，幂等 200，第 9 批）
+GET    /api/articles/:id/bookmarked 查询当前用户是否已收藏（需登录，第 9 批）
+GET    /api/users/me/bookmarks      我的收藏列表（需登录，分页，第 9 批）
+POST   /api/articles/:id/view       记录阅读 viewCount +1（免登录，同 IP 同文章 5 分钟判重，第 9 批）
 GET    /api/admin/stats             管理端数据概览（需 ADMIN）
 GET    /api/admin/users             管理端用户列表（需 ADMIN）
 PATCH  /api/admin/users/:id/status  封禁/解禁用户（需 ADMIN）
@@ -355,7 +370,7 @@ PUT    /api/notifications/:id/read    单条标记已读（需登录，第 8 批
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38 → 42**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38 → 42 → 47**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 
