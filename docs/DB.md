@@ -36,6 +36,7 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | `notifications` | 通知表（第 8 批） | 已建（迁移见「第 8 批」小节），第 11 批 `type` 枚举追加 `MENTION` / `COMMENT_LIKE` 两值（同批迁移） |
 | `bookmarks` | 文章收藏表（第 9 批） | 已建（迁移 `20261018053624_add_bookmarks_and_view_count`） |
 | `series` | 文章系列表（第 10 批） | 已建（迁移见「第 10 批」小节） |
+| `reports` | 举报表（第 12 批） | 已建（迁移见「第 12 批」小节） |
 | `tags` | 标签表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
 | `article_tags` | 文章-标签中间表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
 | `follows` | 关注关系表（第 4 批） | 已建（迁移 `20261011083029_add_follows`） |
@@ -1101,6 +1102,56 @@ ALTER TABLE `series` ADD CONSTRAINT `series_author_id_fkey` FOREIGN KEY (`author
 
 ---
 
+## reports（举报表）
+
+第 12 批新建。用户举报违规的文章 / 评论，管理员在后台处理，处理结果经通知中心反馈举报人。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | INT | PK, AUTO_INCREMENT | |
+| `reporter_id` | INT | NOT NULL, FK → `users.id` **ON DELETE RESTRICT** | 举报人。业务角色是「举报者本人」，与 `likes.user_id` 同族用 `user_id` 语义，但按角色命名用 `reporter_id`（Prisma 字段 `reporterId`，关系字段 `reporter`；`User` 侧反向关系 `reports`） |
+| `target_type` | ENUM('ARTICLE','COMMENT') | NOT NULL | 举报目标类型（Prisma 枚举 `ReportTargetType`） |
+| `target_id` | INT | NOT NULL | 举报目标 id。**多态、不建外键**（同 `notifications.commentId` 先例——一列指向两种表，外键无法表达；目标可见性 / 存在性校验完全在应用层做） |
+| `reason` | VARCHAR(200) | NULL | 举报理由，选填（接口层 zod 校验 ≤200） |
+| `status` | ENUM('PENDING','RESOLVED','REJECTED') | NOT NULL DEFAULT 'PENDING' | 待处理 / 违规成立已处理 / 核实未违规（Prisma 枚举 `ReportStatus`） |
+| `resolved_at` | DATETIME(3) | NULL | 处理时间；未处理为 NULL（2026-10-18 用户拍板：加，管理列表展示处理时间） |
+| `created_at` | DATETIME(3) | NOT NULL DEFAULT CURRENT_TIMESTAMP(3) | |
+
+**唯一约束**：`reports_reporter_id_target_type_target_id_key`（`reporter_id` + `target_type` + `target_id`，Prisma 默认命名）——同一用户对同一对象只有一行举报，重复举报由应用层转 `409/40900`，不新增行、不重置状态（即使上次已被处理仍 409，处理结果走通知告知）。
+
+**索引**：`reports_target_type_target_id_idx`（`target_type` + `target_id`，管理员处理时按目标批转 PENDING 用）+ `reports_status_idx`（`status`，后台列表筛选用）；`reporter_id` 由唯一约束左前缀覆盖，不额外建索引。
+
+**无 `deleted_at` / `updated_at`**：举报行不软删（处理即终态，status 表达一切），updated_at 无业务读取方（`resolved_at` 已承担时间语义）。
+
+建表 SQL（迁移 `add_reports`）：
+
+```sql
+-- CreateTable
+CREATE TABLE `reports` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `reporter_id` INTEGER NOT NULL,
+    `target_type` ENUM('ARTICLE', 'COMMENT') NOT NULL,
+    `target_id` INTEGER NOT NULL,
+    `reason` VARCHAR(200) NULL,
+    `status` ENUM('PENDING', 'RESOLVED', 'REJECTED') NOT NULL DEFAULT 'PENDING',
+    `resolved_at` DATETIME(3) NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    UNIQUE INDEX `reports_reporter_id_target_type_target_id_key`(`reporter_id`, `target_type`, `target_id`),
+    INDEX `reports_target_type_target_id_idx`(`target_type`, `target_id`),
+    INDEX `reports_status_idx`(`status`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+ALTER TABLE `reports` ADD CONSTRAINT `reports_reporter_id_fkey` FOREIGN KEY (`reporter_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+### schema 变更已获批准（豁免登记 · 第 17 项）
+
+> 契约 §2「禁止修改数据库 schema」在本批**经用户明确批准后豁免**：批准范围 = **新建 `reports` 一张表（含 2 个新枚举 `ReportTargetType` / `ReportStatus` 与一条 RESTRICT 外键）+ `NotificationType` 枚举追加 `REPORT_RESOLVED` / `REPORT_REJECTED` 两值**。登记见 `docs/AI_CONTRACT.md` §2 第 17 项，决策过程见 `docs/API.md`「举报与审核（第 12 批）」。
+
+---
+
 ## 第 2 批：用户主页接口（零 schema 变更）
 
 新增三个接口（`docs/API.md` 有完整规格）：
@@ -1456,6 +1507,32 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ---
 
+## 第 12 批：举报与审核（reports 表 + NotificationType 追加两值）
+
+### schema 变更
+
+| 变更 | 内容 |
+|---|---|
+| 新建 `reports` 表 | `id` / `reporter_id` / `target_type` / `target_id` / `reason` / `status` / `resolved_at` / `created_at`；唯一约束 `reports_reporter_target_key`（防同一用户重复举报同一对象）+ `reports_target_idx` + `reports_status_idx` 两个索引；一条外键（`reporter_id` → `users.id`，`ON DELETE RESTRICT`）；`target_id` 多态无外键（同 `notifications.commentId` 先例）；无 `deleted_at` / `updated_at` |
+| 新增 2 个枚举 | `ReportTargetType` { ARTICLE, COMMENT }、`ReportStatus` { PENDING, RESOLVED, REJECTED } |
+| `NotificationType` 枚举追加两值 | `REPORT_RESOLVED`（举报的违规内容已处理）、`REPORT_REJECTED`（核实未违规）；**拆两值不拆一值**（2026-10-18 用户拍板：通知中心 buildText 按 type 组句，单值无法区分「删了」和「没删」两种结果）；MySQL 8 追加 ENUM 末尾走 INSTANT，零回填 |
+
+### 设计要点（详见 `docs/API.md`「举报与审核（第 12 批）」）
+
+- **防重复**：同一用户 × 同一对象唯一；第二次举报（含上次已处理的）一律 `409/40900`，不新增行、不重置状态。
+- **目标可见性**（2026-10-18 用户拍板防坑）：文章必须 `deletedAt IS NULL` **且 `status = PUBLISHED`**（草稿不可举报）；评论必须未软删且所属文章可见。作者已自行软删的内容 404，不能再被举报。
+- **不能举报自己**：目标作者是举报人本人 → `400/40000`（作者删自己的内容走既有删除接口）。
+- **管理员处理是单事务**（2026-10-18 用户拍板防坑）：`deleteTarget: true` 时「软删目标（评论级联子评论，对齐用户侧口径）」与「该目标全部 PENDING 举报批转 RESOLVED」在同一个 `$transaction`，要么全成功要么全回滚；管理员不自己拼删除接口。目标已被作者先行软删 → 软删幂等跳过（`targetDeleted: false`），状态照常流转。
+- **通知在事务提交后发**：RESOLVED → `REPORT_RESOLVED`、REJECTED → `REPORT_REJECTED`，按举报行每行一条（同一举报人对同一对象只有一行，天然去重）；通知失败不回滚业务（第 8 批纪律）。
+- **顺带修挂账**：admin 版 `deleteComment` 原先不级联软删子评论（与用户侧口径不一致的历史遗留），本批对齐用户侧 `$transaction` + `updateMany` 子树实现（用户拍板并入本批后端 commit）。
+- **硬删序新增一环**：`reports.reporter_id` 是 RESTRICT，排 `comment_likes` 之后、`comments` 之前：`notifications → bookmarks → likes → follows → comment_likes → reports → comments → articles → series → users`（`lib/tmp-account.mjs` / `lib/fixtures.mjs` 已同步；`target_id` 无外键，清理时按 `reporter_id` + 目标 id 双侧删）。
+
+### 与「已批准的例外」的关系（例外现共 17 项：schema 15 + 依赖 2）
+
+本批新增一项 schema 例外（第 17 项：`reports` 表 + `ReportTargetType` / `ReportStatus` 两枚举 + `NotificationType` 追加 `REPORT_RESOLVED` / `REPORT_REJECTED`），已登记 `docs/AI_CONTRACT.md` §2。零新依赖。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -1469,19 +1546,19 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ## 软删除与外键的交互
 
-> 全库外键现共**十五条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条 + 第 10 批 `series` 两条 + 第 11 批 `comment_likes` 两条）。删除行为从此有三种：`RESTRICT`（绝大多数）、`CASCADE`（`article_revisions.article_id` / `article_tags` 两条 / `comments.parent_id`）、`SET NULL`（`articles.series_id`，第 10 批新增的第一条）。
-> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致；`series.author_id` 同为显式 Restrict，`articles.series_id` 是显式 **SetNull**；`comment_likes` 两条同为显式 Restrict。
+> 全库外键现共**十六条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条 + 第 10 批 `series` 两条 + 第 11 批 `comment_likes` 两条 + 第 12 批 `reports` 一条）。删除行为从此有三种：`RESTRICT`（绝大多数）、`CASCADE`（`article_revisions.article_id` / `article_tags` 两条 / `comments.parent_id`）、`SET NULL`（`articles.series_id`，第 10 批新增的第一条）。
+> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致；`series.author_id` 同为显式 Restrict，`articles.series_id` 是显式 **SetNull**；`comment_likes` 两条与 `reports.reporter_id` 同为显式 Restrict。
 
 - **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 与 `likes.article_id` 的引用依然有效，因此**评论与点赞都不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
 - 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。点赞同理。
 - **将来若要物理清理**（硬删除），顺序必须是：
 
 ```text
-notifications → bookmarks → likes → follows → comment_likes → comments → articles → series → users
+notifications → bookmarks → likes → follows → comment_likes → reports → comments → articles → series → users
 ```
 
-  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知 / **系列** / **评论赞**会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错；`DELETE FROM comments` 若还有评论赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
-  特别注意**必须先清 `comment_likes` / `bookmarks` / `notifications` / `likes` / `follows`**：这五张表都可能「悬挂」在被软删对象上（`comment_likes` / `notifications` 挂评论与用户、`bookmarks` / `likes` / `notifications` 挂文章与用户、`follows` 挂用户），是硬删顺序的最上游。
+  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知 / **系列** / **评论赞** / **举报**会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错；`DELETE FROM comments` 若还有评论赞挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  特别注意**必须先清 `reports` / `comment_likes` / `bookmarks` / `notifications` / `likes` / `follows`**：这六张表都可能「悬挂」在被软删对象上（`reports` 挂举报人用户、`comment_likes` / `notifications` 挂评论与用户、`bookmarks` / `likes` / `notifications` 挂文章与用户、`follows` 挂用户），是硬删顺序的最上游（`reports.target_id` 是多态无外键，还须按目标 id 双侧补删，见「第 12 批」）。
   **`series` 排在 `articles` 之后、`users` 之前**（第 10 批）：`series.author_id → users.id` 是 RESTRICT，删用户前必须先删他的系列；而 `articles.series_id → series.id` 是 **SET NULL**——若先删 series，被绑文章会被自动解绑（此时文章往往也要删，无副作用），但**顺序上 articles 先删能顺带清掉 revisions（CASCADE）**，仍是 articles → series 更稳。
 
 ---
@@ -1589,6 +1666,7 @@ const summary = [...content].slice(0, 100).join('');
 | `add_bookmarks_and_view_count`（第 9 批，实际名 `20261018053624_add_bookmarks_and_view_count`） | 新建 `bookmarks` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键（`user_id` → `users.id`、`article_id` → `articles.id`，均 `ON DELETE RESTRICT`）+ 唯一约束 `bookmarks_user_id_article_id_key` + 索引 `bookmarks_article_id_idx`；`articles` 表新增 `view_count INT NOT NULL DEFAULT 0`（INSTANT 回填既有行为 0）。**不含数据回填**（新表无既有数据） | **已应用**（2026-10-18，`SHOW INDEX` 核实：唯一约束两列 + article_id 单列索引，`user_id` 未被额外补索引） |
 | `add_series`（第 10 批，实际名 `20261018082357_add_series`） | 新建 `series` 表（`id` / `title VARCHAR(50)` / `description VARCHAR(200) NULL` / `author_id` / `created_at` / `updated_at`）+ 一条外键（`author_id` → `users.id`，`ON DELETE RESTRICT`，外键自动索引 `series_author_id_fkey`）；`articles` 表新增 `series_id INT NULL`（外键 `articles_series_id_fkey` → `series.id`，**`ON DELETE SET NULL`，全库第一条 SET NULL 外键**）与 `series_order INT NULL` 两列。**不含数据回填**：series 新表无既有数据；articles 既有 17 行两列全部 `NULL`（`SHOW CREATE TABLE` + `information_schema.REFERENTIAL_CONSTRAINTS` 已核实 SET NULL / RESTRICT 两条规则） | **已应用**（2026-10-18） |
 | `add_comment_likes_and_mention`（第 11 批，实际名 `20261018093952_add_comment_likes_and_mention`） | **一次迁移包含全部三项变更**：① `comments` 表新增 `like_count INT NOT NULL DEFAULT 0`（INSTANT 回填既有行为 0，不建索引）；② `notifications.type` 枚举追加 `MENTION` / `COMMENT_LIKE` 两值（MODIFY ENUM，追加末尾零数据变更）；③ 新建 `comment_likes` 表（`id` / `user_id` / `comment_id` / `created_at`）+ 唯一约束 `comment_likes_user_id_comment_id_key` + 索引 `comment_likes_comment_id_idx` + 两条外键（→ `users.id` / `comments.id`，均 `ON DELETE RESTRICT`）。**不含数据回填**（新表无既有数据；migration.sql 已逐行核对） | **已应用**（2026-10-18） |
+| `add_reports`（第 12 批，实际名 `20261018114103_add_reports`） | **一次迁移包含全部三项变更**：① `notifications.type` 枚举追加 `REPORT_RESOLVED` / `REPORT_REJECTED` 两值（MODIFY ENUM，追加末尾零数据变更）；② 新建 `reports` 表（`id` / `reporter_id` / `target_type` / `target_id` / `reason` / `status` / `resolved_at` / `created_at`）+ 唯一约束 `reports_reporter_id_target_type_target_id_key` + 索引 `reports_target_type_target_id_idx` / `reports_status_idx` + 一条外键（`reporter_id` → `users.id`，`ON DELETE RESTRICT`）；③ 新增枚举 `ReportTargetType` { ARTICLE, COMMENT } / `ReportStatus` { PENDING, RESOLVED, REJECTED }（落在 reports 两列上）。**不含数据回填**（新表无既有数据；migration.sql 已逐行核对） | **已应用**（2026-10-18） |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，

@@ -70,10 +70,10 @@
 
 ### 已批准的例外
 
-以下十六项（schema 十四项：第 1、2、4、5、6、8、9、10、11、12、13、14、15、16 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下十七项（schema 十五项：第 1、2、4、5、6、8、9、10、11、12、13、14、15、16、17 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14、15、16 项是「禁止改 schema」的十四条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count / 第 10 批 series / 第 11 批 comment_likes），  
+**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14、15、16、17 项是「禁止改 schema」的十五条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count / 第 10 批 series / 第 11 批 comment_likes / 第 12 批 reports），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -160,6 +160,12 @@
     - **范围**：仅限上述三处。不含评论通知限流、不含评论点赞的软删除（likes 族纪律：物理 DELETE）。
     - **依据**：见 `docs/DB.md`「comment_likes（评论点赞表）」与「第 11 批」小节，接口语义见 `docs/API.md`「评论点赞与 @提及（第 11 批）」。
     - **是否援引前例**：援引 `likes` / `bookmarks` 建表结构先例与第 8 批 `NotificationType` 枚举扩值先例（内容上是独立的一次批准）。
+
+17. **第 12 批 · schema 变更（reports 表 + 2 新枚举 + NotificationType 追加两值，2026-10-18 批准）**
+    - **批准内容**：新建 `reports` 表（`id` / `reporter_id` / `target_type` / `target_id` / `reason` / `status` / `resolved_at` / `created_at`），含新枚举 `ReportTargetType` { ARTICLE, COMMENT } 与 `ReportStatus` { PENDING, RESOLVED, REJECTED }、唯一约束 `reports_reporter_target_key`、索引 `reports_target_idx` / `reports_status_idx`、一条外键（`reporter_id` → `users.id`，`ON DELETE RESTRICT`）；`target_id` 多态**无外键**；无 `deleted_at` / `updated_at`；`NotificationType` 枚举追加 `REPORT_RESOLVED` / `REPORT_REJECTED` 两值（**拆两值不拆一值**，用户拍板：单值无法在通知文案区分「已处理」与「未违规」）。
+    - **范围**：仅限上述三处。不含举报理由标签化 / 附件、不含举报限流、不含给既有表加列。
+    - **依据**：见 `docs/DB.md`「reports（举报表）」与「第 12 批」小节，接口语义见 `docs/API.md`「举报与审核（第 12 批）」。
+    - **是否援引前例**：援引 `likes` / `comment_likes` 建表结构先例、`notifications.commentId` 多态无外键先例与第 8 / 11 批 `NotificationType` 枚举扩值先例（内容上是独立的一次批准）。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -371,6 +377,9 @@ GET    /api/admin/articles          管理端文章列表（需 ADMIN，含软�
 DELETE /api/admin/articles/:id      管理端删除文章（需 ADMIN，软删）
 GET    /api/admin/comments          管理端评论列表（需 ADMIN，含软删）
 DELETE /api/admin/comments/:id      管理端删除评论（需 ADMIN，软删）
+POST   /api/reports                 提交举报（需登录，防重复 409 / 不可见 404 / 不能举报自己 400，第 12 批）
+GET    /api/admin/reports           管理端举报列表（需 ADMIN，status 筛选 + targetPreview 快照，第 12 批）
+PUT    /api/admin/reports/:id       管理端处理举报（需 ADMIN，单事务联动软删 + PENDING 批转，第 12 批）
 POST   /api/articles/auto-save       自动保存草稿（需登录，第 6 批）
 GET    /api/users/me/drafts          我的草稿箱（需登录，第 6 批）
 DELETE /api/users/me/drafts/:id      删除草稿（需登录，第 6 批）
@@ -391,7 +400,7 @@ PUT    /api/notifications/:id/read    单条标记已读（需登录，第 8 批
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口、第 10 批新增 6 个图片上传 / 系列接口、第 11 批新增 3 个评论点赞接口（另有评论列表加 `likeCount` / `liked` 两字段，非新路径），接口总数 25 → 37 → 38 → 42 → 47 → 53 → 56**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论 / 系列内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口、第 10 批新增 6 个图片上传 / 系列接口、第 11 批新增 3 个评论点赞接口（另有评论列表加 `likeCount` / `liked` 两字段，非新路径）、第 12 批新增 3 个举报接口（用户端 1 + 管理端 2），接口总数 25 → 37 → 38 → 42 → 47 → 53 → 56 → 59**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论 / 系列内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 

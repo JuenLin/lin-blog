@@ -2521,6 +2521,104 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 ---
 
+## 举报与审核（第 12 批）
+
+社区治理：用户可举报违规的文章 / 评论，管理员在后台「举报管理」页集中处理（一键忽略或删除违规内容），处理结果通过通知中心反馈举报人（`REPORT_RESOLVED` / `REPORT_REJECTED` 两种通知类型，见 `docs/DB.md`「第 12 批」）。本批接口 56 → 59（+3：用户端 1 + 管理端 2）。
+
+> **防重复**：`reports` 表唯一约束 `reports_reporter_target_key`（`reporter_id` + `target_type` + `target_id`），同一用户对同一对象只有一行举报。第二次举报（**无论上次是否已被处理**）一律 `409/40900`，不新增行、不重置状态——处理结果走通知告知，不需要靠重复举报查询进度。
+> **不能举报自己**：文章 / 评论的作者就是举报人自己 → `400/40000`（作者自己删自己的内容走既有删除接口，不走举报）。
+> **目标可见性口径**（404 唯一语义 =「内容不存在或不可见」）：文章必须 `deletedAt IS NULL` **且 `status = PUBLISHED`**（草稿不可被举报——外人根本看不到它）；评论必须未软删且**所属文章可见**（同 `requireVisibleComment` 口径）。作者已自行软删的内容同样 404，不能再被举报。
+> **管理员处理是单事务**（`$transaction`）：`deleteTarget: true` 时「软删目标（评论级联子评论，对齐用户侧口径）」与「该目标**全部** PENDING 举报批转 RESOLVED」要么全成功要么全回滚，管理员不自己调删除接口再改举报状态。通知在**事务提交后**发送（通知失败绝不回滚业务，第 8 批纪律）。
+> **幂等流转**：处理时目标已被作者先行软删 → 软删步骤幂等跳过（`targetDeleted: false`），状态流转照常完成，不报错卡住管理员。
+
+### POST /api/reports
+
+提交举报。**需要登录**。举报人取 token 中的 `userId`。
+
+请求体：
+
+```json
+{ "targetType": "ARTICLE", "targetId": 1, "reason": "涉嫌抄袭" }
+```
+
+| 字段 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| targetType | string | 是 | 枚举 `ARTICLE` / `COMMENT`，其他值 400 |
+| targetId | number | 是 | 正整数 |
+| reason | string | 否 | 最长 200 字（`VARCHAR(200)`），选填 |
+
+行为：向 `reports` 插入一行（`status = PENDING`）。校验顺序：① 目标可见（见上方口径）→ 404；② 目标作者是自己 → 400；③ 唯一约束命中 P2002 → 409。
+
+成功：HTTP 201
+
+```json
+{ "code": 0, "message": "ok", "data": { "id": 1, "targetType": "ARTICLE", "targetId": 1, "status": "PENDING" } }
+```
+
+失败：
+
+| HTTP | code  | 场景 |
+| ---- | ----- | --- |
+| 400  | 40000 | 字段校验失败 / 不能举报自己的内容 |
+| 401  | 40100 | 未登录或 token 无效 |
+| 404  | 40400 | 目标不存在 / 已软删 / 文章是草稿 / 评论所属文章不可见 |
+| 409  | 40900 | 重复举报（同一用户对同一对象，含上次已被处理的） |
+
+### GET /api/admin/reports
+
+管理端举报列表。**需要 ADMIN**（与既有 `/api/admin/*` 同鉴权链）。
+
+query：`page` / `pageSize` / `status`（可选，白名单 `PENDING` / `RESOLVED` / `REJECTED`，非法值 400）。默认按 `createdAt desc`。
+
+列表项（`targetPreview` 为联查快照，便于管理员不跳页判断）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id / targetType / targetId / reason / status / createdAt / resolvedAt | — | 举报行本身；`resolvedAt` 未处理时为 `null` |
+| reporter | object | `{ id, username, nickname }` 举报人（软删降级「已注销用户」） |
+| targetPreview.title | string\|null | 文章目标 = 标题；评论目标 = 内容前 50 字；已软删为 `null` |
+| targetPreview.authorName | string\|null | 目标作者昵称 / 用户名；已软删为 `null` |
+| targetPreview.deleted | boolean | 目标是否已被软删（作者自删或管理员处理过） |
+
+成功：HTTP 200，分页形状与全站列表一致（`list` / `total` / `page` / `pageSize`）。
+
+失败：400（status 非法 / 分页参数非法）、401、403（非 ADMIN，40300）。
+
+### PUT /api/admin/reports/:id
+
+处理举报。**需要 ADMIN**。
+
+请求体：
+
+```json
+{ "status": "RESOLVED", "deleteTarget": true }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| status | string | 是 | `RESOLVED`（违规成立）/ `REJECTED`（核实未违规），`PENDING` 非法 |
+| deleteTarget | boolean | 否 | 仅 `RESOLVED` 可带；`REJECTED + deleteTarget` → 400 |
+
+行为（**单事务**）：
+1. `deleteTarget: true` → 软删目标：文章软删本身；评论软删 + **级联软删全部子评论**（对齐用户侧 deleteComment 口径，`updateMany` 子树）。目标已不在（作者先行软删）→ 幂等跳过，不报错。
+2. 该目标（同 `targetType` + `targetId`）的**全部** PENDING 举报 `updateMany` → `RESOLVED`（不限当前这条——多人举报同一违规内容，一并闭环；处理行数记入 `resolvedCount`）。`REJECTED` 只改当前这一条。
+3. 事务提交**后**给举报人发通知：`RESOLVED` → `REPORT_RESOLVED`（「你举报的内容已核实处理」）；`REJECTED` → `REPORT_REJECTED`（「你举报的内容经核实未违规」）。多人举报同一目标时**每人一条**（去重按举报行）；管理员自己举报的行不存在自通知问题（不能举报自己已拦截），但处理人 = 举报人不可能发生，无需抑制。
+
+成功：HTTP 200
+
+```json
+{ "code": 0, "message": "ok", "data": { "id": 1, "status": "RESOLVED", "resolvedAt": "...", "resolvedCount": 2, "targetDeleted": true } }
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| resolvedCount | number | 本次批转 RESOLVED 的举报行数（含当前这条；REJECTED 恒 1，走 status 字段语义） |
+| targetDeleted | boolean | 本次是否实际执行了软删（目标本就不在 → `false`） |
+
+失败：400（status 缺失 / 非法 / REJECTED+deleteTarget / id 非正整数）、401、403、404（举报行不存在）。
+
+---
+
 
 
 - 所有请求走 `frontend/src/api/request.js` 导出的 axios 实例。

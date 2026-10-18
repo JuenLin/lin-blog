@@ -184,6 +184,18 @@
 
 ---
 
+## 第 12 批：举报与审核（2026-10-18 执行，远期储备③转正）
+
+「远期储备」的举报 / 内容审核在本批实现（接口 56 → 59，+3；表 9 → 10；例外 16 → 17 项）：
+
+- **Schema**（例外第 17 项）：`reports` 表（`reporter_id` RESTRICT / `target_type`+`target_id` 多态无外键 / `reason` ≤200 / `status` PENDING·RESOLVED·REJECTED / `resolved_at`）；唯一约束防同一用户重复举报同一对象（二次举报 409/40900，不重置状态）；`NotificationType` 追加 **`REPORT_RESOLVED` / `REPORT_REJECTED` 两值**（用户拍板拆分：单值无法在通知文案区分「删了」与「没删」）。
+- **3 接口**：`POST /api/reports`（登录；校验链 = 目标可见（文章须 PUBLISHED 且未软删、评论未软删且所属文章可见）→ 不能举报自己 400 → 防重 409）；`GET /api/admin/reports`（ADMIN，status 筛选 + targetPreview 快照，软删降级）；`PUT /api/admin/reports/:id`（ADMIN，**单事务**：软删目标（评论级联子评论）+ 该目标全部 PENDING 批转 RESOLVED；目标已不在 → 幂等跳过 `targetDeleted:false`；通知事务提交后发）。
+- **前端**：文章详情 / 评论行内「举报」入口（登录 + 非作者；文章作者也可举报他人评论，用户拍板）+ el-dialog 原因选填 ≤200；管理端 `AdminReports.vue`（筛选 / 忽略 / 删除违规内容并处理二次确认）。
+- **顺带修挂账**：admin 版 `deleteComment` 补级联软删子评论（与用户侧口径对齐，历史遗留不一致，用户拍板并入本批后端 commit）。
+- **硬删序**：`reports` 排 `comment_likes` 后、`comments` 前：`notifications → bookmarks → likes → follows → comment_likes → reports → comments → articles → series → users`，tmp-account / fixtures 同步（`target_id` 无外键，清理按 reporter_id + 目标 id 双侧删）。
+
+---
+
 ## 插队候选（批次之间可随时做的小补丁）
 
 - ~~**评论点赞**：comments 加 `likeCount` + `comment_likes` 表~~ → **第 11 批已实现**（2026-10-18）。
@@ -198,7 +210,7 @@
 1. ~~**第 9 批**：收藏夹 + 阅读量~~（已完成）
 2. ~~**第 10 批**：图片上传 + 系列~~（已完成）
 3. ~~评论点赞 / @ 提及~~（第 11 批已完成）
-4. **第 12 批：举报与审核**（依赖第 5 批权限底座，等用户指令）
+4. ~~**第 12 批：举报与审核**~~（第 12 批已完成 2026-10-18）
 
 ---
 
