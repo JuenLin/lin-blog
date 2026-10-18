@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { getMe, login as loginApi, register as registerApi } from '../api/auth.js';
 import { useLikedStore } from './liked.js';
 import { useFollowingStore } from './following.js';
+import { useNotificationStore } from './notification.js';
 
 const TOKEN_KEY = 'token';
 
@@ -26,6 +27,10 @@ export const useUserStore = defineStore('user', () => {
     // 第 4 批：同一个道理 ——「我关注的人」集合也必须跟着换人。
     // 漏了就会串号：A 关注过的人，在 B 的主页上显示成「已关注」，且 B 的关注数跟着错。
     useFollowingStore().reset();
+
+    // 第 8 批：通知未读数（铃铛红点）也必须跟着换人 —— 漏了会串号：
+    // A 的通知红点显示在 B 的铃铛上。reset 内会停掉轮询定时器防泄漏。
+    useNotificationStore().reset();
 
     if (token.value) {
       localStorage.setItem(TOKEN_KEY, token.value);
