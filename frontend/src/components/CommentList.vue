@@ -70,6 +70,25 @@
                 >
                   <span class="comment-time">{{ formatRelativeTime(item.createdAt) }}</span>
                 </el-tooltip>
+                <!-- 第 11 批：评论点赞。幂等 200（bookmark / follow 族），没有 409 / 404 分支；
+                     liked / likeCount 由列表接口带回（登录时每项附加 liked 布尔），
+                     点击后用响应里的 { liked, likeCount } 原位回写，不乐观更新。
+                     未登录点击 → 跳登录页带 redirect（与文章点赞同款交互）。 -->
+                <span
+                  class="comment-like-btn"
+                  :class="{ 'is-liked': item.liked, 'is-busy': likeBusy[item.id] }"
+                  data-testid="comment-like"
+                  :data-comment-id="item.id"
+                  role="button"
+                  tabindex="0"
+                  :aria-pressed="!!item.liked"
+                  :aria-label="item.liked ? '取消点赞评论' : '点赞评论'"
+                  @click="toggleCommentLike(item)"
+                  @keydown.enter.prevent="toggleCommentLike(item)"
+                >
+                  <span class="comment-like-icon" aria-hidden="true">{{ item.liked ? '♥' : '♡' }}</span>
+                  <span v-if="item.likeCount > 0" class="comment-like-count">{{ item.likeCount }}</span>
+                </span>
                 <!-- 第 7 批：「回复」按钮。仅顶层评论显示（parentId 为 null）——
                      孤儿降级项（isOrphan）的父评论不在本页，回复它会违反两层硬限制，
                      后端会拦，前端干脆不给入口。未登录不显示（登录后 fetchMe 完成自然出现）。 -->
@@ -131,6 +150,22 @@
                     <el-tooltip :content="formatAbsoluteTime(reply.createdAt)" placement="top">
                       <span class="comment-time">{{ formatRelativeTime(reply.createdAt) }}</span>
                     </el-tooltip>
+                    <!-- 第 11 批：回复的点赞按钮，与顶楼同构（幂等 200、响应原位回写）。 -->
+                    <span
+                      class="comment-like-btn"
+                      :class="{ 'is-liked': reply.liked, 'is-busy': likeBusy[reply.id] }"
+                      data-testid="comment-like"
+                      :data-comment-id="reply.id"
+                      role="button"
+                      tabindex="0"
+                      :aria-pressed="!!reply.liked"
+                      :aria-label="reply.liked ? '取消点赞评论' : '点赞评论'"
+                      @click="toggleCommentLike(reply)"
+                      @keydown.enter.prevent="toggleCommentLike(reply)"
+                    >
+                      <span class="comment-like-icon" aria-hidden="true">{{ reply.liked ? '♥' : '♡' }}</span>
+                      <span v-if="reply.likeCount > 0" class="comment-like-count">{{ reply.likeCount }}</span>
+                    </span>
                     <el-button
                       v-if="canDelete(reply)"
                       class="comment-delete-btn"
@@ -179,8 +214,8 @@
 
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { listComments, deleteComment, createComment } from '../api/comment.js';
+import { useRoute, useRouter } from 'vue-router';
+import { listComments, deleteComment, createComment, likeComment, unlikeComment } from '../api/comment.js';
 import { useUserStore } from '../stores/user.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
@@ -202,6 +237,7 @@ const props = defineProps({
 });
 
 const router = useRouter();
+const route = useRoute();
 const userStore = useUserStore();
 
 const list = ref([]);
@@ -292,6 +328,49 @@ function markAvatarBroken(item) {
 function goToProfile(id) {
   if (id == null) return;
   router.push({ name: 'user-profile', params: { id } });
+}
+
+/* ---------------- 第 11 批：评论点赞 ---------------- */
+
+// 点赞请求进行中的评论 id 集合（防连点重复发请求；幂等接口不会出错，但请求抖动会让
+// liked/likeCount 短暂来回跳，加 busy 让按钮在响应回来前不可再点）。
+const likeBusy = reactive({});
+
+/**
+ * 赞 / 取消赞一条评论。**幂等 200**（bookmark / follow 族）：重复赞、取消未赞都成功，
+ * 没有 409 / 404 分支可纠正（与文章点赞刻意相反，docs/API.md 第 11 批）。
+ * 404 只有「评论不可见」一种语义（评论被删 / 文章转草稿），交给拦截器统一提示。
+ *
+ * 状态回写不乐观更新：等响应里的 { liked, likeCount } 回来再改本地 item——
+ * 计数以服务端为准，避免并发下本地 +1 与响应计数打架。
+ * 注意 item 是 tree 计算属性产出的浅拷贝，直接改它不生效；
+ * 必须回写 list.value 里的原始对象（tree 会从 list 重新组装）。
+ */
+async function toggleCommentLike(item) {
+  // 未登录：与文章点赞同款交互，跳登录页并带 redirect，登录后回到本页。
+  if (!userStore.isLogin) {
+    router.push({ name: 'login', query: { redirect: route.fullPath } });
+    return;
+  }
+
+  if (likeBusy[item.id]) return;
+  likeBusy[item.id] = true;
+
+  try {
+    const data = item.liked ? await unlikeComment(item.id) : await likeComment(item.id);
+
+    // 原位回写 list.value 的原始对象（可能在本页顶楼，也可能在某条的 replies 里——
+    // replies 与顶楼共享 list.value 里的同一批对象引用，按 id 找到唯一一份）。
+    const target = list.value.find((c) => c.id === item.id);
+    if (target) {
+      target.liked = data.liked;
+      target.likeCount = data.likeCount;
+    }
+  } catch (error) {
+    // 错误提示由 request.js 拦截器统一抛出（401 未登录 / 404 评论不可见）。
+  } finally {
+    likeBusy[item.id] = false;
+  }
 }
 
 /* ---------------- 第 7 批：回复 ---------------- */
@@ -549,6 +628,42 @@ defineExpose({
   font-size: 12px;
   color: var(--text-muted);
   cursor: help; /* 方案 D：走 tooltip 看绝对时间 */
+}
+
+/* 第 11 批：评论点赞按钮。小号胶囊（文章点赞的缩小版），默认弱化色不抢正文视觉；
+   liked 置红（♥），busy 期间禁指针防连点。count 为 0 时不渲染数字（评论点赞数
+   大多是 0，整排「♡ 0」很吵）。 */
+.comment-like-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  border-radius: var(--chip-radius);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+
+.comment-like-btn:hover,
+.comment-like-btn:focus-visible {
+  color: var(--text-regular);
+  background: rgba(var(--brand-rgb), 0.08);
+  outline: none;
+}
+
+.comment-like-btn.is-liked {
+  color: var(--like-color);
+}
+
+.comment-like-btn.is-busy {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.comment-like-count {
+  font-variant-numeric: tabular-nums;
 }
 
 /* 删除按钮贴 .comment-item-head 行尾（head 是 flex，margin-left:auto 推右）。

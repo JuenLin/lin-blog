@@ -307,6 +307,10 @@ function buildText(n) {
       return `${actor} 关注了你`;
     case 'LIKE':
       return `${actor} 赞了你的文章《${n.targetTitle || '内容已删除'}》`;
+    case 'COMMENT_LIKE':
+      return `${actor} 赞了你的评论（《${n.targetTitle || '内容已删除'}》）`;
+    case 'MENTION':
+      return `${actor} 在《${n.targetTitle || '内容已删除'}》中提到了你`;
     default:
       return `${actor} 与你互动了`;
   }
@@ -371,7 +375,8 @@ async function handleMarkAll() {
 /**
  * 点击通知：先顺手标已读（满足防坑 2「标已读」要求），再跳转。
  *   - FOLLOW → 被关注者主页（actorId 即目标，API.md 明确）；
- *   - COMMENT / REPLY / LIKE → 文章详情，跳转前预检文章是否还在（防坑 2：已删不进报错页）。
+ *   - COMMENT / REPLY / LIKE / COMMENT_LIKE / MENTION → 文章详情（第 11 批两类同走文章跳转，
+ *     评论粒度定位留待站内信批），跳转前预检文章是否还在（防坑 2：已删不进报错页）。
  *
  * @param {object} n 通知对象
  */
