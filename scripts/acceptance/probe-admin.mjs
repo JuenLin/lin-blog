@@ -301,11 +301,28 @@ async function main() {
     select: { id: true },
     orderBy: { id: 'desc' },
   });
-  const someComment = await prisma.comment.findFirst({
+  let someComment = await prisma.comment.findFirst({
     where: { deletedAt: null },
     select: { id: true },
     orderBy: { id: 'desc' },
   });
+
+  // 2026-10-18 健壮性修复：探针评论都是带标记/限定域清理的，历史批次跑完后
+  // 库里可能**一条未软删评论都没有**（本次实测 comments=0）——旧代码直接
+  // someComment.id 会 TypeError 崩在 A7。此时自造一条靶子评论（挂 someArticle、
+  // 作者 tempA）：A7/A7b 只需要「一条存在且未软删的评论」做 403 / 无副作用断言。
+  // 清理：hardDeleteUser(tempA) 的 comment.deleteMany({ authorId }) 会带走它。
+  if (!someComment) {
+    someComment = await prisma.comment.create({
+      data: {
+        articleId: someArticle.id,
+        authorId: state.tempA.id,
+        content: 'admin探针兜底评论（库内无未软删评论时自造）',
+      },
+      select: { id: true },
+    });
+    console.log(`NOTE 库内无未软删评论，自造靶子评论 id=${someComment.id}`);
+  }
 
   /* ===== A 组：非管理员（7） ===== */
   console.log('---- A 组：非管理员 ----');
