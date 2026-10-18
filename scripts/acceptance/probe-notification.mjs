@@ -6,8 +6,10 @@
 //   node scripts/acceptance/probe-notification.mjs --no-cleanup # 保留数据方便排查
 //
 // 覆盖：
-//   API 组（N1..N10）：COMMENT/REPLY/LIKE/FOLLOW 四种通知的产生、未读数、列表排序、
-//                     批量/单条已读、自通知抑制、文章/用户软删降级、未登录 401。
+//   API 组（N1..N12）：COMMENT/REPLY/LIKE/FOLLOW 四种通知的产生、未读数、列表排序、
+//                     批量/单条已读、自通知抑制、文章/用户软删降级、未登录 401；
+//                     第 11 批补 N11（COMMENT_LIKE + 自赞抑制）、N12（MENTION 评论/文章
+//                     双触发 + 自提及抑制）。
 //   UI 组（U1..U3）：铃铛红点、抽屉渲染、全部已读按钮（CDP 真实点击）。
 //
 // 清理纪律（探针铁律）：所有临时数据按 id 精确回收，绝不 deleteMany({}) 或跨表级联；
@@ -92,6 +94,7 @@ async function snapshot(p) {
     likes: await c.like.count(),
     follows: await c.follow.count(),
     notifications: await c.notification.count(),
+    commentLikes: await c.commentLike.count(),
   };
 }
 
@@ -103,7 +106,7 @@ async function snapshot(p) {
 // 清理顺序遵循 FK RESTRICT：notification → bookmark → follow → like → comment → article → user。
 async function healPreviousResidue() {
   const c = await prisma();
-  const healed = { accounts: 0, articles: 0, notifications: 0, follows: 0, likes: 0, comments: 0, bookmarks: 0, revisions: 0 };
+  const healed = { accounts: 0, articles: 0, notifications: 0, follows: 0, likes: 0, comments: 0, bookmarks: 0, revisions: 0, commentLikes: 0 };
   const accountPrefix = `${PROBE_PREFIX}_notif_`;
   const articlePrefix = `${PROBE_PREFIX} 通知靶子`;
   const accRows = await c.user.findMany({ where: { username: { startsWith: accountPrefix } }, select: { id: true } });
@@ -125,6 +128,12 @@ async function healPreviousResidue() {
   ).count;
   healed.likes = (
     await c.like.deleteMany({ where: { OR: [{ userId: { in: userIds } }, { articleId: { in: articleIds } }] } })
+  ).count;
+  // 第 11 批新增 comment_likes：comment_id RESTRICT，评论硬删前必须先删赞行。
+  healed.commentLikes = (
+    await c.commentLike.deleteMany({
+      where: { OR: [{ userId: { in: userIds } }, { comment: { articleId: { in: articleIds } } }] },
+    })
   ).count;
   healed.comments = (
     await c.comment.deleteMany({ where: { OR: [{ authorId: { in: userIds } }, { articleId: { in: articleIds } }] } })
@@ -163,7 +172,7 @@ async function main() {
     const healed = await healPreviousResidue();
     if (healed.accounts > 0 || healed.articles > 0) {
       console.log(
-        `跑前自愈：回收历史残留 账号 ${healed.accounts} / 文章 ${healed.articles} / 通知 ${healed.notifications} / 关注 ${healed.follows} / 点赞 ${healed.likes} / 评论 ${healed.comments} / 收藏 ${healed.bookmarks} / 版本 ${healed.revisions}`
+        `跑前自愈：回收历史残留 账号 ${healed.accounts} / 文章 ${healed.articles} / 通知 ${healed.notifications} / 关注 ${healed.follows} / 点赞 ${healed.likes} / 评论赞 ${healed.commentLikes} / 评论 ${healed.comments} / 收藏 ${healed.bookmarks} / 版本 ${healed.revisions}`
       );
     }
   }
@@ -271,6 +280,57 @@ async function main() {
     else fail('N6', 'R 单条已读使未读数-1', `标记=${ok(m1)} 未读数=${afterUnread.unreadCount}`);
   } else {
     fail('N6', 'R 单条已读使未读数-1', '找不到未读通知');
+  }
+
+  // ── N11（第 11 批）：COMMENT_LIKE —— R 赞 A 的评论 c1 → A 收 COMMENT_LIKE；
+  //    A 自赞自己的评论（作者本人）→ 自通知抑制，A 的 COMMENT_LIKE 总数恰 1。
+  const clLike = await api('POST', `/comments/${c1.json.data.id}/like`, R.token);
+  await api('POST', `/comments/${c1.json.data.id}/like`, A.token); // 自赞，应被抑制
+  await sleep(300);
+  const aList11 = data(await api('GET', '/notifications?page=1&pageSize=20', A.token));
+  const clRows = (aList11.list || []).filter((n) => n.type === 'COMMENT_LIKE');
+  const clFromR = clRows.find((n) => n.actorId === R.id);
+  if (ok(clLike) && clFromR && clRows.length === 1) {
+    pass('N11', '评论被赞→COMMENT_LIKE 且自赞抑制', `actorName=${clFromR.actorName} COMMENT_LIKE总数=${clRows.length}`);
+  } else {
+    fail('N11', '评论被赞→COMMENT_LIKE 且自赞抑制', `like=${clLike.status} COMMENT_LIKE数=${clRows.length} 命中R=${!!clFromR}`);
+  }
+
+  // ── N12（第 11 批）：MENTION —— 评论 / 文章双触发 + 自提及抑制。
+  //    提取规则 @(\w+)（探针用户名全为 \w 字符，天然可命中）；
+  //    R 评论里 @A → A 收 MENTION；A 文章正文 @R → R 收 MENTION；同文 @自己 → 抑制。
+  const mComment = await api('POST', '/comments', R.token, {
+    articleId: R1.id,
+    content: `@${A.username} 这条评论提到你`,
+  });
+  const mArticle = await api('POST', '/articles', A.token, {
+    title: `${PROBE_PREFIX} 通知靶子M1`,
+    content: `正文里提及 @${R.username} 与 @${A.username}（自提及应被抑制）`,
+  });
+  if (ok(mArticle)) createdArticleIds.push(mArticle.json.data.id);
+  await sleep(300);
+  const aList12 = data(await api('GET', '/notifications?page=1&pageSize=20', A.token));
+  const aMentions = (aList12.list || []).filter((n) => n.type === 'MENTION');
+  const aMentionFromComment = aMentions.find((n) => n.actorId === R.id && n.targetTitle === R1.title);
+  const rList12 = data(await api('GET', '/notifications?page=1&pageSize=20', R.token));
+  const rMentions = (rList12.list || []).filter((n) => n.type === 'MENTION');
+  const rMentionFromArticle = rMentions.find(
+    (n) => n.actorId === A.id && mArticle.json && n.targetTitle === mArticle.json.data.title
+  );
+  if (
+    ok(mComment) &&
+    aMentionFromComment &&
+    aMentions.length === 1 &&
+    rMentionFromArticle &&
+    rMentions.length === 1
+  ) {
+    pass('N12', 'MENTION：评论/文章双触发+自提及抑制', `A收=${aMentions.length}(评论提及) R收=${rMentions.length}(文章提及)`);
+  } else {
+    fail(
+      'N12',
+      'MENTION：评论/文章双触发+自提及抑制',
+      `mComment=${mComment.status} A提及数=${aMentions.length} 命中=${!!aMentionFromComment} R提及数=${rMentions.length} 命中=${!!rMentionFromArticle}`
+    );
   }
 
   // ── UI 组（在「全部已读」之前，R 仍有未读=3） ──
@@ -439,6 +499,7 @@ async function cleanup(before) {
   let comments = 0;
   let articles = 0;
   let accounts = 0;
+  let commentLikes = 0;
 
   // 1) 通知：只删「涉及 A/R 的」id 集合（已在 main 收集到 createdNotificationIds）
   if (createdNotificationIds.length) {
@@ -451,8 +512,13 @@ async function cleanup(before) {
     followDeleted += r.count;
   }
 
-  // 3) 点赞 → 4) 评论 → 5) 文章（FK RESTRICT 顺序）
+  // 3) 评论赞 → 点赞 → 评论 → 文章（FK RESTRICT 顺序）。
+  //    ⚠️ 第 11 批新增 comment_likes：comment_id RESTRICT，评论硬删前必须先删赞行，
+  //    否则 comment.deleteMany 会 P2003（c1 被 R/A 点过赞的场景实测会出现）。
   if (createdArticleIds.length) {
+    commentLikes = (
+      await c.commentLike.deleteMany({ where: { comment: { articleId: { in: createdArticleIds } } } })
+    ).count;
     likes = (await c.like.deleteMany({ where: { articleId: { in: createdArticleIds } } })).count;
     comments = (await c.comment.deleteMany({ where: { articleId: { in: createdArticleIds } } })).count;
     articles = (await c.article.deleteMany({ where: { id: { in: createdArticleIds } } })).count;
@@ -470,7 +536,7 @@ async function cleanup(before) {
     if (afterClean[k] !== before[k]) diffs[k] = `${before[k]}→${afterClean[k]}`;
   }
   if (Object.keys(diffs).length === 0) {
-    pass('CLN', '清理后基线无残留', `notifications删${nDeleted} follows删${followDeleted} articles删${articles} accounts删${accounts}`);
+    pass('CLN', '清理后基线无残留', `notifications删${nDeleted} follows删${followDeleted} commentLikes删${commentLikes} articles删${articles} accounts删${accounts}`);
   } else {
     fail('CLN', '清理后基线残留', JSON.stringify(diffs));
   }

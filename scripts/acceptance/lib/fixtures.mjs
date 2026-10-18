@@ -164,17 +164,25 @@ export async function cleanupFixtures(ids, commentMarkers = [], seriesFixtures =
   let bookmarks = 0;
   let series = 0;
   let marked = 0;
+  let commentLikes = 0;
   try {
     if (list.length) {
-      // 外键顺序：先通知 → 再收藏 → 再点赞 → 再评论 → 再文章 → 最后系列（RESTRICT 链）。
+      // 外键顺序：先通知 → 再收藏 → 再点赞 → 再评论赞 → 再评论 → 再文章 → 最后系列（RESTRICT 链）。
       // ⚠️ notifications 必须最先删：第 8 批新增 notifications 表，article_id 指向 articles
       // 且 ON DELETE RESTRICT；夹具文章被评论 / 点赞 / 关注会生成通知，漏删这一步
       // `article.deleteMany` 会因 RESTRICT 报 P2003，整个清理失败、留下脏数据。
       // ⚠️ bookmarks（第 9 批新增）同型：article_id / user_id 双 RESTRICT，
       // 夹具文章被收藏同样会挡住删文章，紧跟通知之后删。
+      // ⚠️ comment_likes（第 11 批新增）同型：user_id / comment_id 双 RESTRICT，
+      // 夹具文章的评论被任何人赞过都会挡删评论，紧跟点赞之后删（先于评论行）。
+      // 用关系过滤 comment.articleId 定位（对镜第 11 批 Prisma 坑：关系级 where 在
+      // select 里不支持，但在 deleteMany 的 where 里是标准用法，合法）。
       notifications = (await prisma.notification.deleteMany({ where: { articleId: { in: list } } })).count;
       bookmarks = (await prisma.bookmark.deleteMany({ where: { articleId: { in: list } } })).count;
       likes = (await prisma.like.deleteMany({ where: { articleId: { in: list } } })).count;
+      commentLikes = (
+        await prisma.commentLike.deleteMany({ where: { comment: { articleId: { in: list } } } })
+      ).count;
       comments = (await prisma.comment.deleteMany({ where: { articleId: { in: list } } })).count;
       articles = (await prisma.article.deleteMany({ where: { id: { in: list } } })).count;
       // 第 10 批：series.authorId → users 是 RESTRICT（夹具账号建的系列挡删用户），
@@ -185,6 +193,10 @@ export async function cleanupFixtures(ids, commentMarkers = [], seriesFixtures =
       }
     }
     if (commentMarkers.length) {
+      // 标记清理的评论同样可能被赞过（probe-like 对评论赞的场景），先删赞行再删评论。
+      await prisma.commentLike.deleteMany({
+        where: { comment: { OR: commentMarkers.map((m) => ({ content: { contains: m } })) } },
+      });
       marked = (
         await prisma.comment.deleteMany({
           where: { OR: commentMarkers.map((m) => ({ content: { contains: m } })) },
@@ -206,6 +218,7 @@ export async function cleanupFixtures(ids, commentMarkers = [], seriesFixtures =
       notifications,
       bookmarks,
       series,
+      commentLikes,
       marked,
       final: {
         users,

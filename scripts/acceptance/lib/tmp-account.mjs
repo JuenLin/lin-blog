@@ -71,8 +71,16 @@ export async function cleanupProbeAccounts(usernames) {
       await prisma.article.findMany({ where: { authorId: { in: ids } }, select: { id: true } })
     ).map((a) => a.id);
 
+    // 相关评论：账号写的 + 落在自造文章上的（comment_likes 要按 commentId 双侧清理）。
+    const commentIds = (
+      await prisma.comment.findMany({
+        where: { OR: [{ authorId: { in: ids } }, { articleId: { in: articleIds } }] },
+        select: { id: true },
+      })
+    ).map((c) => c.id);
+
     // 外键顺序（全部 RESTRICT，必须按依赖反向删）：
-    // 通知 → 收藏 → 点赞 → 关注 → 评论 → 文章 → 系列 → 用户。
+    // 通知 → 收藏 → 点赞 → 关注 → 评论赞 → 评论 → 文章 → 系列 → 用户。
     // ⚠️ 第 8 批新增 notifications 表，actor_id / user_id 都指向 users 且 RESTRICT；
     //    之前的探针账号只要在评论 / 点赞 / 关注里当过触发者或接收者，就会在硬删用户时
     //    触发 P2003。这里按 `id: { in: [...] }` 精确清理，绝不误伤真实数据。
@@ -82,7 +90,10 @@ export async function cleanupProbeAccounts(usernames) {
     // ⚠️ 第 10 批新增 series 表：series.authorId → users 是 RESTRICT（探针账号建的
     //    系列挡删用户）；articles.seriesId → series 是 SET NULL（删文章不解绑系列，
     //    反过来删系列会自动解绑文章）。所以 series 必须删在 users 之前。
-    //    第 11 批再加 comment_likes 后若出现 comment 相关新表，同样按此模式插入。
+    // ⚠️ 第 11 批新增 comment_likes 表：user_id / comment_id 双 RESTRICT（对镜 likes）。
+    //    探针账号点过别人的评论、或自己的评论被别人赞过，都会挡删 comment / user。
+    //    清理条件按 userId OR commentId 双侧（commentId 已含「自造文章上的所有评论」），
+    //    顺序在 follows 之后、comments 之前（评论赞行必须先于评论行删）。
     await prisma.notification.deleteMany({
       where: {
         OR: [{ actorId: { in: ids } }, { userId: { in: ids } }, { articleId: { in: articleIds } }],
@@ -98,6 +109,9 @@ export async function cleanupProbeAccounts(usernames) {
     });
     await prisma.follow.deleteMany({
       where: { OR: [{ followerId: { in: ids } }, { followingId: { in: ids } }] },
+    });
+    await prisma.commentLike.deleteMany({
+      where: { OR: [{ userId: { in: ids } }, { commentId: { in: commentIds } }] },
     });
     await prisma.comment.deleteMany({
       where: { OR: [{ authorId: { in: ids } }, { articleId: { in: articleIds } }] },
