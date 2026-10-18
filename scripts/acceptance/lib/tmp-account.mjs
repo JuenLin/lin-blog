@@ -80,7 +80,7 @@ export async function cleanupProbeAccounts(usernames) {
     ).map((c) => c.id);
 
     // 外键顺序（全部 RESTRICT，必须按依赖反向删）：
-    // 通知 → 收藏 → 点赞 → 关注 → 评论赞 → 评论 → 文章 → 系列 → 用户。
+    // 通知 → 收藏 → 点赞 → 关注 → 评论赞 → 举报 → 评论 → 文章 → 系列 → 用户。
     // ⚠️ 第 8 批新增 notifications 表，actor_id / user_id 都指向 users 且 RESTRICT；
     //    之前的探针账号只要在评论 / 点赞 / 关注里当过触发者或接收者，就会在硬删用户时
     //    触发 P2003。这里按 `id: { in: [...] }` 精确清理，绝不误伤真实数据。
@@ -94,6 +94,12 @@ export async function cleanupProbeAccounts(usernames) {
     //    探针账号点过别人的评论、或自己的评论被别人赞过，都会挡删 comment / user。
     //    清理条件按 userId OR commentId 双侧（commentId 已含「自造文章上的所有评论」），
     //    顺序在 follows 之后、comments 之前（评论赞行必须先于评论行删）。
+    // ⚠️ 第 12 批新增 reports 表：reporter_id → users 是 RESTRICT（举报行挂在举报人
+    //    身上挡删用户）；target_id 是多态无外键（指向 articles 或 comments），必须按
+    //    reporterId + 自造文章/评论 id 双侧补删（probe 里被举报的目标可能是别人的
+    //    真实内容，此时靠 reporterId 一侧就能带走）。顺序在 comment_likes 之后、
+    //    comments 之前（reports 没挂评论/文章外键，位置只需保证在 users 前；
+    //    放这里与 docs/DB.md「硬删序」登记一致）。
     await prisma.notification.deleteMany({
       where: {
         OR: [{ actorId: { in: ids } }, { userId: { in: ids } }, { articleId: { in: articleIds } }],
@@ -112,6 +118,15 @@ export async function cleanupProbeAccounts(usernames) {
     });
     await prisma.commentLike.deleteMany({
       where: { OR: [{ userId: { in: ids } }, { commentId: { in: commentIds } }] },
+    });
+    await prisma.report.deleteMany({
+      where: {
+        OR: [
+          { reporterId: { in: ids } },
+          { targetType: 'ARTICLE', targetId: { in: articleIds } },
+          { targetType: 'COMMENT', targetId: { in: commentIds } },
+        ],
+      },
     });
     await prisma.comment.deleteMany({
       where: { OR: [{ authorId: { in: ids } }, { articleId: { in: articleIds } }] },
