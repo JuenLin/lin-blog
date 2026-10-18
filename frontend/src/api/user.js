@@ -5,12 +5,13 @@
 // docs/API.md 已把 GET/POST/PUT/DELETE /api/users（列表 / 新增 / 更新 / 删除）全部登记为「未实现」，
 // 文章与评论的作者信息通过内嵌 author 对象返回，不依赖用户列表接口。
 //
-// **已实现的 user 接口共九个**：
+// **已实现的 user 接口共十个**：
 //   - PUT  /api/users/me            改资料（第九批）
 //   - POST /api/users/me/avatar     传头像（第十一批）
 //   - GET  /api/users/:id           公开详情 + 三个计数（第 2 批）
 //   - GET  /api/users/:id/articles  该用户文章列表，真后端分页（第 2 批）
 //   - GET  /api/users/me/likes      当前用户点赞列表，仅本人（第 2 批）
+//   - GET  /api/users/me/bookmarks  当前用户收藏列表，仅本人（第 9 批）
 //   - POST /api/users/:id/follow    关注（第 4 批）
 //   - DELETE /api/users/:id/follow  取消关注（第 4 批）
 //   - GET  /api/users/:id/followers 粉丝列表（第 4 批）
@@ -159,6 +160,28 @@ export function listUserArticles(id, params) {
  */
 export function listMyLikes(params) {
   return request.get('/users/me/likes', { params });
+}
+
+/**
+ * 当前登录用户收藏过的文章。对应 docs/API.md 的 GET /api/users/me/bookmarks（第 9 批）。
+ *
+ * 与 `listMyLikes` **完全对镜**（连注释都同构，改一处记得同步另一处）：
+ *   - **需要登录**；路径 `/me/bookmarks` 而非 `/:id/bookmarks`：只提供查自己，
+ *     「谁收藏了什么」属个人隐私维度（同 /me/likes 原则）。
+ *   - `list[]` 与 `GET /users/:id/articles` 的 `list[]` **逐字相同**，只多一个平铺字段
+ *     `bookmarkedAt`（= bookmarks.createdAt，收藏发生时间）。
+ *     ⚠️ `bookmarkedAt` 与文章自己的 `createdAt` 是两个时间（收藏时间 vs 发布时间），
+ *     断言 / 展示时别拿错。平铺是为了让 ArticleCard 原样复用（`:article="item"`）。
+ *   - sortBy 白名单 bookmarkedAt / createdAt / likeCount，默认 bookmarkedAt desc。
+ *     前端 Tab **不暴露排序控件**，只用默认值。
+ *   - 只返回未软删的文章：收藏过但作者已删的不出现，也不计入 total。
+ *
+ * @param {object} [params] { page, pageSize, sortBy, order }
+ * @returns {Promise<{list: object[], page: number, pageSize: number, total: number, totalPages: number}>}
+ * @throws {Error} 401（未登录）/ 400（分页 / sortBy 非法）
+ */
+export function listMyBookmarks(params) {
+  return request.get('/users/me/bookmarks', { params });
 }
 
 // ---------- 第 4 批：关注相关 4 接口 ----------

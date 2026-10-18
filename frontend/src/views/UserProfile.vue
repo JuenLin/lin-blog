@@ -85,10 +85,13 @@
       <template v-else>
         <el-tabs v-model="activeTab" class="profile-tabs" @tab-change="handleTabChange">
           <el-tab-pane label="文章" name="articles" />
-          <!-- 点赞 / 草稿 Tab 仅本人可见：查的是 /users/me/*，接口只允许查自己。
+          <!-- 点赞 / 收藏 / 草稿 Tab 仅本人可见：查的是 /users/me/*，接口只允许查自己。
                isOwner 是 computed，userStore.user 到位后（AppHeader 的 fetchMe 返回）
                Tab 自动出现，不需要刷新页面。首屏 user 还没到位时会短暂只有文章 Tab。 -->
           <el-tab-pane v-if="isOwner" label="点赞" name="likes" />
+          <!-- 第 9 批：收藏 Tab。与点赞 Tab 同规格（仅本人、复用 ArticleCard、
+               默认排序 bookmarkedAt desc 不暴露排序控件）。 -->
+          <el-tab-pane v-if="isOwner" label="收藏" name="bookmarks" />
           <!-- 第 6 批：草稿箱。草稿不进公开详情（DRAFT 详情一律 404），所以列表行
                不能复用 ArticleCard（它会跳详情页），用自定义行 + 「继续编辑」入口。 -->
           <el-tab-pane v-if="isOwner" label="草稿" name="drafts" />
@@ -173,7 +176,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { getUser, listMyLikes, listUserArticles, followUser, unfollowUser } from '../api/user.js';
+import { getUser, listMyBookmarks, listMyLikes, listUserArticles, followUser, unfollowUser } from '../api/user.js';
 import { deleteDraft, listMyDrafts } from '../api/article.js';
 import {
   formatRelativeTime,
@@ -231,10 +234,13 @@ function makeTabState(emptyText) {
 
 const articlesState = makeTabState('还没有发布文章');
 const likesState = makeTabState('还没有点赞过任何文章');
+// 第 9 批：收藏 Tab。与点赞 Tab 完全对镜（同样的 makeTabState 模式）。
+const bookmarksState = makeTabState('还没有收藏过任何文章');
 const draftsState = makeTabState('还没有草稿，去写一篇吧');
 
 const currentState = computed(() => {
   if (activeTab.value === 'likes') return likesState;
+  if (activeTab.value === 'bookmarks') return bookmarksState;
   if (activeTab.value === 'drafts') return draftsState;
   return articlesState;
 });
@@ -360,6 +366,7 @@ function resetTabState(state) {
 function resetAll() {
   resetTabState(articlesState);
   resetTabState(likesState);
+  resetTabState(bookmarksState);
   resetTabState(draftsState);
   activeTab.value = 'articles';
 }
@@ -414,6 +421,26 @@ async function loadLikes() {
   } finally {
     likesState.loading = false;
     likesState.initialized = true;
+  }
+}
+
+// 第 9 批：收藏列表。与 loadLikes 完全对镜（照抄改接口名与 state 名）：
+// 默认 bookmarkedAt desc（最近收藏的在前），Tab 不暴露排序控件。
+// list[] 与点赞 Tab 同形（toArticleListItem + 平铺 bookmarkedAt），ArticleCard 原样复用。
+async function loadBookmarks() {
+  bookmarksState.loading = true;
+  try {
+    const data = await listMyBookmarks({
+      page: bookmarksState.page,
+      pageSize: bookmarksState.pageSize,
+    });
+    bookmarksState.list = (data && data.list) || [];
+    bookmarksState.total = (data && data.total) || 0;
+  } catch (error) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    bookmarksState.loading = false;
+    bookmarksState.initialized = true;
   }
 }
 
@@ -486,7 +513,14 @@ async function handleDeleteDraft(item) {
  *    initialized 只用于「首次加载才显示骨架屏」，不承担跳过请求的职责。
  */
 function handleTabChange(name) {
-  const state = name === 'likes' ? likesState : name === 'drafts' ? draftsState : articlesState;
+  const state =
+    name === 'likes'
+      ? likesState
+      : name === 'bookmarks'
+        ? bookmarksState
+        : name === 'drafts'
+          ? draftsState
+          : articlesState;
   state.page = 1;
   state.list = [];
   state.total = 0;
@@ -494,6 +528,7 @@ function handleTabChange(name) {
   state.initialized = false;
 
   if (name === 'likes') loadLikes();
+  else if (name === 'bookmarks') loadBookmarks();
   else if (name === 'drafts') loadDrafts();
   else loadArticles();
 }
@@ -507,6 +542,7 @@ function handlePageChange({ page, pageSize }) {
   state.page = page;
   state.pageSize = pageSize;
   if (activeTab.value === 'likes') loadLikes();
+  else if (activeTab.value === 'bookmarks') loadBookmarks();
   else if (activeTab.value === 'drafts') loadDrafts();
   else loadArticles();
 }

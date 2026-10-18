@@ -84,19 +84,44 @@
          所以沿用作者入口的写法：<span role="button" tabindex="0"> + 键盘处理，
          既合法又可 Tab 聚焦、回车触发。 -->
     <div class="article-card-foot">
-      <span
-        class="article-like"
-        :class="{ 'is-liked': liked, 'is-busy': liking }"
-        role="button"
-        tabindex="0"
-        :aria-pressed="liked"
-        :aria-label="liked ? '取消点赞' : '点赞'"
-        @click.prevent.stop="toggleLike"
-        @keydown.enter.prevent.stop="toggleLike"
-        @keydown.space.prevent.stop="toggleLike"
-      >
-        <span class="article-like-icon" aria-hidden="true">{{ liked ? '♥' : '♡' }}</span>
-        <span class="article-like-count">{{ likeCount }}</span>
+      <!-- 第 9 批：阅读量（被动展示，不可点）。viewCount 是 articles.view_count
+           真实列的 all-time 累计值，列表 / 详情同源同口径；
+           **不显示「是否已读」** —— 阅读免登录、无用户维度（docs/API.md 第 9 批）。 -->
+      <span class="article-view">阅读 {{ viewCount }}</span>
+
+      <span class="article-card-foot-actions">
+        <!-- 第 9 批：收藏星标。规格与点赞完全相同（span[role=button] + .prevent.stop
+             + keydown），只是换 --bookmark-* 色板与 ☆/★ 字形。
+             ⚠️ 幂等语义与点赞刻意相反：重复收藏 / 取消没收藏的都返回 200，
+             没有 409 / 404 分支（见 api/bookmark.js 顶部），所以 catch 里不做状态纠正。 -->
+        <span
+          class="article-bookmark"
+          :class="{ 'is-bookmarked': bookmarked, 'is-busy': bookmarking }"
+          role="button"
+          tabindex="0"
+          :aria-pressed="bookmarked"
+          :aria-label="bookmarked ? '取消收藏' : '收藏'"
+          @click.prevent.stop="toggleBookmark"
+          @keydown.enter.prevent.stop="toggleBookmark"
+          @keydown.space.prevent.stop="toggleBookmark"
+        >
+          <span class="article-bookmark-icon" aria-hidden="true">{{ bookmarked ? '★' : '☆' }}</span>
+        </span>
+
+        <span
+          class="article-like"
+          :class="{ 'is-liked': liked, 'is-busy': liking }"
+          role="button"
+          tabindex="0"
+          :aria-pressed="liked"
+          :aria-label="liked ? '取消点赞' : '点赞'"
+          @click.prevent.stop="toggleLike"
+          @keydown.enter.prevent.stop="toggleLike"
+          @keydown.space.prevent.stop="toggleLike"
+        >
+          <span class="article-like-icon" aria-hidden="true">{{ liked ? '♥' : '♡' }}</span>
+          <span class="article-like-count">{{ likeCount }}</span>
+        </span>
       </span>
     </div>
   </router-link>
@@ -109,7 +134,9 @@ import { ElMessage } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import { useLikedStore } from '../stores/liked.js';
+import { useBookmarksStore } from '../stores/bookmarks.js';
 import { likeArticle, unlikeArticle } from '../api/like.js';
+import { bookmarkArticle, unbookmarkArticle } from '../api/bookmark.js';
 
 const props = defineProps({
   article: {
@@ -121,6 +148,7 @@ const props = defineProps({
 const router = useRouter();
 const userStore = useUserStore();
 const likedStore = useLikedStore();
+const bookmarksStore = useBookmarksStore();
 
 const authorName = computed(() => {
   const author = props.article.author;
@@ -279,6 +307,72 @@ async function toggleLike() {
     ElMessage.error(error.message || '操作失败，请稍后重试');
   } finally {
     liking.value = false;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 第 9 批：收藏（星标）+ 阅读量展示
+ * ------------------------------------------------------------------------ */
+
+// 已收藏态：与点赞**完全同构** —— 唯一真相来源是 useBookmarksStore 的收藏集合
+// （登录后拉一次自己的收藏清单），刷新页面 / 换页 / 从详情页退回来都认得出金色星标。
+//
+// 集合的三个边界都不表现为「显示错误」，而是退化为旧行为（空心 → 点了才点亮）：
+//   1. 未登录访问：集合为空，全是空心；
+//   2. 收藏数超过缓存上限（truncated）：未命中的卡片维持空心；
+//   3. 跨设备 / 跨标签页点的收藏：这个标签页不知道，同 2。
+// 详见 src/stores/bookmarks.js 顶部注释。
+const bookmarked = computed(() => bookmarksStore.has(props.article.id));
+
+// 防连点。收藏虽幂等（连点不会 409），但会多打无用请求，压住。
+const bookmarking = ref(false);
+
+// 阅读量：viewCount 是 articles.view_count 真实列的 all-time 累计值，
+// 兼容探针造的假对象没有这个键（undefined）：按 0 显示，与后端口径一致。
+const viewCount = computed(() => {
+  const count = props.article.viewCount;
+
+  return typeof count === 'number' ? count : 0;
+});
+
+/**
+ * 收藏 / 取消收藏。
+ *
+ * 与 toggleLike 的**刻意差异**（用户 2026-10-18 拍板，docs/API.md 已写明）：
+ *   - 幂等语义：两个方向都返回 200 / code 0，**没有 409 / 404 分支可 catch**；
+ *   - 响应不带计数纠正：POST /bookmark 返回 { bookmarked, bookmarkCount }，
+ *     bookmarkCount 是**全站**总收藏数，不是「我收藏了几篇」，与卡片本地展示无关，
+ *     所以不像 likeCount 那样写 override（写了反而是错的）。
+ */
+async function toggleBookmark() {
+  // 未登录：跳登录页并带 redirect，登录后能回到原来那一屏（与点赞同一处理）。
+  if (!userStore.isLogin) {
+    router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } });
+
+    return;
+  }
+
+  if (bookmarking.value) return;
+
+  bookmarking.value = true;
+
+  try {
+    const data = bookmarked.value
+      ? await unbookmarkArticle(props.article.id)
+      : await bookmarkArticle(props.article.id);
+
+    // 等响应回来之后才动集合 —— 与 likedStore 同一分工（不做乐观更新）。
+    if (data && data.bookmarked) {
+      bookmarksStore.add(props.article.id);
+    } else {
+      bookmarksStore.remove(props.article.id);
+    }
+  } catch (error) {
+    // 幂等接口理论上没有「已收藏 / 没收藏」类错误；真失败了（网络 / 500）
+    // 集合不动，只提示，最坏情况是星标与实际差一次点击。
+    ElMessage.error(error.message || '操作失败，请稍后重试');
+  } finally {
+    bookmarking.value = false;
   }
 }
 </script>
@@ -485,12 +579,30 @@ async function toggleLike() {
   outline: none;
 }
 
-/* 第十批：卡片底栏。摘要上方是标题 / 摘要，点赞单独一行放右下，
-   不与正文抢视觉重心。 */
+/* 第十批：卡片底栏。摘要上方是标题 / 摘要，交互按钮单独一行放右下，
+   不与正文抢视觉重心。
+   第 9 批起左端放被动的阅读量文本，两端对齐（space-between）。 */
 .article-card-foot {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 12px;
+}
+
+/* 第 9 批：阅读量。被动文本，不可点、不可聚焦（没有 role=button），
+   弱化灰与 meta 行文字同色系，不与星标 / 爱心抢注意力。 */
+.article-view {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 星标 + 爱心一组，右端对齐，间距与 chip-gap 一致 */
+.article-card-foot-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* 点赞按钮：胶囊形，未点赞是弱化灰（只显示计数），点赞后点亮成暖红。
@@ -514,6 +626,51 @@ async function toggleLike() {
     background var(--transition-base),
     border-color var(--transition-base),
     color var(--transition-base);
+}
+
+/* 第 9 批：收藏星标。与点赞按钮同形同构（连过渡属性都一样），
+   只换 --bookmark-* 琥珀色板；星标不带计数（全站收藏数对卡片没有意义，
+   见 script 里 toggleBookmark 的注释），所以比爱心窄一点。 */
+.article-bookmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.article-bookmark:hover {
+  border-color: var(--bookmark-border);
+  background: var(--bookmark-bg);
+  color: var(--bookmark-color);
+}
+
+.article-bookmark:focus-visible {
+  outline: 2px solid var(--bookmark-color);
+  outline-offset: 2px;
+}
+
+.article-bookmark.is-bookmarked {
+  border-color: var(--bookmark-border);
+  background: var(--bookmark-bg-active);
+  color: var(--bookmark-color);
+}
+
+.article-bookmark.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 .article-like:hover {

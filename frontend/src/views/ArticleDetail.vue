@@ -64,6 +64,14 @@
             <span class="article-detail-chip">{{ readingTime }}</span>
           </el-tooltip>
 
+          <!-- 第 9 批：阅读量 chip（被动展示，不可点）。口径是 articles.view_count
+               真实列的 all-time 累计阅读；**不显示「是否已读」** ——
+               阅读免登录、无用户维度（docs/API.md 第 9 批）。
+               tooltip 说明这是累计值，避免被误读成「当前在线人数」。 -->
+          <el-tooltip content="累计阅读量" placement="top">
+            <span class="article-detail-view">阅读 {{ viewCount }}</span>
+          </el-tooltip>
+
           <!-- 第十批：点赞。详情页不在 router-link 里（卡片才是），所以不需要 .prevent，
                只加 .stop 防止冒泡到外层容器。形态与卡片保持一致的胶囊按钮 + 心形。 -->
           <span
@@ -79,6 +87,24 @@
           >
             <span class="article-detail-like-icon" aria-hidden="true">{{ liked ? '♥' : '♡' }}</span>
             <span class="article-detail-like-count">{{ likeCount }}</span>
+          </span>
+
+          <!-- 第 9 批：收藏星标。形态与点赞按钮一致（矮胶囊 + ☆/★），
+               只换 --bookmark-* 琥珀色板；幂等 200，没有 409 / 404 分支
+               （见 api/bookmark.js 顶部，与点赞刻意相反）。
+               星标不带计数：全站收藏数对读者没有意义（与卡片同理）。 -->
+          <span
+            class="article-detail-bookmark"
+            :class="{ 'is-bookmarked': bookmarked, 'is-busy': bookmarking }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="bookmarked"
+            :aria-label="bookmarked ? '取消收藏' : '收藏'"
+            @click.stop="toggleBookmark"
+            @keydown.enter.prevent.stop="toggleBookmark"
+            @keydown.space.prevent.stop="toggleBookmark"
+          >
+            <span class="article-detail-bookmark-icon" aria-hidden="true">{{ bookmarked ? '★' : '☆' }}</span>
           </span>
 
           <!-- 编辑 / 删除 / 历史版本只对作者本人显示，其余人看不到入口。
@@ -208,8 +234,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { deleteArticle, getArticle, listArticles, listRevisions, restoreArticle } from '../api/article.js';
+import { deleteArticle, getArticle, listArticles, listRevisions, recordArticleView, restoreArticle } from '../api/article.js';
 import { likeArticle, unlikeArticle, getArticleLiked } from '../api/like.js';
+import { bookmarkArticle, unbookmarkArticle, getArticleBookmarked } from '../api/bookmark.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
@@ -340,6 +367,116 @@ const likeCount = computed(() => {
   return typeof count === 'number' ? count : 0;
 });
 
+/* --------------------------------------------------------------------------
+ * 第 9 批：收藏（星标）
+ * ------------------------------------------------------------------------ */
+
+// 与 liked 同构：公开接口不返回 bookmarked，默认 false，
+// 由 fetchBookmarked()（已登录）拉真实值回填；换文章（load）时必须复位。
+const bookmarked = ref(false);
+
+// 防连点（收藏幂等，连点不会 409，但会多打请求）。
+const bookmarking = ref(false);
+
+/**
+ * 第 9 批：拉取「当前用户是否已收藏」，还原星标按钮初始态。
+ *
+ * 与 fetchLiked 完全同构：只在已登录时调用（未登录发这个请求会吃 401
+ * 被踢去登录页）、闭包比对防过期响应、失败静默保持 false。
+ */
+async function fetchBookmarked() {
+  if (!userStore.isLogin || !article.value) return;
+
+  const requestedId = articleId.value;
+
+  try {
+    const data = await getArticleBookmarked(articleId.value);
+
+    if (requestedId !== articleId.value) return;
+
+    bookmarked.value = Boolean(data && data.bookmarked);
+  } catch {
+    // 静默：真的收藏过时，用户点一下星标即进入目标态，下一次渲染由集合纠正。
+  }
+}
+
+/**
+ * 第 9 批：收藏 / 取消收藏。
+ *
+ * 与 toggleLike 的**刻意差异**（用户 2026-10-18 拍板，docs/API.md 第 9 批）：
+ *   - **幂等 200**：重复收藏 / 取消没收藏过的都成功，没有 409 / 404 分支可纠正；
+ *   - 响应 { bookmarked, bookmarkCount }：bookmarkCount 是**全站**总收藏数，
+ *     不落到本页任何 UI（别跟 likeCount 的归属拿混）。
+ */
+async function toggleBookmark() {
+  // 未登录：跳登录页并带 redirect，登录后能回到这篇文章。
+  if (!userStore.isLogin) {
+    router.push({ name: 'login', query: { redirect: route.fullPath } });
+
+    return;
+  }
+
+  if (bookmarking.value || !article.value) return;
+
+  bookmarking.value = true;
+
+  try {
+    const data = bookmarked.value
+      ? await unbookmarkArticle(articleId.value)
+      : await bookmarkArticle(articleId.value);
+
+    bookmarked.value = Boolean(data && data.bookmarked);
+  } catch (error) {
+    ElMessage.error(error.message || '操作失败，请稍后重试');
+  } finally {
+    bookmarking.value = false;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 第 9 批：阅读量（展示 + 计数上报）
+ * ------------------------------------------------------------------------ */
+
+// 累计阅读量：articles.view_count 真实列，all-time 口径。
+// 兼容探针造的假对象没有这个键：按 0 显示，与后端口径一致。
+const viewCount = computed(() => {
+  const count = article.value && article.value.viewCount;
+
+  return typeof count === 'number' ? count : 0;
+});
+
+/**
+ * 第 9 批：记录一次阅读（load 成功后调，每篇文章一次）。
+ *
+ * 三条纪律（docs/API.md「POST /view 防刷」小节 + 前端调用约定）：
+ *   1. **免登录**：匿名阅读也要计数，所以不判断 isLogin；
+ *   2. **不 await**：不是阅读正文的前置条件，失败（网络抖动 / 404）静默，
+ *      最坏情况是少计一次阅读，不影响渲染；
+ *   3. **闭包比对**：请求期间切换到别的文章时这份响应就过期了，丢弃。
+ *
+ * 判重在后端（同 IP 同文章 5 分钟一次，尽力而为、重启丢窗口），
+ * 前端只负责「每篇文章调一次」，不做任何本地去重（刷新页面即重新计时是预期行为）。
+ */
+async function recordView() {
+  if (!article.value) return;
+
+  const requestedId = articleId.value;
+
+  try {
+    const data = await recordArticleView(articleId.value);
+
+    if (requestedId !== articleId.value) return;
+
+    // 同步 +1 后的最新值进本地 article，让 meta 行「阅读 N」即时反映本次阅读
+    // （与点赞成功后改本地 article.likeCount 同一做法）。
+    if (data && typeof data.viewCount === 'number' && article.value) {
+      article.value.viewCount = data.viewCount;
+    }
+  } catch {
+    // 静默：见上方说明。
+  }
+}
+
 /**
  * 第十四批：拉取「当前用户是否已点赞」，还原按钮初始态。
  *
@@ -412,6 +549,7 @@ async function load() {
   notFound.value = false;
   neighborWindow.value = []; // 重置，避免从上一篇/下一篇跳转时残留旧文章的邻居
   liked.value = false; // 换文章先复位，已登录时由下面的 fetchLiked() 拉真实值回填
+  bookmarked.value = false; // 第 9 批：星标同理，由下面的 fetchBookmarked() 回填
 
   try {
     article.value = await getArticle(route.params.id);
@@ -420,6 +558,12 @@ async function load() {
     // 还原点赞按钮态（已登录才有意义）。不 await：它不是阅读正文的前置条件，
     // 慢了也不该拖住渲染，与下面的 loadNeighbors 同口径。
     fetchLiked();
+
+    // 第 9 批：还原星标初始态（同 fetchLiked 口径，不 await）。
+    fetchBookmarked();
+
+    // 第 9 批：记录一次阅读（免登录，不 await 阻塞渲染；判重在后端）。
+    recordView();
   } catch (error) {
     // 文章不存在 / 已被软删除，后端返回 40400；详情页不抛红，按空态处理。
     article.value = null;
@@ -676,6 +820,73 @@ onBeforeUnmount(() => {
 
 .article-detail-like-count {
   font-variant-numeric: tabular-nums;
+}
+
+/* 第 9 批：阅读量 chip。被动展示（cursor: help 只因外层带 tooltip），
+   与阅读时长 chip 同款式但用中性弱化色 —— 阅读量是统计数据，不是内容属性，
+   不该和「预计阅读时长」抢同一个强调色。 */
+.article-detail-view {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 第 9 批：收藏星标。与点赞按钮同形（22px 矮胶囊，meta 行不抢标题视觉重心），
+   换 --bookmark-* 琥珀色板；星标不带计数（全站收藏数对读者没有意义）。 */
+.article-detail-bookmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--chip-radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.article-detail-bookmark:hover {
+  border-color: var(--bookmark-border);
+  background: var(--bookmark-bg);
+  color: var(--bookmark-color);
+}
+
+.article-detail-bookmark:focus-visible {
+  outline: 2px solid var(--bookmark-color);
+  outline-offset: 2px;
+}
+
+.article-detail-bookmark.is-bookmarked {
+  border-color: var(--bookmark-border);
+  background: var(--bookmark-bg-active);
+  color: var(--bookmark-color);
+}
+
+.article-detail-bookmark.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.article-detail-bookmark-icon {
+  font-size: 13px;
 }
 
 .article-detail-author {

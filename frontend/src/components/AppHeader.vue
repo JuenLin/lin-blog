@@ -117,6 +117,7 @@ import { ElMessage } from 'element-plus';
 import { AUTH_CLEARED_EVENT } from '../api/request.js';
 import { useUserStore } from '../stores/user.js';
 import { useLikedStore } from '../stores/liked.js';
+import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useFollowingStore } from '../stores/following.js';
 import { useNotificationStore } from '../stores/notification.js';
 import { listNotifications } from '../api/notification.js';
@@ -130,6 +131,7 @@ const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
 const likedStore = useLikedStore();
+const bookmarksStore = useBookmarksStore();
 const followingStore = useFollowingStore();
 const notificationStore = useNotificationStore();
 
@@ -194,6 +196,14 @@ onMounted(async () => {
       // ensureLoaded 内部已兜住，这里是双保险：绝不让初始化失败冒泡到 App 挂掉。
     }
 
+    // 第 9 批：「我收藏的文章」集合，用途与已赞集合完全相同（卡片星标初始态）。
+    // 同样只在登录态拉；同样不 await 到阻塞渲染（命中即金星，晚一拍无感）。
+    try {
+      await bookmarksStore.ensureLoaded();
+    } catch (error) {
+      // 同上：双保险。
+    }
+
     // 第 8 批：登录态直接开启通知轮询（30s 一次未读数）。startPolling 内部先停后建，幂等安全。
     notificationStore.startPolling();
   }
@@ -240,6 +250,14 @@ watch(
       await likedStore.ensureLoaded();
     } catch (error) {
       // 同上：初始化失败只退化为「全是空心」，不影响页面。
+    }
+
+    // 第 9 批：换号后同样要把新账号的收藏集合拉回来（旧集合已在 setToken 里清掉，
+    // 不清就是串号：A 收藏的文章在 B 的卡片上也是金星）。
+    try {
+      await bookmarksStore.ensureLoaded();
+    } catch (error) {
+      // 同上。
     }
 
     // 第 8 批：token 到位（登录 / 换号）→ 重启轮询拉未读数。

@@ -116,3 +116,25 @@ export function restoreArticle(id, revisionId) {
 export function listHotTags(params) {
   return request.get('/tags', { params });
 }
+
+// ---------- 第 9 批：阅读量 ----------
+
+/**
+ * 记录一次阅读（viewCount +1）。对应 docs/API.md 的 POST /api/articles/:id/view。
+ *
+ * **无需登录** —— 阅读是匿名行为，与点赞 / 收藏刻意不同（docs/API.md）。
+ * 文章不存在 / 已软删 / 草稿 → 404/40400。
+ *
+ * 响应 data：{ viewCount: number }（+1 后的最新值；被判重未 +1 时返回当前值，仍 200）。
+ * 后端判重：内存 Map，key = `${articleId}:${req.ip}`，同 key 5 分钟内只计一次
+ * （尽力而为，重启丢窗口，不保证连续性 —— docs/API.md 已写明）。
+ *
+ * ⚠️ 前端纪律（详情页 ArticleDetail.vue 执行）：mounted 后**只调一次**，
+ * 不 await 阻塞渲染；不暴露任何手动「再计一次」的入口。
+ *
+ * @param {number|string} id 文章 id
+ * @returns {Promise<{viewCount: number}>}
+ */
+export function recordArticleView(id) {
+  return request.post(`/articles/${id}/view`);
+}

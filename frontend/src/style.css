@@ -75,6 +75,15 @@
   --like-border: rgba(225, 29, 72, 0.22);
   --like-color: #e11d48;
 
+  /* ---------- 收藏（第 9 批） ----------
+   * 星标用琥珀金，与点赞的暖红、品牌靛蓝、阅读时长青互不撞色。
+   * 未收藏是弱化灰（--text-muted），收藏后点亮成金色；与 --like-* 同构（四件套：
+   * bg / bg-active / border / color），组件里直接照抄点赞按钮的写法换令牌即可。 */
+  --bookmark-bg: rgba(245, 158, 11, 0.08);
+  --bookmark-bg-active: rgba(245, 158, 11, 0.15);
+  --bookmark-border: rgba(245, 158, 11, 0.22);
+  --bookmark-color: #b45309;
+
   /* 兼容旧写法仍在引用的变量名 */
   --text: var(--text-strong);
   --bg: var(--bg-page);
@@ -184,6 +193,12 @@ html.dark {
   --like-bg-active: rgba(251, 113, 133, 0.22);
   --like-border: rgba(251, 113, 133, 0.32);
   --like-color: #fb7185;
+
+  /* ---------- 收藏（第 9 批，与浅色成对：深底上琥珀提亮才不糊） ---------- */
+  --bookmark-bg: rgba(251, 191, 36, 0.12);
+  --bookmark-bg-active: rgba(251, 191, 36, 0.22);
+  --bookmark-border: rgba(251, 191, 36, 0.3);
+  --bookmark-color: #fbbf24;
 
   /* 兼容旧写法仍在引用的变量名 */
   --text: var(--text-strong);
