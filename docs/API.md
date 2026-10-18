@@ -345,6 +345,8 @@ Authorization: Bearer <token>
 | category | string | 否  | 枚举 `技术` / `生活` / `随笔` / `未分类`；**省略时默认 `未分类`**；非法值返回 `400 / 40000` |
 | status   | string | 否  | 枚举 `DRAFT` / `PUBLISHED`；**省略时默认 `PUBLISHED`**（即「发布」）；传 `DRAFT` 则创建一篇仅作者可见的草稿 |
 | tags     | string[] | 否 | **每篇最多 5 个**；每个标签 trim 后 1–20 字符；**省略时为 `[]`**；后端自动创建不存在的标签（唯一约束兜底并发）；非法值返回 `400 / 40000` |
+| seriesId | number | 否 | 正整数；**省略或传 `null` = 不加入系列**（新建文章的默认态）；传了则必须是**本人创建的系列**（他人系列 `403 / 40300`、系列不存在 `404 / 40400`，**ADMIN 无代绑定例外**） |
+| seriesOrder | number | 否 | 正整数；**仅在与 `seriesId` 同时传递时有效**（单传 `400 / 40000`）；省略时服务端自动取该系列当前最大序号 + 1；显式传值与同系列已有序号冲突 → `409 / 40900`（不自动重排） |
 
 > 备注：`content` 的数据库类型为 `MEDIUMTEXT`（见 `docs/DB.md`），不影响本接口契约。
 
@@ -361,6 +363,8 @@ Authorization: Bearer <token>
 > `tags` 省略时为空数组；超 5 个、含非法标签名（空串 / 超 20 字）整体返回 `400 / 40000`，不做静默截断。
 
 > `status` 省略或传 `PUBLISHED` 都是发布；传 `DRAFT` 创建草稿（仅作者「草稿箱」可见，不进广场）。自动保存草稿请走 `POST /api/articles/auto-save`，本接口是「直接发布」入口。
+
+> `seriesId` / `seriesOrder`（第 10 批）：新建时传 `seriesId` 即把文章加入该系列，`seriesOrder` 省略时服务端自动排到系列末尾（当前最大序号 + 1）——多数用户不需要手动填序号。系列归属校验、序号冲突 409、解绑双清等完整语义见「文章图片上传与专栏系列（第 10 批）」章节。
 
 
 成功：HTTP 201
@@ -563,6 +567,28 @@ Authorization: Bearer <token>
 
 > `tags` 非法（超 5 个 / 含空串 / 含超 20 字标签名）返回 `400 / 40000`，**不更新任何字段**（与 title/content 校验同一口径）。标签的 upsert + 删旧建新在同一事务内完成，失败整体回滚。
 
+**`seriesId` / `seriesOrder` 在 PUT 下的三态语义**（第 10 批，与 `category` / `tags` 同范式，但**两字段是一个逻辑单元**，用户拍板 2026-10-18）：
+
+| 请求体写法 | 含义 | 存储结果 |
+|---|---|---|
+| 两字段都**不出现** | **保留原绑定** | 文章仍在原系列、原序号不动（用户只想改标题/正文时系列不动） |
+| `"seriesId": null` | **解绑** | `series_id` 与 `series_order` **同时置 NULL**（双清，不留孤儿序号；同请求里传的 `seriesOrder` 被忽略） |
+| `"seriesId": 5`（本人的系列） | **绑定 / 换系列** | 校验归属后写入；换系列时**旧序号不随迁**（序号属于原系列） |
+| `"seriesId": 5, "seriesOrder": 3` | 绑定并指定序号 | 序号与同系列已有冲突 → `409 / 40900`，不更新任何字段 |
+
+`seriesOrder` 单独使用的四种情形（`seriesId` 不出现时）：
+
+| 请求体写法 | 含义 | 存储结果 |
+|---|---|---|
+| `seriesOrder` **不出现** | **保留原序号** | 不动（三态主语义） |
+| `"seriesOrder": 3`（文章已绑系列） | **改序号** | 与同系列已有冲突 → `409 / 40900`；这就是「系列内重排」的入口 |
+| `"seriesOrder": 3`（文章**未绑**系列） | 报错 | `400 / 40000`「文章未加入任何系列，不能单独设置序号」 |
+| `"seriesOrder": null` | **不指定序号** | 服务端自动排到当前系列末尾（max + 1） |
+
+> 绑定 / 换系列的归属校验：系列不存在 → `404 / 40400`；存在但不是本人的 → `403 / 40300`（**ADMIN 无代绑定例外**，与 `PUT /api/series/:id` 的「作者或 ADMIN」刻意不同）。先校验存在再判归属，不通过 403/404 差异枚举系列 id。
+> 换系列时 `seriesOrder` 省略 → 在新系列里自动 max + 1（旧序号属于旧系列，不迁移）；留在原系列时省略 → 保留原序号。
+> `seriesId` / `seriesOrder` 非法（非正整数、`seriesOrder` 脱离 `seriesId` 单独出现且文章无系列）返回 `400 / 40000`，**不更新任何字段**（与 title/content 校验同一口径）。
+
 > **快照与标签的关系（第 7 批明确）**：版本快照（`article_revisions`）只存 `title` / `content` / `category`，**不存 `tags`**；因此 `POST /api/articles/:id/restore` 回滚**不恢复标签**（回滚后的标签 = 回滚时的现状关联）。标签被排除在版本历史外的理由：标签是「检索元数据」而非「内容」，且中间表结构不适合塞进快照 JSON。
 
 > **版本快照（第 6 批）**：当目标文章**更新前**的状态为 `PUBLISHED` 时，后端会先把它的当前 `title`/`content`/`category` 存入 `article_revisions` 表（生成一条版本历史），再应用本次更新——这就是「版本历史 / 回滚」的数据来源。若目标更新前是 `DRAFT`（例如把一篇草稿 `PUT` 成 `PUBLISHED` 来「发布」），则**不快照**（草稿本身不进版本历史）。详见 `GET /api/articles/:id/revisions` 与 `POST /api/articles/:id/restore`。
@@ -573,10 +599,11 @@ Authorization: Bearer <token>
 
 | HTTP | code  | 场景               |
 | ---- | ----- | ---------------- |
-| 400  | 40000 | id 非法或 zod 校验不通过 |
+| 400  | 40000 | id 非法或 zod 校验不通过；`seriesOrder` 脱离系列单独设置（第 10 批） |
 | 401  | 40100 | 未登录或 token 无效    |
-| 403  | 40300 | 不是作者本人           |
-| 404  | 40400 | 文章不存在或已软删除       |
+| 403  | 40300 | 不是作者本人；`seriesId` 指向**他人系列**（第 10 批，ADMIN 无例外） |
+| 404  | 40400 | 文章不存在或已软删除；`seriesId` 指向的系列不存在（第 10 批） |
+| 409  | 40900 | `seriesOrder` 与同系列已有序号冲突（第 10 批） |
 
 判断顺序：**先查文章是否存在（不存在返回 404），再判断是否为作者（非作者返回 403）**。不得先判断作者，避免通过 403 / 404 的差异枚举真实存在的文章 id。
 
@@ -2237,6 +2264,195 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 - **尽力而为，重启不保证连续性**：Map 在进程内存里，`node --watch` 重启 / 部署重启后判重窗口清零——这是已知代价，博客量级下接受。不做 CSRF、不做频率 WAF。
 - **计数原子性**：`prisma.article.update({ data: { viewCount: { increment: 1 } } })`，禁止 read-modify-write（并发下丢计数）。
 - **IP 口径**：`req.ip`。当前无反向代理，同一 NAT 后的多用户会被判为同一 IP（5 分钟内只计一次）——已知降级，接受。
+
+---
+
+## 文章图片上传与专栏系列（第 10 批）
+
+创作端增强：编辑器可插入图片（不再依赖外链），长文可组织成「系列」（对标掘金专栏）。图片上传**零 schema 变更**（复用第 11 批 multer 基建与 `/uploads` 静态目录）；系列新建 `series` 表 + `articles` 新增两列（见 `docs/DB.md`「第 10 批」）。本批接口 47 → 53（+6：图片上传 1 + 系列 5）。
+
+> **系列归属严格校验（绑定侧无 ADMIN 例外）**：文章绑定系列时 `series.authorId` 必须等于当前用户。与 `PUT` / `DELETE /api/series/:id` 的「作者或 ADMIN」**刻意不同**——ADMIN 能改任何系列的元信息，但不能把别人的文章绑进自己的系列。他人系列 → `403 / 40300`；系列不存在 → `404 / 40400`。**先查存在再判归属**，不通过 403/404 差异枚举系列 id。
+> **序号冲突一律 409，不做自动重排**：同系列内 `seriesOrder` 唯一由**应用层**保证（可空列不建复合唯一索引，MySQL 下不可靠，理由见 `docs/DB.md`）。用户显式传了冲突序号 → `409 / 40900`——用户可能有意识地想插到中间，服务端重排会打乱他的预期。**新建时省略序号 → 自动 max + 1**（多数用户不需要手动填）。
+> **解绑双清**：`seriesId = null` 解绑时 `seriesOrder` **同时置 NULL**，不留孤儿序号（否则文章离开系列后仍占着一个已无意义的序号）。
+> **删除系列 = SET NULL 解绑，不删文章**：`articles.series_id → series.id` 外键 `ON DELETE SET NULL`。删系列后文章全部回到「无系列」，`DELETE /api/series/:id` 返回解绑篇数供断言。
+> **系列不产生通知**（第 8 批通知中心不扩展）：创建 / 绑定系列是纯内容组织行为，不打扰任何人。
+> **全局「上一篇/下一篇」与系列导航语义正交**：详情页底部的全局 prev/next 是「站内时间线」维度（纯前端 computed，第 3 批既有，本批**不动**）；系列导航是「系列内顺序」维度，单独做成详情页顶部横幅。两者不混装。
+
+### POST /api/articles/upload-image
+
+上传文章配图，返回站内 URL 供正文 Markdown 引用（`![](url)`）。**需要登录**。上传者取 token 中的 `userId`。
+
+请求：`multipart/form-data`，**字段名 `image`**（单文件）。
+
+限制（与头像上传第 11 批同款，零新增依赖）：
+
+| 项 | 值 |
+|---|---|
+| 大小 | ≤ **2MB**（2048000 字节），超出 `400 / 40000` |
+| 类型 | mimetype 白名单 `image/jpeg` / `image/png` / `image/webp`；**不收 SVG**（XSS 面）、不收 GIF；不符 `400 / 40000` |
+| 文件名 | **服务端生成**（`{ts}-{hex}.{ext}`，不接受客户端文件名），扩展名按 mimetype 映射 |
+| 落盘 | `backend/uploads/articles/{userId}/`（`express.static` 已挂 `/uploads`，返回路径即 `/uploads/articles/...`） |
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "url": "/uploads/articles/12/1760000000000-a1b2c3d4.png"
+  }
+}
+```
+
+失败：
+
+| HTTP | code  | 场景                |
+| ---- | ----- | ----------------- |
+| 400  | 40000 | 文件缺失 / 类型不符 / 超 2MB（MulterError 翻译） |
+| 401  | 40100 | 未提供 token、token 无效或过期 |
+
+> **只落盘、不写库**：本接口没有任何 DB 写入——URL 由前端插入正文 Markdown，随文章 `content` 一起存储。`articles` 表**不加图片列**（图片就是正文的一部分）。
+> **不校验 magic bytes**：与头像上传同口径，只按 mimetype 白名单 + 服务端映射扩展名。mimetype 理论可伪造，但不收 SVG 且 `express.static` 按扩展名回 `Content-Type: image/*`，浏览器不会当 HTML 执行，风险可接受。
+> **孤儿文件已知限制（本批不清理，挂账）**：文章删除 / 图片被从正文中手动删掉后，磁盘文件成为孤儿。解析正文 Markdown 反查引用的成本和风险都高（正文可能被并发修改、图片可能被外部引用），**MVP 不清**；推荐方案（定时任务扫描未被任何文章正文引用的文件）已挂 `docs/ROADMAP.md`「插队候选」。
+
+### POST /api/series
+
+创建系列。**需要登录**。作者取 token 中的 `userId`。
+
+请求体：
+
+| 字段 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| title | string | 是 | 1–50 字符，trim，不能为纯空格 |
+| description | string | 否 | ≤ 200 字符，trim；省略为 `null` |
+
+成功：HTTP 201，`data` 为系列对象：
+
+```json
+{
+  "id": 1,
+  "title": "Vue 3 源码解析",
+  "description": "从响应式到渲染器",
+  "author": { "id": 12, "username": "demo", "nickname": "Demo", "avatar": null },
+  "articleCount": 0,
+  "createdAt": "2026-10-18T08:00:00.000Z",
+  "updatedAt": "2026-10-18T08:00:00.000Z"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| data.articleCount | number | 该系列下**已发布且未软删**的文章数（草稿不计入——「共 N 篇」是读者口径） |
+| data.author | object | 作者摘要（`id` / `username` / `nickname` / `avatar`），与文章接口的 `author` 同构 |
+
+失败：400 / 40000（zod 校验不通过）、401 / 40100（未登录）。
+
+### GET /api/series/:id
+
+系列详情（系列横幅与系列导航页数据源）。**无需登录**。
+
+路径参数：`id`，正整数。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "id": 1,
+    "title": "Vue 3 源码解析",
+    "description": "从响应式到渲染器",
+    "author": { "id": 12, "username": "demo", "nickname": "Demo", "avatar": null },
+    "articles": [
+      { "id": 101, "title": "第一篇", "seriesOrder": 1, "summary": "……" },
+      { "id": 102, "title": "第二篇", "seriesOrder": 2, "summary": "……" }
+    ],
+    "createdAt": "2026-10-18T08:00:00.000Z",
+    "updatedAt": "2026-10-18T08:00:00.000Z"
+  }
+}
+```
+
+- `articles[]` 只含**已发布且未软删**的文章，按 `seriesOrder` **升序**（系列内阅读顺序）；草稿 / 软删文章不在列表里（读者口径）。
+- `articles[]` **不分页**：系列是小型集合（MVP 量级两位数），一次取全。若将来出现百篇级系列再评估分页。
+- `articles[]` 元素是**精简对象**（`id` / `title` / `seriesOrder` / `summary`），不是完整文章详情——横幅要「第 N 篇」与邻居标题，不需要全文。
+- **「第 N 篇」由前端算**：N = 目标文章在 `articles[]` 里的 1 基下标 + 1，M = `articles.length`。服务端不返回 N——同一篇文章在草稿发布/软删时 N 会变，按列表现算最准。
+
+失败：400 / 40000（id 非正整数）、404 / 40400（系列不存在）。
+
+### PUT /api/series/:id
+
+更新系列元信息（标题 / 描述）。**需要登录，且必须是作者本人或 ADMIN**。部分更新语义：字段不传 = 保留原值（与 `PUT /api/articles/:id` 的 `category` 同范式）。
+
+请求体：`title?`（1–50 字符）、`description?`（≤ 200 字符，**传 `null` = 清空描述**）。
+
+成功：HTTP 200，`data` 为更新后的系列对象（同创建响应）。
+
+失败：
+
+| HTTP | code  | 场景 |
+| ---- | ----- | --- |
+| 400  | 40000 | id 非法或 zod 校验不通过 |
+| 401  | 40100 | 未登录或 token 无效 |
+| 403  | 40300 | 不是作者本人且不是 ADMIN |
+| 404  | 40400 | 系列不存在 |
+
+> **不改文章绑定**：本接口只动系列自身元信息。给系列增删文章走文章侧的 `seriesId`（`POST` / `PUT /api/articles`）。
+
+### DELETE /api/series/:id
+
+删除系列。**需要登录，且必须是作者本人或 ADMIN**。
+
+行为：**物理删除系列行 + 解绑全部文章**（`UPDATE articles SET series_id = NULL, series_order = NULL WHERE series_id = ?`，由外键 `ON DELETE SET NULL` 兜底、应用层同时显式清 `series_order`）。**文章本身不删**。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "unboundCount": 3
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| data.unboundCount | number | 被解绑的文章数（含草稿；软删文章若仍引用该系列也计入——UPDATE 不过滤 deletedAt） |
+
+失败：400 / 40000（id 非法）、401 / 40100（未登录）、403 / 40300（不是作者本人且不是 ADMIN）、404 / 40400（系列不存在）。
+
+> **与 `DELETE /api/articles/:id` 的软删刻意不同**：文章软删（保留数据随作者可恢复）；系列**物理删**（系列无 `deleted_at`，是纯组织容器，删了就散了，文章回到无系列状态）。清理侧配合：series 的 `author_id → users.id` 是 `RESTRICT`，硬删用户前必须先删他的 series（见 `docs/DB.md` 硬删序）。
+
+### GET /api/users/:id/series
+
+某用户的系列列表（编辑器「加入系列」下拉、个人主页「系列」Tab 数据源）。**无需登录**。
+
+路径参数：`id`，正整数。查询参数：`page`（默认 1）、`pageSize`（默认 10，最大 100）。无排序参数——固定 `createdAt desc`（最新创建的系列在前；编辑器下拉同此顺序）。
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      { "id": 2, "title": "另一个系列", "description": null, "articleCount": 5, "createdAt": "……", "updatedAt": "……" }
+    ],
+    "total": 2,
+    "page": 1,
+    "pageSize": 10
+  }
+}
+```
+
+- `list[]` 元素**不带 `author`**：路径已指定用户，作者恒为该用户（同 `GET /api/users/:id/articles` 不为每篇文章嵌作者全文的口径）。
+- **没有 `GET /api/users/me/series`**（用户拍板 2026-10-18）：系列没有「草稿/私密」概念，本来就是公开列表，与 `/users/:id/articles` 同性质；`/me` 系列保留给「需要登录才能看的自己专属数据」（likes / bookmarks / drafts）。编辑器下拉直接用 `userStore.user.id` 调本接口。
+- 失败：400 / 40000（分页参数非法 / id 非正整数）、404 / 40400（用户不存在）。
 
 ---
 

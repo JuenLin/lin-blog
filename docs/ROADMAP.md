@@ -126,7 +126,7 @@
 
 **目标**：把连载文章组织成「系列」，对标掘金专栏。
 
-**Schema**（新增第 14 项例外）：
+**Schema**（新增第 15 项例外，拍板见下方「本轮拍板记录」）：
 
 - `series` 表：`id` / `title` / `description` / `authorId` / `createdAt` / `updatedAt`
 - `articles` 表加 `seriesId Int?` + `seriesOrder Int?`
@@ -161,12 +161,21 @@
 - 系列列表与文章列表正确关联
 - 清理：按创建的 series/article id 精确删（series 先于 article 删或靠 SET NULL，注意顺序）
 
+### 本轮拍板记录（2026-10-18）
+
+1. **孤儿图片文件 MVP 不清**：解析正文反查文件的成本与风险都高（正文可能被并发修改、图片可能被外部引用），推荐方案（定时任务扫描未被引用的文件）已挂「插队候选」。
+2. **不加 `GET /api/users/me/series`**：系列没有「草稿/私密」概念，本来就是公开列表（同 `/users/:id/articles`）；`/me` 系列保留给需登录的自己专属数据（likes / bookmarks / drafts）。编辑器下拉直接用 `userStore.user.id` 调 `GET /users/:id/series`。接口数 47 + 6 = 53。
+3. **`seriesId` / `seriesOrder` 三态采纳**（不传=不改 / null=解绑 / 有值=绑定，与 `PUT /users/me` 同范式）；新建与 PUT 传 `seriesId` 都必须校验 `series.authorId === 当前用户`（他人 403/404，**绑定侧 ADMIN 无例外**）。
+4. **系列导航在详情页顶部**：meta 行下方显示系列横幅「本文属于《xxx》系列，第 N 篇 / 共 M 篇」+ 上/下篇按钮；底部全局 prev/next（时间线维度）不动，两者语义正交不混装。
+5. **序号冲突 409 拒绝，新建未传则自动 max+1**：显式传冲突序号 → 409/40900（让用户明确选择）；新建省略 → 自动排到系列末尾；PUT 未传 → 保留原值；**不做服务端自动重排**（用户可能有意识想插中间）。解绑双清：`seriesId=null` 时 `seriesOrder` 同时置 NULL。
+
 ---
 
 ## 插队候选（批次之间可随时做的小补丁）
 
 - **评论点赞**：comments 加 `likeCount` + `comment_likes` 表（仿 likes：无软删 + `@@unique` 防重）；评论旁加点赞小按钮。注意第 8 批通知体系可顺带接 COMMENT_LIKE 通知类型（需扩 NotificationType 枚举）。
 - **@ 提及**：编辑器解析 `@username`，触发通知中心 —— **NotificationType 枚举需加 MENTION**（enum ALTER 走 migrate；Prisma 侧重新 generate 前停后端，EPERM 老坑）。
+- **图片孤儿清理**：文章删除后 `/uploads/articles/*` 的清理（推荐方案：定时任务扫描未被任何文章正文引用的文件）。第 10 批引入 `uploads/articles/` 后产生的新债——文章删除 / 图片被从正文手动移除都会留孤儿文件；解析正文 Markdown 反查引用成本与风险都高（正文可能被并发修改、图片可能被外部引用），**本批不实现**（2026-10-18 用户拍板）。
 - **草稿箱多端同步**：仅在本批技术方案上做记录，暂不实现。
 
 ## 优先级建议

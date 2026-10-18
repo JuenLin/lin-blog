@@ -29,10 +29,11 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 | 表名 | 说明 | 状态 |
 |---|---|---|
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`），第 5 批新增 `role` / `status` 两列（迁移 `add_user_role_status`） |
-| `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`），第 6 批新增 `status` 一列（迁移 `20261017125847_add_article_status`），第 9 批新增 `view_count` 一列（迁移待执行，见「第 9 批」小节） |
+| `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`），第 6 批新增 `status` 一列（迁移 `20261017125847_add_article_status`），第 9 批新增 `view_count` 一列（迁移 `20261018053624_add_bookmarks_and_view_count`），第 10 批新增 `series_id` / `series_order` 两列（迁移见「第 10 批」小节） |
 | `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`），第 7 批新增 `parent_id` 一列（同批迁移 `20261018014846_add_tags_and_article_tags`） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
-| `bookmarks` | 文章收藏表（第 9 批） | 待建（迁移待执行，草案见下方「bookmarks（收藏表）」小节） |
+| `bookmarks` | 文章收藏表（第 9 批） | 已建（迁移 `20261018053624_add_bookmarks_and_view_count`） |
+| `series` | 文章系列表（第 10 批） | 已建（迁移见「第 10 批」小节） |
 | `tags` | 标签表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
 | `article_tags` | 文章-标签中间表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
 | `follows` | 关注关系表（第 4 批） | 已建（迁移 `20261011083029_add_follows`） |
@@ -76,6 +77,8 @@ Prisma 模型名 `Article`，`@@map("articles")`。
 | category | category | VARCHAR(20) | 否 | '未分类' | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单校验，非法值返回 400/40000；老文章由迁移 `NOT NULL DEFAULT '未分类'` 自动回填，零 NULL |
 | status | status | ENUM('DRAFT','PUBLISHED') | 否 | 'PUBLISHED' | 发布状态；`DRAFT`=草稿（仅作者本人「草稿箱」可见，不进广场 / 不进公开详情）；`PUBLISHED`=已发布（进广场）。默认 PUBLISHED，INSTANT 回填零 NULL |
 | viewCount | view_count | INT | 否 | 0 | 累计阅读量（第 9 批），只由 `POST /api/articles/:id/view` 原子 +1（`prisma increment`）；与 `likeCount`（likes 表实时 COUNT）是两种口径。**不建索引**（理由见「第 9 批」小节） |
+| seriesId | series_id | INT | 是 | NULL | 所属系列 id（第 10 批），外键 → `series.id` `ON DELETE SET NULL`；NULL = 未加入任何系列。**只存不校验归属，归属校验在 API 层**（见「第 10 批」小节） |
+| seriesOrder | series_order | INT | 是 | NULL | 系列内序号（第 10 批），正整数；同系列内唯一由**应用层**保证（409 冲突拒绝），**不建复合唯一索引**（可空列在 MySQL 下不可靠）；解绑 / 删系列时随 `series_id` 一同置 NULL |
 
 ### `category` 分类列（分类功能，经用户批准新增）
 
@@ -150,7 +153,7 @@ CREATE TABLE `articles` (
 ALTER TABLE `articles` ADD CONSTRAINT `articles_author_id_fkey` FOREIGN KEY (`author_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 ```
 
-> 第 6 批迁移 `add_article_status` 在上述表基础上新增 `status` 列（ENUM + 默认 PUBLISHED）与索引 `(status, created_at)`，INSTANT 回填。完整 DDL 见本文件「迁移记录」与「第 6 批」小节。
+> 第 6 批迁移 `add_article_status` 在上述表基础上新增 `status` 列（ENUM + 默认 PUBLISHED）与索引 `(status, created_at)`，INSTANT 回填。第 10 批迁移（见「第 10 批」小节）新增 `series_id` / `series_order` 两列（均可空）与外键 `articles_series_id_fkey`（→ `series.id`，`ON DELETE SET NULL`），既有行两列全部 `NULL`（零回填）。完整 DDL 见本文件「迁移记录」。
 
 ---
 
@@ -982,6 +985,74 @@ Prisma 模型名 `Notification`，`@@map("notifications")`。**第 8 批新建�
 
 ---
 
+## series（系列表）
+
+Prisma 模型名 `Series`，`@@map("series")`。文章系列（专栏），把多篇连载文章组织成一个有序容器（第 10 批）。
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键 |
+| title | title | VARCHAR(50) | 否 | 无 | 系列标题，API 校验 1–50 字符 |
+| description | description | VARCHAR(200) | 是 | NULL | 系列描述；传 `null` = 清空 |
+| authorId | author_id | INT | 否 | 无 | 系列作者 id，外键 → `users.id` |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
+| updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
+
+**无 `deleted_at` / `updated_at` 之外任何列**：系列是纯组织容器，删除即物理删除（`DELETE /api/series/:id`，与文章的软删刻意不同）；无 `deleted_at`、无软删恢复流程。
+
+### `articles.series_id` 外键为什么是 SET NULL（本表最重要的一条设计）
+
+`articles.series_id → series.id` 选 `ON DELETE SET NULL` 而非 `CASCADE` 或 `RESTRICT`（用户拍板 2026-10-18）：
+
+| 候选 | 行为 | 排除理由 |
+|---|---|---|
+| **SET NULL（采用）** | 删系列 → 文章全部回到「无系列」 | 符合需求语义：系列是「组织方式」，删容器不该毁内容 |
+| CASCADE | 删系列 → 文章一起没 | 一篇篇写出来的文章因「换个栏目名」被删，数据损失不可接受 |
+| RESTRICT | 有文章绑着就不让删系列 | 与 SET NULL 语义相反；「必须先逐篇解绑才能删系列」是反人类的操作流 |
+
+MySQL 的 `SET NULL` 要求列可空——`articles.series_id` 正是 `INT NULL`，天然满足。**应用层同时显式清 `series_order`**：外键 SET NULL 只清 `series_id` 一列，`series_order` 不在外键管辖内，靠 `DELETE /api/series/:id` 的显式 `UPDATE ... SET series_id = NULL, series_order = NULL` 双清（不留孤儿序号）。
+
+### 同系列序号唯一：应用层保证，不建复合唯一索引
+
+`seriesOrder` 同系列内唯一（`series_id, series_order` 逻辑唯一）由**应用层**保证，**刻意不建数据库复合唯一索引**：
+
+- 两列都可空（未绑系列的文章 `series_id` / `series_order` 均为 NULL），MySQL 唯一索引**不阻拦多个全 NULL 行**——「唯一」实际只对两列都非 NULL 的行生效，语义与直觉有偏差。
+- 序号冲突的产品决策是 **`409 / 40900` 拒绝**（让用户明确选择下一个序号），不是数据库报错；冲突检测放在 service 层，错误码语义更贴合前端交互（自动重排会打乱用户「插到中间」的预期，已排除）。
+- 自动分配（新建时省略 `seriesOrder` → `max + 1`）同样在应用层完成，与冲突检测同一段逻辑。
+
+### 索引
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | id | |
+| series_author_id_fkey | 普通（外键自动创建） | author_id | 外键索引；`GET /api/users/:id/series` 按作者查 |
+
+**不按 `(author_id, created_at)` 建复合索引**：`GET /api/users/:id/series` 固定 `createdAt desc` 且用户的系列量级为个位数，外键自动索引 + filesort 无感；与「category 不建索引」同口径，数据量上来再评估。
+
+### 建表 SQL（迁移生成，未手工改写）
+
+```sql
+CREATE TABLE `series` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `title` VARCHAR(50) NOT NULL,
+    `description` VARCHAR(200) NULL,
+    `author_id` INTEGER NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL,
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+ALTER TABLE `series` ADD CONSTRAINT `series_author_id_fkey` FOREIGN KEY (`author_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+### schema 变更已获批准（豁免登记 · 第 15 项）
+
+> 契约 §2「禁止修改数据库 schema」在本批**经用户明确批准后豁免**：批准范围 = **新建 `series` 一张表 + `articles` 新增 `series_id` / `series_order` 两列（含一条 SET NULL 外键）**，不含其他表任何变更、不含改列名/类型、不含删列、不含复合唯一索引。登记见 `docs/AI_CONTRACT.md` §2 第 15 项，决策过程见 `docs/API.md`「文章图片上传与专栏系列（第 10 批）」。
+
+---
+
 ## 第 2 批：用户主页接口（零 schema 变更）
 
 新增三个接口（`docs/API.md` 有完整规格）：
@@ -1288,6 +1359,30 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ---
 
+## 第 10 批：专栏系列（series 表 + articles.series_id / series_order 两列）
+
+### schema 变更
+
+| 变更 | 内容 |
+|---|---|
+| 新建 `series` 表 | `id` / `title VARCHAR(50)` / `description VARCHAR(200) NULL` / `author_id` / `created_at` / `updated_at`；一条外键（`author_id` → `users.id`，`ON DELETE RESTRICT`）；无 `deleted_at` / `updated_at` 之外的列（物理删，无软删） |
+| `articles` 新增 `series_id` 列 | `INT NULL`，外键 → `series.id` `ON DELETE SET NULL`；既有行回填 `NULL`（零回填脚本，本来就该是空） |
+| `articles` 新增 `series_order` 列 | `INT NULL`，正整数；**不在外键管辖内**，解绑时由应用层显式双清；**不建索引、不建复合唯一索引** |
+
+### 设计要点（详见 `docs/API.md`「文章图片上传与专栏系列（第 10 批）」）
+
+- **SET NULL 选型**：删系列 = 解绑文章，不删文章（CASCADE 会毁内容、RESTRICT 操作流反人类），推导见「series（系列表）」小节。
+- **序号唯一应用层保证**：冲突 `409 / 40900` 拒绝（不自动重排）；新建省略 → `max + 1`；解绑双清（`series_id` 与 `series_order` 同时 NULL）。
+- **图片上传零 schema 变更**：`POST /api/articles/upload-image` 只落盘 `/uploads/articles/{userId}/`，URL 进正文 Markdown；`articles` 不加图片列。孤儿文件清理挂 ROADMAP 插队候选。
+- **绑定侧归属无 ADMIN 例外**：文章绑系列必须 `series.authorId === 当前用户`（403/404）；系列元信息修改才是「作者或 ADMIN」。两者刻意不同，防 ADMIN 把别人文章绑进自己系列。
+- **硬删序新增一环**：`series.author_id` 是 RESTRICT，硬删用户前必须先删他的 series；又因 `articles.series_id` 指向 series，删 series 前articles 已先被删（或靠 SET NULL 解绑）。新硬删序：`bookmarks → notifications → likes → follows → comments → articles → series → users`（`lib/tmp-account.mjs` / `lib/fixtures.mjs` 已同步，第 8/9 批教训：新 RESTRICT 表必须当天过一遍所有探针清理）。
+
+### 与「已批准的例外」的关系（例外现共 15 项：schema 13 + 依赖 2）
+
+本批新增一项 schema 例外（第 15 项：`series` 表 + `articles.series_id` / `series_order` 两列），已登记 `docs/AI_CONTRACT.md` §2。零新依赖（multer 复用第 11 批批准项）。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -1301,19 +1396,20 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ## 软删除与外键的交互
 
-> 全库外键现共**十一条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条，后三批为第 4 / 8 / 9 批新增），全部是 `ON DELETE RESTRICT ON UPDATE CASCADE`。
-> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致。
+> 全库外键现共**十三条**（原有五条 + `follows` 两条 + `notifications` 两条 + `bookmarks` 两条 + 第 10 批 `series` 两条：`series.author_id` → `users.id` 与 `articles.series_id` → `series.id`）。删除行为从此有三种：`RESTRICT`（绝大多数）、`CASCADE`（`article_revisions.article_id` / `article_tags` 两条 / `comments.parent_id`）、`SET NULL`（`articles.series_id`，第 10 批新增的第一条）。
+> 其中 `follows` 的两条是 Prisma 默认值（schema 未显式声明 `onDelete`）；`notifications` 与 `bookmarks` 的外键在 schema 中**显式声明** `onDelete: Restrict`（第 8 批起为醒目起见改为显式），行为与默认值一致；`series.author_id` 同为显式 Restrict，`articles.series_id` 是显式 **SetNull**。
 
 - **软删除不触发外键**：删除文章是 `UPDATE articles SET deleted_at = ...`，物理行仍在，`comments.article_id` 与 `likes.article_id` 的引用依然有效，因此**评论与点赞都不被连带删除、不被连带置为删除**，也不需要任何 CASCADE 配置。
 - 这正是「文章软删、评论保留但随文章不可见」的实现基础：评论数据原样保留，接口层先校验文章存在且未软删除（返回 404），评论列表随文章一起不可见。点赞同理。
 - **将来若要物理清理**（硬删除），顺序必须是：
 
 ```text
-bookmarks → notifications → likes → follows → comments → articles → users
+bookmarks → notifications → likes → follows → comments → articles → series → users
 ```
 
-  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
+  RESTRICT 会在顺序错误时直接拒绝：`DELETE FROM users` 若该用户还有文章 / 评论 / 点赞 / 关注 / 收藏 / 通知 / **系列**会报错；`DELETE FROM articles` 若还有评论 / 点赞 / 收藏 / 通知挂载也会报错。这个报错是保护，不是 bug——发现报错说明漏了上游清理步骤。
   特别注意**必须先清 `bookmarks` / `notifications` / `likes` / `follows`**：这四张表都可能「悬挂」在被软删对象上（`bookmarks` / `likes` / `notifications` 挂文章与用户、`follows` 挂用户），是硬删顺序的最上游。
+  **`series` 排在 `articles` 之后、`users` 之前**（第 10 批）：`series.author_id → users.id` 是 RESTRICT，删用户前必须先删他的系列；而 `articles.series_id → series.id` 是 **SET NULL**——若先删 series，被绑文章会被自动解绑（此时文章往往也要删，无副作用），但**顺序上 articles 先删能顺带清掉 revisions（CASCADE）**，仍是 articles → series 更稳。
 
 ---
 
@@ -1350,7 +1446,7 @@ const summary = [...content].slice(0, 100).join('');
 
 4. **表结构变更流程**：改 `backend/prisma/schema.prisma` → 更新本文档 → `npx prisma migrate dev --name <名字>` → 核对生成的 `migration.sql` 与 `SHOW CREATE TABLE` 实际输出。
 
-5. **`backend/uploads/` 必须挂载持久卷**（第十一批）：本目录存放用户上传的头像，是运行时数据、不进 git。**生产部署时若不做持久化，重启 / 重新部署会丢文件**，而 `users.avatar` 仍指向不存在的路径。详见「users」小节的「第十一批：头像文件存储」。
+5. **`backend/uploads/` 必须挂载持久卷**（第十一批起）：本目录存放用户上传的头像与**文章配图**（第 10 批 `uploads/articles/{userId}/`），是运行时数据、不进 git。**生产部署时若不做持久化，重启 / 重新部署会丢文件**，而 `users.avatar` 仍指向不存在的路径、文章正文里的图片全部破图。详见「users」小节的「第十一批：头像文件存储」与「series（系列表）」所属的第 10 批小节。**孤儿图片文件（磁盘上有、无文章正文引用）本批不清理**，推荐方案挂 `docs/ROADMAP.md`「插队候选」。
 
 ---
 
@@ -1418,6 +1514,7 @@ const summary = [...content].slice(0, 100).join('');
 | `20261017130223_add_article_status_idx` | `articles` 表新增索引 `(status, created_at)`（命名 `articles_status_created_at_idx`），覆盖广场列表主查询（`WHERE status='PUBLISHED' ORDER BY created_at`）；**独立小迁移**，与 `status` 列分离以便回滚 | **已应用** |
 | `add_tags_and_article_tags`（第 7 批，实际名 `20261018014846_add_tags_and_article_tags`） | **一次迁移包含全部三项变更**（改 schema 一次跑 migrate 时 Prisma 将变更合并打包）：① 新建 `tags` 表（`name VARCHAR(20)` + **唯一约束** `tags_name_key`）；② 新建 `article_tags` 中间表（联合主键 `(article_id, tag_id)` + 两条外键均 `ON DELETE CASCADE` + `article_tags_tag_id_idx` 索引）；③ `comments` 表新增 `parent_id INT NULL` + 外键 `comments_parent_id_fkey`（→ `comments.id`，`ON DELETE CASCADE ON UPDATE CASCADE`）+ 索引 `comments_parent_id_idx`，既有行 `parent_id` 全部为 `NULL`（全是顶层评论，零回填）。**不含数据回填**（新表无既有数据） | **已应用** |
 | `add_bookmarks_and_view_count`（第 9 批，实际名 `20261018053624_add_bookmarks_and_view_count`） | 新建 `bookmarks` 表（`id` / `user_id` / `article_id` / `created_at`）+ 两条外键（`user_id` → `users.id`、`article_id` → `articles.id`，均 `ON DELETE RESTRICT`）+ 唯一约束 `bookmarks_user_id_article_id_key` + 索引 `bookmarks_article_id_idx`；`articles` 表新增 `view_count INT NOT NULL DEFAULT 0`（INSTANT 回填既有行为 0）。**不含数据回填**（新表无既有数据） | **已应用**（2026-10-18，`SHOW INDEX` 核实：唯一约束两列 + article_id 单列索引，`user_id` 未被额外补索引） |
+| `add_series`（第 10 批，实际名 `20261018082357_add_series`） | 新建 `series` 表（`id` / `title VARCHAR(50)` / `description VARCHAR(200) NULL` / `author_id` / `created_at` / `updated_at`）+ 一条外键（`author_id` → `users.id`，`ON DELETE RESTRICT`，外键自动索引 `series_author_id_fkey`）；`articles` 表新增 `series_id INT NULL`（外键 `articles_series_id_fkey` → `series.id`，**`ON DELETE SET NULL`，全库第一条 SET NULL 外键**）与 `series_order INT NULL` 两列。**不含数据回填**：series 新表无既有数据；articles 既有 17 行两列全部 `NULL`（`SHOW CREATE TABLE` + `information_schema.REFERENTIAL_CONSTRAINTS` 已核实 SET NULL / RESTRICT 两条规则） | **已应用**（2026-10-18） |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，

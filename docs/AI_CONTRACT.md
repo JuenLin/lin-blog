@@ -70,10 +70,10 @@
 
 ### 已批准的例外
 
-以下十四项（schema 十二项：第 1、2、4、5、6、8、9、10、11、12、13、14 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下十五项（schema 十三项：第 1、2、4、5、6、8、9、10、11、12、13、14、15 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14 项是「禁止改 schema」的十二条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count），  
+**注意**：第 1、2、4、5、6、8、9、10、11、12、13、14、15 项是「禁止改 schema」的十三条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications / 第 9 批 bookmarks / 第 9 批 articles.view_count / 第 10 批 series），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -148,6 +148,12 @@
     - **范围**：仅限此一列。不含其他表结构变更、不含改列名 / 类型 / 删列、不含加权热度 `hot_score` 冗余列（已挂 ROADMAP 远期储备）。
     - **依据**：见 `docs/DB.md`「articles（文章表）」`viewCount` 字段与「第 9 批」小节，决策过程见 `docs/API.md` 的 `POST /api/articles/:id/view` 章节。
     - **是否援引前例**：援引第 6 批 `articles.status` 加列先例（内容上是独立的一次批准）。
+
+15. **第 10 批 · schema 变更（series 表 + articles 两列，2026-10-18 批准）**
+    - **批准内容**：① 新建 `series` 表一张（`id` / `title VARCHAR(50)` / `description VARCHAR(200) NULL` / `author_id` / `created_at` / `updated_at`），含一条外键（`author_id` → `users.id`，`ON DELETE RESTRICT`），无 `deleted_at`（物理删）；② `articles` 表新增 `series_id INT NULL`（外键 → `series.id`，`ON DELETE SET NULL`——全库第一条 SET NULL 外键）与 `series_order INT NULL` 两列，均零回填。迁移名见 `docs/DB.md`「第 10 批」。
+    - **范围**：**仅限新建 `series` 一张表 + `articles` 两列一外键**。不含修改 `users` / `comments` / `likes` / `bookmarks` / `follows` / `notifications` 任何一列，不含 `(series_id, series_order)` 复合唯一索引（可空列不可靠，序号唯一应用层保证），不含给 `series` 加软删列。
+    - **依据**：见 `docs/DB.md`「series（系列表）」小节与「第 10 批」小节，决策过程见 `docs/API.md`「文章图片上传与专栏系列（第 10 批）」章节。
+    - **是否援引前例**：援引第 9 批「一次 migrate 打包多变更」与 `likes` / `bookmarks` 建表结构先例（内容上是独立的一次批准）。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -343,6 +349,12 @@ DELETE /api/articles/:id/bookmark   取消收藏（需登录，幂等 200，第 
 GET    /api/articles/:id/bookmarked 查询当前用户是否已收藏（需登录，第 9 批）
 GET    /api/users/me/bookmarks      我的收藏列表（需登录，分页，第 9 批）
 POST   /api/articles/:id/view       记录阅读 viewCount +1（免登录，同 IP 同文章 5 分钟判重，第 9 批）
+POST   /api/articles/upload-image   上传文章配图（需登录，字段名 image，≤2MB 仅 jpeg/png/webp，第 10 批）
+POST   /api/series                  创建系列（需登录，第 10 批）
+GET    /api/series/:id              系列详情含有序文章列表（公开，第 10 批）
+PUT    /api/series/:id              更新系列（作者或 ADMIN，第 10 批）
+DELETE /api/series/:id              删除系列（作者或 ADMIN，SET NULL 解绑文章不删文章，第 10 批）
+GET    /api/users/:id/series        某用户的系列列表（公开，分页，第 10 批；**无 /me 变体**）
 GET    /api/admin/stats             管理端数据概览（需 ADMIN）
 GET    /api/admin/users             管理端用户列表（需 ADMIN）
 PATCH  /api/admin/users/:id/status  封禁/解禁用户（需 ADMIN）
@@ -370,7 +382,7 @@ PUT    /api/notifications/:id/read    单条标记已读（需登录，第 8 批
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38 → 42 → 47**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口、第 9 批新增 5 个收藏 / 阅读接口、第 10 批新增 6 个图片上传 / 系列接口（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38 → 42 → 47 → 53**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论 / 系列内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 
