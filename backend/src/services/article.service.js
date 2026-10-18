@@ -3,6 +3,7 @@ import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
 import { parseKeyword, parseCategory, parseTag, TAG_NAME_MAX_LENGTH } from '../validators/article.validator.js';
 import { CODE, httpError } from '../utils/response.js';
+import { notifyOnMentions } from './notification.service.js';
 
 // docs/API.md：文章列表 sortBy 白名单为 createdAt / updatedAt / id / likeCount / viewCount，
 // 默认 createdAt desc。
@@ -160,14 +161,16 @@ export async function createArticle(payload, authorId) {
   // 失败了整篇不创建（与 title 校验失败同口径，不留半篇文章）。
   const binding = await resolveSeriesBindingForCreate(payload, authorId);
 
-  return prisma.$transaction(async (tx) => {
-    const article = await tx.article.create({
+  // 第 6 批：status 省略或 PUBLISHED 都是发布；DRAFT 创建草稿。
+  const status = payload.status ?? 'PUBLISHED';
+
+  const article = await prisma.$transaction(async (tx) => {
+    const created = await tx.article.create({
       data: {
         title: payload.title,
         content: payload.content,
         category: payload.category ?? '未分类',
-        // 第 6 批：status 省略或 PUBLISHED 都是发布；DRAFT 创建草稿。
-        status: payload.status ?? 'PUBLISHED',
+        status,
         authorId,
         // 第 10 批：未传 seriesId 时两列都是 null（不加入系列）。
         seriesId: binding.seriesId,
@@ -178,17 +181,35 @@ export async function createArticle(payload, authorId) {
 
     // 第 7 批：空数组 = 无标签（跳过中间表写入，省一次空 deleteMany）。
     if (payload.tags.length > 0) {
-      await applyTags(tx, article.id, payload.tags);
+      await applyTags(tx, created.id, payload.tags);
     }
 
     // create 的返回发生在关联写入之前，重新查一次拿完整对象（含 tags 与 likeCount）。
     const full = await tx.article.findUnique({
-      where: { id: article.id },
+      where: { id: created.id },
       select: ARTICLE_DETAIL_SELECT,
     });
 
     return toArticleDetail(full);
   });
+
+  // 第 11 批：@提及通知——**只在发布动作触发**（DRAFT 草稿没有读者，不通知；
+  // 编辑 / 回滚 / 自动保存不补发，避免每次编辑重复骚扰，docs/API.md 第 11 批）。
+  // 通知在事务提交后发：失败只打日志，绝不影响文章本身（对镜 createComment 纪律）。
+  if (status === 'PUBLISHED') {
+    try {
+      await notifyOnMentions({
+        articleId: article.id,
+        commentId: null,
+        content: payload.content,
+        authorId,
+      });
+    } catch (notifyError) {
+      console.error('[notify] 文章 @提及通知发送失败（不影响文章创建）:', notifyError);
+    }
+  }
+
+  return article;
 }
 
 /**

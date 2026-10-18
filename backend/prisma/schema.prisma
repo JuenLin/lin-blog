@@ -28,12 +28,16 @@ enum UserStatus {
 
 // 第 8 批（用户批准）：通知类型。
 // COMMENT=评论了你的文章；REPLY=回复了你的评论；FOLLOW=关注了你；LIKE=赞了你的文章。
+// 第 11 批追加（用户批准）：MENTION=@提及了你；COMMENT_LIKE=赞了你的评论。
+// 追加成员到枚举末尾，MySQL 8 ALTER ENUM 走 INSTANT，零回填。
 // 封闭值域由 DB 层（MySQL ENUM）强制，不放 zod 白名单重复校验（理由同 UserRole）。
 enum NotificationType {
   COMMENT
   REPLY
   FOLLOW
   LIKE
+  MENTION
+  COMMENT_LIKE
 }
 
 enum ArticleStatus {
@@ -73,6 +77,8 @@ model User {
   bookmarks     Bookmark[]
   // 第 10 批（2026-10-18 用户批准）：作为系列作者被引用。
   series        Series[]
+  // 第 11 批（2026-10-18 用户批准）：作为评论点赞者被引用（「用户本人」而非作者角色）。
+  commentLikes  CommentLike[]
 
   @@map("users")
 }
@@ -147,6 +153,13 @@ model Comment {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
+  // 第 11 批（2026-10-18 用户批准）：评论点赞数。累加计数器（只增不减），
+  // 由 POST / DELETE /api/comments/:id/like 以 prisma increment/decrement 原子维护；
+  // comment_likes 行是唯一真相（幂等判定走行存在性），本列只做响应回显。
+  // 与 viewCount / likeCount(文章) 的口径讨论见 docs/DB.md；不建索引（高频写入列）。
+  likeCount Int       @default(0) @map("like_count")
+  // 第 11 批：作为评论点赞的目标被引用。
+  commentLikes CommentLike[]
 
   @@index([articleId, createdAt])
   @@index([parentId])
@@ -289,4 +302,27 @@ model Series {
 
   // author_id 侧由外键自动索引承担（GET /users/:id/series 按作者查），不另建。
   @@map("series")
+}
+
+// 第 11 批（2026-10-18 用户批准）：评论点赞表。
+// 与 likes / bookmarks / follows 同族：**刻意不设 deleted_at / updated_at**——
+// 点赞是关系状态而非可隐藏内容，取消点赞是物理 DELETE，「点赞 = 该行存在」。
+// ⚠️ 错误码语义与文章点赞刻意相反：重复赞（P2002）/ 取消未赞都返回 **200 幂等**，
+// 与 bookmark / follow 一致、与 like 的 409/404 相反（docs/API.md「评论点赞与 @提及」）。
+model CommentLike {
+  id        Int      @id @default(autoincrement())
+  // 点赞者是「用户本人」，按 docs/DB.md「外键命名规则」用 user_id（同 likes / bookmarks）。
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  commentId Int      @map("comment_id")
+  // 评论走软删、行不消失，RESTRICT 保证关联行永远有主（与 bookmarks.articleId 同理）。
+  comment   Comment  @relation(fields: [commentId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 防重复点赞：DB 唯一约束是唯一真相，并发 P2002 在评论侧转幂等成功（200）。
+  @@unique([userId, commentId], name: "comment_likes_user_id_comment_id_key")
+  // 支撑「某条评论的点赞数」实时 count 与评论列表 liked 批量判定。
+  // user_id 侧不另建索引：唯一索引左前缀已承担（likes / bookmarks 同纪律）。
+  @@index([commentId])
+  @@map("comment_likes")
 }

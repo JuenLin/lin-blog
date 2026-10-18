@@ -2,7 +2,8 @@ import prisma from '../utils/prisma.js';
 import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
 import { CODE, httpError } from '../utils/response.js';
-import { notifyOnComment } from './notification.service.js';
+import { notifyOnComment, notifyOnMentions } from './notification.service.js';
+import { findLikedCommentIds } from './comment-like.service.js';
 
 // docs/API.md：评论列表 sortBy 白名单为 createdAt / id，默认 createdAt desc。
 export const COMMENT_SORT_FIELDS = ['createdAt', 'id'];
@@ -32,6 +33,8 @@ const COMMENT_SELECT = {
       author: { select: { nickname: true, username: true } },
     },
   },
+  // 第 11 批：评论点赞数（累加计数器，docs/DB.md「comments.like_count」）。
+  likeCount: true,
   createdAt: true,
   author: {
     select: AUTHOR_SELECT,
@@ -59,6 +62,8 @@ function toComment(comment) {
     replyToAuthor: comment.parent
       ? comment.parent.author.nickname || comment.parent.author.username
       : null,
+    // 第 11 批：点赞数恒返回（0 显式返回，与文章 likeCount 同口径）。
+    likeCount: comment.likeCount,
     author: toAuthor(comment.author),
     createdAt: comment.createdAt,
   };
@@ -152,6 +157,19 @@ export async function createComment(payload, authorId) {
     console.error('[notify] 评论通知发送失败（不影响评论创建）:', notifyError);
   }
 
+  // 第 11 批：@提及通知（正文 /@(\w+)/g 提取，去重 + 过滤自己 + 只通知存在且未软删用户）。
+  // 同样包 try/catch：提及失败不影响评论创建。
+  try {
+    await notifyOnMentions({
+      articleId: payload.articleId,
+      commentId: comment.id,
+      content: payload.content,
+      authorId,
+    });
+  } catch (notifyError) {
+    console.error('[notify] @提及通知发送失败（不影响评论创建）:', notifyError);
+  }
+
   return toComment(comment);
 }
 
@@ -159,10 +177,15 @@ export async function createComment(payload, authorId) {
  * 文章评论列表，无需登录。文章不存在或已软删除返回 404，
  * 这也保证文章删除后其评论随文章一起不可见。
  *
+ * 第 11 批：viewerId（可选）来自 optionalAuth——携带合法 token 时每个列表项
+ * 附加 liked 布尔（当前用户是否已赞）；未登录 / token 非法时**省略键**，
+ * 列表对匿名读者永远可用（docs/API.md「评论列表加字段」）。
+ *
  * @param {number} articleId
  * @param {object} query Express 的 req.query
+ * @param {number|null} [viewerId] 当前用户 id（可选鉴权解析，未登录为 null）
  */
-export async function listCommentsByArticle(articleId, query) {
+export async function listCommentsByArticle(articleId, query, viewerId = null) {
   await requireArticle(articleId);
 
   const pagination = parsePagination(query, {
@@ -183,8 +206,23 @@ export async function listCommentsByArticle(articleId, query) {
     prisma.comment.count({ where }),
   ]);
 
+  const list = rows.map(toComment);
+
+  // 第 11 批：批量判定 liked（一次 IN 查询，绝不逐条查）。viewerId 为空时整块跳过。
+  // 带合法 token 时**每项都写 liked 布尔**（API 契约口径）；未登录时省略键。
+  if (viewerId != null && list.length > 0) {
+    const likedIds = await findLikedCommentIds(
+      viewerId,
+      list.map((c) => c.id)
+    );
+
+    for (const item of list) {
+      item.liked = likedIds.has(item.id);
+    }
+  }
+
   return {
-    list: rows.map(toComment),
+    list,
     ...buildPaginationMeta(pagination.page, pagination.pageSize, total),
   };
 }
