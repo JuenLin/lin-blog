@@ -836,6 +836,53 @@ Prisma 模型名 `ArticleTag`，`@@map("article_tags")`。**第 7 批新建，�
 
 ---
 
+## notifications（通知表）
+
+Prisma 模型名 `Notification`，`@@map("notifications")`。**第 8 批新建，迁移（见「迁移记录」末条）**。通知中心的数据源：评论 / 关注 / 点赞三类动作成功后，由业务层**自动写入**一条通知（自通知抑制：`actorId !== 接收者`）。
+
+### 字段与约束
+
+| Prisma 字段 | 数据库列   | 类型                          | 空   | 默认                | 说明                                                                                     |
+| ----------- | ---------- | ----------------------------- | ---- | ------------------- | ---------------------------------------------------------------------------------------- |
+| id          | id         | INT                           | 否   | AUTO_INCREMENT      | 主键                                                                                     |
+| userId      | user_id    | INT                           | 否   | 无                  | **接收者** id（被通知的人），外键 → `users.id` `ON DELETE RESTRICT`                       |
+| actorId     | actor_id   | INT                           | 否   | 无                  | **触发者** id（做动作的人），外键 → `users.id` `ON DELETE RESTRICT`                       |
+| type        | type       | ENUM('COMMENT','REPLY','FOLLOW','LIKE') | 否   | 无                  | 通知类型                                                                                 |
+| articleId   | article_id | INT                           | 可   | 无                  | 目标文章 id（`FOLLOW` 为 `null`），外键 → `articles.id` `ON DELETE RESTRICT`             |
+| commentId   | comment_id | INT                           | 可   | 无                  | 触发的评论 id（`COMMENT`/`REPLY` 有值；`FOLLOW`/`LIKE` 为 `null`），**无外键**（只用于将来深链） |
+| readAt      | read_at    | DATETIME(3)                   | 可   | NULL                | 软已读标记：`null` = 未读，赋值 = 已读。**不做物理删除**                                |
+| createdAt   | created_at | DATETIME(3)                   | 否   | CURRENT_TIMESTAMP(3)| 创建时间                                                                                 |
+
+- **`read_at` 而非 `is_read`**：已读是「打时间戳」语义，用 `NULL` 区分未读，天然支持「未读数 = COUNT WHERE read_at IS NULL」，且将来要记「已读时间」也直接复用。
+- **不做物理删除**：通知永久保留（MVP 不做定时清理），已读只置 `read_at`，符合契约第 9 节「默认软删除」精神（此处以 `read_at` 充当软态，无需 `deleted_at`）。
+- **`comment_id` 不建外键**：评论是软删，行不消失；通知只存 id 供将来深链，不引用完整性。若评论被删，前端按 `article_id` 跳文章详情即可（且 `targetTitle` 已降级为 `内容已删除` 时不跳）。
+
+### 索引
+
+| 索引名                        | 类型 | 列                | 用途                                                                       |
+| ----------------------------- | ---- | ----------------- | -------------------------------------------------------------------------- |
+| PRIMARY                       | 主键 | id                | 单条通知定位                                                               |
+| notifications_user_id_read_at_idx | 普通 | user_id, read_at  | 「我的通知列表」按 `user_id` 过滤 + `created_at` 倒序；「未读数」`WHERE user_id = ? AND read_at IS NULL` |
+
+### 外键为什么 RESTRICT 而不是 CASCADE / SET NULL
+
+本项目 `users` / `articles` 都是**软删除**（行不消失），生产环境永远不会触发物理删除，所以 `RESTRICT` 在生产等价于「无副作用」。它只在「将来真要物理删用户 / 文章」时兜底拦一下，避免通知变成孤儿。测试夹具清理顺序（先删通知 `id: in [...]` → 再删文章 / 账号）也兼容 `RESTRICT`，不会撞约束。
+
+### join + 空值降级（被删处理，防坑 2）
+
+`actorId` / `articleId` 都是软删实体（不物理删），所以查询时 `include` 总能拿到行；是否「已注销 / 已删除」靠 `deleted_at IS NOT NULL` 判定：
+
+- actor 软删 → `actorName` 返回 `已注销用户`、`actorAvatar` 返回 `null`；
+- article 软删 / 不存在 → `targetTitle` 返回 `内容已删除`。
+
+**不冗余存储快照**（不把 nickname / title 拷进通知表）：join 拿到实时昵称 / 标题，被删才降级。这样用户改了昵称，历史通知也跟着新昵称显示。
+
+### 自通知抑制（防坑 3）
+
+写入通知前业务层比对 `actorId !== userId`（接收者）：自己评论自己的文章、自己关注自己、自己赞自己的文章 → 一条都不发。判定集中在三个 service（`comment` / `follow` / `like`）的钩子里，不分散到接口层。
+
+---
+
 ## 第 2 批：用户主页接口（零 schema 变更）
 
 新增三个接口（`docs/API.md` 有完整规格）：
@@ -1090,6 +1137,28 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 ### 与「已批准的例外」的关系（例外现共 11 项：schema 9 + 依赖 2）
 
 本批新增两项 schema 例外（第 8 项 `tags` + `article_tags` 中间表、第 9 项 `comments.parent_id`），已登记 `docs/AI_CONTRACT.md` §2。零新依赖。
+
+---
+
+## 第 8 批：通知中心（notifications 表）
+
+### schema 变更
+
+| 变更 | 内容 |
+|---|---|
+| 新建 `notifications` 表 | `id` / `user_id`（接收者）/ `actor_id`（触发者）/ `type` ENUM(`COMMENT`,`REPLY`,`FOLLOW`,`LIKE`) / `article_id` 可空 / `comment_id` 可空 / `read_at` 可空（软已读）/ `created_at`；索引 `(user_id, read_at)`；`actor_id` / `article_id` 两条外键均 `ON DELETE RESTRICT` |
+| 触发器 | 评论 / 关注 / 点赞三个 service 成功后**自动** `createNotification`，业务层比对 `actorId !== 接收者` 做自通知抑制 |
+
+### 设计要点（详见 `docs/API.md`「通知中心接口」）
+
+- **后端拼文案**：`actorName` / `targetTitle` 由 API 返回，前端只渲染（防坑 1）。`actorName` 取 nickname 回退 username，actor 软删 → `已注销用户`；`targetTitle` 文章软删 / 不存在 → `内容已删除`（join + 空值降级，防坑 2）。
+- **已读用 `read_at` 时间戳**：未读数 = `COUNT WHERE read_at IS NULL`；批量已读支持「空数组 = 全部」，单条已读幂等（200，不报 404）。
+- **永久保留**：通知不做物理删除、不做定时清理，已读只置 `read_at`。
+- **未读数轮询**：前端登录后 30s 轮询 `GET /api/notifications/unread-count`，登出 / 卸载 `clearInterval`。
+
+### 与「已批准的例外」的关系（例外现共 12 项：schema 10 + 依赖 2）
+
+本批新增一项 schema 例外（第 12 项 `notifications` 表 + `NotificationType` 枚举），已登记 `docs/AI_CONTRACT.md` §2。零新依赖。
 
 ---
 

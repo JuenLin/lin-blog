@@ -2037,6 +2037,73 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 ---
 
+## 通知中心接口（第 8 批）
+
+通知让「有人评论 / 回复 / 关注 / 点赞了你」这类事件主动推到接收者面前，提升博客的「活人感」。
+本批新建 `notifications` 表（见 `docs/DB.md`），并在**评论 / 关注 / 点赞**三类动作成功后自动产生通知。
+
+通知文案由**后端拼**，前端只做渲染，不写 if-else 分支（防坑 1）：
+
+- `COMMENT`：`{actorName} 评论了你的文章《{targetTitle}》`
+- `REPLY`：`{actorName} 回复了你的评论（《{targetTitle}》）`
+- `FOLLOW`：`{actorName} 关注了你`
+- `LIKE`：`{actorName} 赞了你的文章《{targetTitle}》`
+
+> **自通知抑制（防坑 3）**：自己评论自己的文章、自己关注自己、自己赞自己的文章 → 不产生通知。判定在业务层（点赞 / 评论 / 关注接口），`actorId !== 接收者` 才发；关注接口本身已拒绝「关注自己」，评论 / 点赞也会比对作者，漏了一律不发。
+> **被删降级（防坑 2）**：actor 软删 / 文章软删 / 不存在 → `actorName` 返回 `已注销用户`、`targetTitle` 返回 `内容已删除`；**不冗余存储快照**（join + 空值降级，见 `docs/DB.md`「notifications」）。点击已删目标时前端 `ElMessage.error('目标内容已不存在')` 并顺手标已读。
+> **未读数刷新**：前端登录后开启 30s 轮询 `GET /api/notifications/unread-count`，登出 / 组件卸载 `clearInterval`，防内存泄漏。
+
+### GET /api/notifications
+
+我的通知列表（扁平分页），需登录。
+
+| 参数      | 类型   | 必填 | 说明                       |
+| --------- | ------ | ---- | -------------------------- |
+| page      | number | 否   | 默认 1                     |
+| pageSize  | number | 否   | 默认 10，最大 100          |
+
+返回 `data`：
+
+| 字段               | 类型    | 说明                                                                   |
+| ------------------ | ------- | ---------------------------------------------------------------------- |
+| list               | array   | 通知数组，按 `createdAt` 倒序（最新在前）                               |
+| list[].id          | number  | 通知 id                                                                |
+| list[].type        | string  | `COMMENT` / `REPLY` / `FOLLOW` / `LIKE`                                |
+| list[].actorId     | number  | 触发者 id（`FOLLOW` 时即被关注者主页跳转目标）                          |
+| list[].actorName   | string  | 触发者昵称（nickname 为空回退 username）；已注销显示 `已注销用户`        |
+| list[].targetTitle | string  | 目标文章标题（`COMMENT`/`REPLY`/`LIKE` 有值，`FOLLOW` 为 `null`）；已删显示 `内容已删除` |
+| list[].articleId   | number  | 目标文章 id（`FOLLOW` 为 `null`）                                      |
+| list[].commentId   | number  | 触发的评论 id（`COMMENT`/`REPLY` 有值，便于将来深链；`FOLLOW`/`LIKE` 为 `null`） |
+| list[].isRead      | boolean | `readAt != null` 即已读                                                |
+| list[].createdAt   | string  | ISO 8601 创建时间                                                      |
+| page / pageSize / total / totalPages | — | 分页元信息（同全局口径）                                |
+
+失败：
+
+| HTTP | code  | 场景              |
+| ---- | ----- | ----------------- |
+| 401  | 40100 | 未登录或 token 无效 |
+
+### GET /api/notifications/unread-count
+
+未读数，需登录。返回 `data`：`{ unreadCount: number }`（`userId` 下 `readAt` 为 `null` 的条数）。轮询数据源（前端 30s 一次）。
+
+### PUT /api/notifications/read
+
+批量标记已读，需登录。请求体：
+
+| 字段 | 类型     | 必填 | 说明                                                                         |
+| ---- | -------- | ---- | ---------------------------------------------------------------------------- |
+| ids  | number[] | 否   | 精确标记这些 id 已读（只标**属于自己**的，越权 id 自动忽略）。**空数组 `[]` = 全部已读**；不传视作全部已读 |
+
+返回 `data`：`{ count: number }`（实际更新条数）。
+
+### PUT /api/notifications/:id/read
+
+单条标记已读，需登录。`:id` 非法 → `400 / 40000`。已读 / 不存在 / 不属于自己 → `200` 幂等（不报 404，与取消关注同口径），`data` 为 `null`。
+
+---
+
 ## 前端调用约定
 
 - 所有请求走 `frontend/src/api/request.js` 导出的 axios 实例。

@@ -70,10 +70,10 @@
 
 ### 已批准的例外
 
-以下十一项（schema 九项：第 1、2、4、5、6、8、9、10、11 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下十二项（schema 十项：第 1、2、4、5、6、8、9、10、11、12 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6、8、9、10、11 项是「禁止改 schema」的九条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id），  
+**注意**：第 1、2、4、5、6、8、9、10、11、12 项是「禁止改 schema」的十条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id / 第 8 批 notifications），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -132,6 +132,11 @@
     - **批准内容**：`comments` 表新增 `parent_id INT NULL` 一列（父评论自引用，外键 → `comments.id` `ON DELETE CASCADE ON UPDATE CASCADE`），加索引 `comments_parent_id_idx`，既有行回填 `NULL` 零脚本。迁移名 `add_comment_parent_id`。
     - **范围**：仅限此一列一索引一外键。不含其他表结构变更、不含改列名 / 类型 / 删列。
     - **依据**：见 `docs/DB.md`「comments（评论表）」的 `parentId` 字段与「第 7 批」小节，决策过程见 `docs/API.md` 的 `POST /api/comments`（parentId 校验链）章节。
+    - **是否援引前例**：无，与前述各批各自独立。
+12. **第 8 批 · schema 变更（notifications 通知表，2026-10-18 批准）**
+    - **批准内容**：新建 `notifications` 表一张（`id` / `user_id`（接收者）/ `actor_id`（触发者）/ `type` ENUM `NotificationType { COMMENT, REPLY, FOLLOW, LIKE }` / `article_id` 可空 / `comment_id` 可空 / `read_at` 可空（软已读）/ `created_at`），含两个外键（`actor_id` → `users.id`、`article_id` → `articles.id`，均 `ON DELETE RESTRICT`）与一个索引 `(user_id, read_at)`）。
+    - **范围**：**仅限新建 `notifications` 一张表 + `NotificationType` 一个枚举**。不含修改 `users` / `articles` / `comments` / `likes` / `follows` / `tags` / `article_tags` 任何一列，也不含给已建表补列。
+    - **依据**：见 `docs/DB.md`「notifications（通知表）」小节，决策过程见 `docs/API.md` 的「通知中心接口（第 8 批）」4 个接口章节。
     - **是否援引前例**：无，与前述各批各自独立。
 
 - 禁止把密码明文存入数据库。
@@ -336,6 +341,10 @@ DELETE /api/users/me/drafts/:id      删除草稿（需登录，第 6 批）
 GET    /api/articles/:id/revisions   文章版本历史（需登录，仅作者，第 6 批）
 POST   /api/articles/:id/restore     回滚版本（需登录，仅作者，第 6 批）
 GET    /api/tags                     热门标签列表（公开，第 7 批）
+GET    /api/notifications             我的通知列表（需登录，第 8 批）
+GET    /api/notifications/unread-count 未读数（需登录，第 8 批）
+PUT    /api/notifications/read        批量标记已读，空数组=全部（需登录，第 8 批）
+PUT    /api/notifications/:id/read    单条标记已读（需登录，第 8 批）
 ```
 
 > `/api/users` 系列**已实现 9 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）、`POST /api/users/:id/follow`（关注）、`DELETE /api/users/:id/follow`（取消关注）、`GET /api/users/:id/followers`（粉丝列表）、`GET /api/users/:id/following`（关注列表）。
@@ -346,7 +355,7 @@ GET    /api/tags                     热门标签列表（公开，第 7 批）
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`、第 8 批新增 4 个通知中心接口（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38 → 42**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 
