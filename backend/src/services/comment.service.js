@@ -2,6 +2,7 @@ import prisma from '../utils/prisma.js';
 import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
 import { CODE, httpError } from '../utils/response.js';
+import { notifyOnComment } from './notification.service.js';
 
 // docs/API.md：评论列表 sortBy 白名单为 createdAt / id，默认 createdAt desc。
 export const COMMENT_SORT_FIELDS = ['createdAt', 'id'];
@@ -102,10 +103,11 @@ export async function createComment(payload, authorId) {
   await requireArticle(payload.articleId);
 
   let parentId = null;
+  let parentAuthorId = null;
   if (payload.parentId !== undefined && payload.parentId !== null) {
     const parent = await prisma.comment.findFirst({
       where: whereNotDeleted({ id: payload.parentId }),
-      select: { id: true, articleId: true, parentId: true },
+      select: { id: true, articleId: true, parentId: true, authorId: true },
     });
 
     // ② 父评论存在且未软删。
@@ -124,6 +126,7 @@ export async function createComment(payload, authorId) {
     }
 
     parentId = parent.id;
+    parentAuthorId = parent.authorId;
   }
 
   const comment = await prisma.comment.create({
@@ -135,6 +138,19 @@ export async function createComment(payload, authorId) {
     },
     select: COMMENT_SELECT,
   });
+
+  // 第 8 批：通知。顶层评论→通知文章作者(COMMENT)；回复→通知父评论作者(REPLY)。
+  // 包裹 try/catch：通知是附加价值，绝不能因通知失败而回滚评论本身（或把 500 透传给前端）。
+  try {
+    await notifyOnComment({
+      articleId: payload.articleId,
+      commentId: comment.id,
+      commentAuthorId: authorId,
+      parentAuthorId,
+    });
+  } catch (notifyError) {
+    console.error('[notify] 评论通知发送失败（不影响评论创建）:', notifyError);
+  }
 
   return toComment(comment);
 }

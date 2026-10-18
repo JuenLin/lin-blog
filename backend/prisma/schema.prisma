@@ -26,6 +26,16 @@ enum UserStatus {
   BANNED
 }
 
+// 第 8 批（用户批准）：通知类型。
+// COMMENT=评论了你的文章；REPLY=回复了你的评论；FOLLOW=关注了你；LIKE=赞了你的文章。
+// 封闭值域由 DB 层（MySQL ENUM）强制，不放 zod 白名单重复校验（理由同 UserRole）。
+enum NotificationType {
+  COMMENT
+  REPLY
+  FOLLOW
+  LIKE
+}
+
 enum ArticleStatus {
   DRAFT
   PUBLISHED
@@ -57,6 +67,8 @@ model User {
   //   - followers 走 "Following" 关系：我是被关注者 → 关注我的人列表
   following Follow[] @relation("Follower")
   followers Follow[] @relation("Following")
+  // 第 8 批：作为通知触发者（actor）被引用；接收者（userId）是普通 int 列，不建关系。
+  notifications Notification[] @relation("NotificationActor")
 
   @@map("users")
 }
@@ -78,6 +90,8 @@ model Article {
   likes     Like[]
   revisions ArticleRevision[]
   tags      ArticleTag[]
+  // 第 8 批：文章作为通知的目标锚点（articleId）被引用。
+  notifications Notification[]
 
   @@index([deletedAt, createdAt])
   @@index([deletedAt, updatedAt])
@@ -190,4 +204,29 @@ model Follow {
   // follower_id 侧不另建索引：上面唯一索引的左前缀已承担。
   @@index([followingId])
   @@map("follows")
+}
+
+// 第 8 批（用户批准）：通知表（通知中心数据源）。
+// 「通知」是一种事件记录而非可隐藏内容，但保留软已读（read_at）而非物理删除——
+// read_at 为 NULL 即未读，已读只置时间戳，永久保留、不做定时清理。
+// userId = 接收者；actorId = 触发者（做动作的人）；articleId / commentId 为可选的目标锚点。
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int              @map("user_id")
+  actorId   Int              @map("actor_id")
+  // actor 软删后行仍在（不物理删），join 拿得到，靠 actor.deletedAt 判定「已注销」。
+  actor     User             @relation("NotificationActor", fields: [actorId], references: [id], onDelete: Restrict)
+  type      NotificationType
+  articleId Int?             @map("article_id")
+  // article 软删后行仍在，join 拿得到，靠 article.deletedAt 判定「内容已删除」。
+  article   Article?         @relation(fields: [articleId], references: [id], onDelete: Restrict)
+  // commentId 不建外键：评论软删行不消失，只存 id 供将来深链，不引引用完整性。
+  commentId Int?             @map("comment_id")
+  readAt    DateTime?        @map("read_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // (user_id, read_at)：支撑「我的通知列表」按 user_id 过滤 + createdAt 倒序，
+  // 以及「未读数」WHERE user_id = ? AND read_at IS NULL。
+  @@index([userId, readAt])
+  @@map("notifications")
 }

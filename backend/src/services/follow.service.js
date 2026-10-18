@@ -8,6 +8,7 @@ import { CODE, httpError } from '../utils/response.js';
 import { whereNotDeleted, buildOrderBy } from '../utils/query.js';
 import { parsePagination, buildPaginationMeta } from '../utils/pagination.js';
 import { toPublicUser, PUBLIC_FIELDS, requireUserExists } from './user.service.js';
+import { notifyOnFollow } from './notification.service.js';
 
 // docs/API.md GET /api/users/:id/followers|following：
 // sortBy 白名单为 followedAt / id，默认 followedAt desc。
@@ -111,6 +112,14 @@ export async function followUser(targetId, followerId) {
     }
 
     throw error;
+  }
+
+  // 第 8 批：新关注成功 → 通知被关注者（followUser 已拒绝「关注自己」，这里再兜底）。
+  // 包裹 try/catch：通知是附加价值，失败不影响「已关注」的返回。
+  try {
+    await notifyOnFollow({ followerId, followingId: targetId });
+  } catch (notifyError) {
+    console.error('[notify] 关注通知发送失败（不影响关注结果）:', notifyError);
   }
 
   return buildFollowCounts(targetId, followerId, true);

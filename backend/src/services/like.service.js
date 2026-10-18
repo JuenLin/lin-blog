@@ -6,6 +6,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../utils/prisma.js';
 import { CODE, httpError } from '../utils/response.js';
 import { requireArticleForWrite } from './article.service.js';
+import { notifyOnLike } from './notification.service.js';
 
 /**
  * 把「重复点赞」翻译成 409。
@@ -35,6 +36,14 @@ export async function likeArticle(articleId, userId) {
     }
 
     throw error;
+  }
+
+  // 第 8 批：新点赞成功 → 通知文章作者（自赞已被 notifyOnLike 内部拦截）。
+  // 包裹 try/catch：通知是附加价值，失败不影响「已点赞」的返回。
+  try {
+    await notifyOnLike({ articleId, likerId: userId });
+  } catch (notifyError) {
+    console.error('[notify] 点赞通知发送失败（不影响点赞结果）:', notifyError);
   }
 
   return {
