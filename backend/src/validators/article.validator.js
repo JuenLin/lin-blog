@@ -44,28 +44,75 @@ export const tagsSchema = z
   .array(tagNameSchema)
   .max(ARTICLE_TAGS_MAX, `每篇文章最多 ${ARTICLE_TAGS_MAX} 个标签`);
 
-export const createArticleSchema = z.object({
-  title: titleSchema,
-  content: contentSchema,
-  // 可选；省略时由 .default 补成 '未分类'（与 DB 默认值一致）。
-  category: z.enum(ARTICLE_CATEGORIES).optional().default('未分类'),
-  // 第 6 批：省略或传 PUBLISHED 都是发布；传 DRAFT 创建草稿（仅作者草稿箱可见）。
-  status: z.enum(ARTICLE_STATUSES).optional().default('PUBLISHED'),
-  // 第 7 批：省略 = 空数组（新文章无标签）。
-  tags: tagsSchema.optional().default([]),
-});
+/* ---------- 第 10 批：系列绑定 ---------- */
+
+// seriesId / seriesOrder：均可空、均可缺省，构成「三态」的一半。
+// - 不出现（undefined）：保留原值 / 新建时不绑系列
+// - null：解绑（seriesId）或自动排序（seriesOrder）
+// - 正整数：绑定 / 指定序号
+// 用 .nullable().optional() 把「没传」与「显式传 null」区分开——三态语义的前提
+// （docs/API.md 第 10 批章节，与 PUT /users/me 的 avatar/bio 同范式）。
+const seriesIdSchema = z.number().int('必须是整数').positive('必须是正整数').nullable().optional();
+const seriesOrderSchema = z.number().int('必须是整数').positive('必须是正整数').nullable().optional();
+
+export const createArticleSchema = z
+  .object({
+    title: titleSchema,
+    content: contentSchema,
+    // 可选；省略时由 .default 补成 '未分类'（与 DB 默认值一致）。
+    category: z.enum(ARTICLE_CATEGORIES).optional().default('未分类'),
+    // 第 6 批：省略或传 PUBLISHED 都是发布；传 DRAFT 创建草稿（仅作者草稿箱可见）。
+    status: z.enum(ARTICLE_STATUSES).optional().default('PUBLISHED'),
+    // 第 7 批：省略 = 空数组（新文章无标签）。
+    tags: tagsSchema.optional().default([]),
+    // 第 10 批：省略或 null = 不加入系列；传了则 service 层校验归属（他人 403 / 不存在 404）。
+    seriesId: seriesIdSchema,
+    // 第 10 批：省略 = 服务端自动 max+1；显式传值 = 指定序号（冲突 409）。
+    seriesOrder: seriesOrderSchema,
+  })
+  // 跨字段规则：seriesOrder 不能脱离 seriesId 单独出现（新建文章没有「当前系列」可放）。
+  // 放 zod 层而不是 service：这是字段组合格式问题，400/40000 与其他字段校验同口径。
+  .superRefine((value, ctx) => {
+    if (value.seriesOrder != null && value.seriesId == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'seriesOrder 需要与 seriesId 同时传递',
+        path: ['seriesOrder'],
+      });
+    }
+  });
 
 // PUT 是全量更新，title 与 content 都必填，校验规则与创建一致。
-export const updateArticleSchema = z.object({
-  title: titleSchema,
-  content: contentSchema,
-  // 可选且**无 default**：不传 = 保留库中原有值（service 层据此跳过该字段）。
-  category: z.enum(ARTICLE_CATEGORIES).optional(),
-  // 第 6 批：省略 = 保留原 status；传 DRAFT/PUBLISHED 显式切换。
-  status: z.enum(ARTICLE_STATUSES).optional(),
-  // 第 7 批三态（与 category 一致）：不传 = 保留原关联；传（含 []）= 全量替换。
-  tags: tagsSchema.optional(),
-});
+export const updateArticleSchema = z
+  .object({
+    title: titleSchema,
+    content: contentSchema,
+    // 可选且**无 default**：不传 = 保留库中原有值（service 层据此跳过该字段）。
+    category: z.enum(ARTICLE_CATEGORIES).optional(),
+    // 第 6 批：省略 = 保留原 status；传 DRAFT/PUBLISHED 显式切换。
+    status: z.enum(ARTICLE_STATUSES).optional(),
+    // 第 7 批三态（与 category 一致）：不传 = 保留原关联；传（含 []）= 全量替换。
+    tags: tagsSchema.optional(),
+    // 第 10 批三态（两字段是一个逻辑单元，docs/API.md 该节）：
+    //   都不传 = 保留原绑定；seriesId=null = 解绑（service 同时清 seriesOrder）；
+    //   seriesId=值 = 绑定/换系列（service 校验归属）；seriesOrder 单独传 = 改序号
+    //   （文章已绑系列时）或 400（未绑系列时，service 判）。
+    seriesId: seriesIdSchema,
+    seriesOrder: seriesOrderSchema,
+  })
+  .superRefine((value, ctx) => {
+    // PUT 允许 seriesOrder 单独出现（改序号 = 系列内重排的入口），因此这里
+    // **不做** create 那条组合校验；「文章未绑系列」属业务状态，放 service 层判 400。
+    // 唯一在 zod 层拦的是：seriesId 显式解绑（null）却又传了 seriesOrder——
+    // 解绑时序号必然被双清，传值是自相矛盾的请求，直接 400 而不是静默忽略。
+    if (value.seriesId === null && value.seriesOrder != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'seriesId 为 null（解绑）时不能同时设置 seriesOrder',
+        path: ['seriesOrder'],
+      });
+    }
+  });
 
 // 第 6 批：自动保存草稿请求体。
 //

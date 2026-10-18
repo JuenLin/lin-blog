@@ -19,6 +19,13 @@ export const UPLOAD_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.ur
 export const AVATAR_SUBDIR = 'avatars';
 
 /**
+ * 第 10 批：文章配图子目录名：backend/uploads/articles/{userId}/ 。
+ * 与 avatars 拆两个一级目录：头像与文章图的生命周期不同（头像随用户、文章图随文章），
+ * 分开后将来做孤儿文件清理（ROADMAP 插队候选）可按目录定位，不用按路径前缀猜。
+ */
+export const ARTICLE_SUBDIR = 'articles';
+
+/**
  * 存进 users.avatar 的**站内相对路径前缀**，也是 URL 前缀（静态目录就挂在 /uploads）。
  * 两者同值不是巧合：DB 存的就是可直接拼进 <img src> 的相对 URL。
  */
@@ -26,6 +33,9 @@ export const AVATAR_URL_PREFIX = '/uploads/';
 
 /** multipart 里头像文件的字段名，前后端必须一致 */
 export const AVATAR_FIELD = 'avatar';
+
+/** 第 10 批：multipart 里文章配图文件的字段名，前后端必须一致 */
+export const ARTICLE_FIELD = 'image';
 
 /** 单文件大小上限：2 MB */
 export const MAX_AVATAR_SIZE = 2 * 1024 * 1024;

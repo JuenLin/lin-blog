@@ -56,6 +56,11 @@ const ARTICLE_DETAIL_SELECT = {
   // buildOrderBy 直映射 `{ viewCount: order }`，不需要进 ARTICLE_SORT_MAP。
   // 不建索引（高频写入列，理由见 docs/DB.md「第 9 批」）。
   viewCount: true,
+  // 第 10 批：系列绑定两列。透出到详情响应（编辑器回填「加入系列」下拉与序号、
+  // 详情页据此决定是否拉 GET /api/series/:id 渲染系列横幅）。
+  // **列表（toArticleListItem）刻意不带**：横幅只在详情页，列表带这两列纯属浪费。
+  seriesId: true,
+  seriesOrder: true,
   author: {
     select: AUTHOR_SELECT,
   },
@@ -117,6 +122,10 @@ function toArticleDetail(article) {
     author: toAuthor(article.author),
     likeCount: article._count ? article._count.likes : 0,
     viewCount: article.viewCount,
+    // 第 10 批：系列绑定态。null = 未加入任何系列（前端据此跳过系列横幅请求）。
+    // seriesOrder 可能为 null（未绑系列时）；绑定时恒为正整数（自动分配也填值）。
+    seriesId: article.seriesId ?? null,
+    seriesOrder: article.seriesOrder ?? null,
     createdAt: article.createdAt,
     updatedAt: article.updatedAt,
   };
@@ -144,8 +153,13 @@ function toArticleListItem(article) {
  * 发布文章。作者取 token 中的 userId，不接受请求体里的作者字段。
  *
  * 第 7 批：tags 处理（upsert 标签 + 建关联）与文章创建同事务，失败整体回滚。
+ * 第 10 批：seriesId/seriesOrder 绑定（归属校验 + 自动 max+1）同事务。
  */
 export async function createArticle(payload, authorId) {
+  // 先算系列绑定再开事务：归属校验（404/403）与序号冲突（409）都要在写文章前拦下，
+  // 失败了整篇不创建（与 title 校验失败同口径，不留半篇文章）。
+  const binding = await resolveSeriesBindingForCreate(payload, authorId);
+
   return prisma.$transaction(async (tx) => {
     const article = await tx.article.create({
       data: {
@@ -155,6 +169,9 @@ export async function createArticle(payload, authorId) {
         // 第 6 批：status 省略或 PUBLISHED 都是发布；DRAFT 创建草稿。
         status: payload.status ?? 'PUBLISHED',
         authorId,
+        // 第 10 批：未传 seriesId 时两列都是 null（不加入系列）。
+        seriesId: binding.seriesId,
+        seriesOrder: binding.seriesOrder,
       },
       select: { id: true },
     });
@@ -206,6 +223,182 @@ async function applyTags(tx, articleId, tagNames) {
       data: tags.map((tag) => ({ articleId, tagId: tag.id })),
     });
   }
+}
+
+/* ---------- 第 10 批：系列绑定（seriesId / seriesOrder） ---------- */
+
+/**
+ * 系列归属校验：系列必须存在（404）且是本人创建的（403）。
+ *
+ * **绑定侧 ADMIN 无例外**（与 PUT /api/series/:id 的「作者或 ADMIN」刻意不同）——
+ * ADMIN 能改任何系列的元信息，但不能把别人的文章绑进自己的系列。
+ * 先查存在再判归属：不通过 403/404 的差异枚举系列 id。
+ *
+ * @param {object} tx Prisma 客户端或事务客户端
+ * @param {number} seriesId 已过 zod 校验的正整数
+ * @param {number} userId 来自 token
+ * @returns {Promise<{id: number}>} 校验通过的系列
+ */
+async function requireOwnSeries(tx, seriesId, userId) {
+  const series = await tx.series.findUnique({
+    where: { id: seriesId },
+    select: { id: true, authorId: true },
+  });
+
+  if (!series) {
+    throw httpError(404, CODE.NOT_FOUND, '系列不存在');
+  }
+  if (series.authorId !== userId) {
+    throw httpError(403, CODE.FORBIDDEN, '只能加入自己的系列');
+  }
+
+  return series;
+}
+
+/**
+ * 序号冲突校验：同系列内 seriesOrder 唯一（应用层保证，不建复合唯一索引）。
+ *
+ * `excludeArticleId`：改序号时必须排除自己（否则「设成自己当前的序号」也报冲突）。
+ * 软删文章同样占位（deleteMany 不过滤 deletedAt）——「槽位被占」按行存在判定，
+ * 不区分文章状态，行为可预期；软删文章空出的槽位不自动回收，挂 ROADMAP 不管。
+ *
+ * @param {object} tx Prisma 客户端或事务客户端
+ * @param {number} seriesId
+ * @param {number} seriesOrder
+ * @param {number|null} excludeArticleId 冲突判定时排除的文章 id（改序号场景传自己）
+ * @returns {Promise<boolean>} true = 无冲突可写入
+ */
+async function isSeriesOrderFree(tx, seriesId, seriesOrder, excludeArticleId = null) {
+  const taken = await tx.article.findFirst({
+    where: {
+      seriesId,
+      seriesOrder,
+      ...(excludeArticleId != null ? { id: { not: excludeArticleId } } : {}),
+    },
+    select: { id: true },
+  });
+
+  return taken == null;
+}
+
+/**
+ * 取某系列当前最大序号（含软删行占位），+1 即自动分配值。
+ * 空系列（或全未绑文章）→ 1。
+ */
+async function nextSeriesOrder(tx, seriesId) {
+  const aggregated = await tx.article.aggregate({
+    where: { seriesId },
+    _max: { seriesOrder: true },
+  });
+
+  return (aggregated._max.seriesOrder ?? 0) + 1;
+}
+
+/**
+ * 新建文章时的系列绑定解析（createArticle 调用，事务外）。
+ *
+ * - seriesId 缺省 / null → { null, null }（不加入系列）
+ * - seriesId 有值 → 归属校验（404/403）→ seriesOrder 缺省/null 时自动 max+1，
+ *   显式传值时查冲突（409）
+ *
+ * @param {object} payload 已过 zod 的请求体
+ * @param {number} userId 来自 token
+ * @returns {Promise<{seriesId: number|null, seriesOrder: number|null}>}
+ */
+async function resolveSeriesBindingForCreate(payload, userId) {
+  const { seriesId, seriesOrder } = payload;
+
+  if (seriesId == null) {
+    return { seriesId: null, seriesOrder: null };
+  }
+
+  await requireOwnSeries(prisma, seriesId, userId);
+
+  if (seriesOrder == null) {
+    return { seriesId, seriesOrder: await nextSeriesOrder(prisma, seriesId) };
+  }
+
+  if (!(await isSeriesOrderFree(prisma, seriesId, seriesOrder))) {
+    throw httpError(409, CODE.CONFLICT, '系列内序号已被占用，请换一个序号');
+  }
+
+  return { seriesId, seriesOrder };
+}
+
+/**
+ * 编辑文章时的系列绑定解析（updateArticle 在事务内调用）。
+ *
+ * 三态矩阵（docs/API.md 第 10 批节，两字段是一个逻辑单元）：
+ *
+ * | seriesId | seriesOrder | 行为 |
+ * |---|---|---|
+ * | 不传 | 不传 | 保留原绑定（data 里两列都不写） |
+ * | null | （任意） | 解绑：两列同时置 NULL（zod 已拦「null + 非 null 组合」） |
+ * | 值 | 不传/null | 换系列/新绑定：校验归属后，序号自动 max+1（旧序号不随迁） |
+ * | 值 | 值 | 绑定并指定序号：冲突 409 |
+ * | 不传 | 值 | 改序号（系列内重排）：文章未绑系列 → 400；冲突 409 |
+ * | 不传 | null | 不指定序号：自动排到当前系列末尾 |
+ *
+ * @param {object} tx 事务客户端（与文章更新同事务，任一步失败整体回滚）
+ * @param {object} payload 已过 zod 的请求体
+ * @param {{id: number, seriesId: number|null, seriesOrder: number|null}} current 文章当前绑定态
+ * @param {number} userId 来自 token
+ * @returns {Promise<{seriesId?: number|null, seriesOrder?: number|null}>} 要写进 article.update 的字段（空对象 = 不动）
+ */
+async function resolveSeriesBindingForUpdate(tx, payload, current, userId) {
+  const { seriesId, seriesOrder } = payload;
+  const hasSeriesId = seriesId !== undefined;
+  const hasSeriesOrder = seriesOrder !== undefined;
+
+  // 都不传：保留原绑定。
+  if (!hasSeriesId && !hasSeriesOrder) {
+    return {};
+  }
+
+  // 解绑：双清（series_id 与 series_order 同时 NULL，不留孤儿序号）。
+  // zod 已保证 seriesId=null 时 seriesOrder 不同时传值，这里直接双清即可。
+  if (hasSeriesId && seriesId === null) {
+    return { seriesId: null, seriesOrder: null };
+  }
+
+  // 绑定 / 换系列。
+  if (hasSeriesId) {
+    await requireOwnSeries(tx, seriesId, userId);
+
+    // 显式序号：冲突 409（排除自己——「换到别的系列」时自己不在新系列里，无排除必要；
+    // 但「留在原系列改序号」走下面的分支，这里对换系列场景做统一排除也无副作用）。
+    if (seriesOrder != null) {
+      if (!(await isSeriesOrderFree(tx, seriesId, seriesOrder, current.id))) {
+        throw httpError(409, CODE.CONFLICT, '系列内序号已被占用，请换一个序号');
+      }
+      return { seriesId, seriesOrder };
+    }
+
+    // 省略序号：留在原系列 → 保留原序号（缺 null 时补自动）；换系列 → 新系列 max+1
+    // （旧序号属于旧系列，不迁移）。
+    if (seriesId === current.seriesId) {
+      return { seriesId, seriesOrder: current.seriesOrder ?? (await nextSeriesOrder(tx, seriesId)) };
+    }
+
+    return { seriesId, seriesOrder: await nextSeriesOrder(tx, seriesId) };
+  }
+
+  // 只剩 seriesOrder 单独出现（seriesId 不传）。
+  if (current.seriesId == null) {
+    throw httpError(400, CODE.PARAM_ERROR, '文章未加入任何系列，不能单独设置序号');
+  }
+
+  // seriesOrder = null：不指定序号 → 自动排到当前系列末尾。
+  if (seriesOrder === null) {
+    return { seriesOrder: await nextSeriesOrder(tx, current.seriesId) };
+  }
+
+  // 改序号：冲突 409（排除自己）。
+  if (!(await isSeriesOrderFree(tx, current.seriesId, seriesOrder, current.id))) {
+    throw httpError(409, CODE.CONFLICT, '系列内序号已被占用，请换一个序号');
+  }
+
+  return { seriesOrder };
 }
 
 /**
@@ -345,6 +538,9 @@ export async function updateArticle(id, payload, userId) {
       category: true,
       authorId: true,
       status: true,
+      // 第 10 批：系列绑定三态的判定基准（当前绑在哪个系列、序号多少）。
+      seriesId: true,
+      seriesOrder: true,
     },
   });
 
@@ -376,6 +572,12 @@ export async function updateArticle(id, payload, userId) {
     if (payload.status !== undefined) {
       data.status = payload.status;
     }
+
+    // 第 10 批：系列绑定三态（与 category / status / tags 同范式，两字段一个逻辑单元）。
+    // 归属校验（404/403）与序号冲突（409）都在事务内、写文章之前抛，
+    // 失败整体回滚——不会出现「正文更新了、系列绑定失败」的半态。
+    const seriesBinding = await resolveSeriesBindingForUpdate(tx, payload, current, userId);
+    Object.assign(data, seriesBinding);
 
     await tx.article.update({ where: { id }, data });
 
@@ -770,4 +972,4 @@ export async function restoreArticle(id, revisionId, userId) {
  * 注意：这三个名字**不要当成对外接口的稳定契约**，它们只在后端内部使用，
  * 不影响 docs/API.md 定义的任何响应结构。
  */
-export { toArticleListItem, ARTICLE_DETAIL_SELECT, ARTICLE_SORT_MAP, AUTHOR_SELECT };
+export { toArticleListItem, ARTICLE_DETAIL_SELECT, ARTICLE_SORT_MAP, AUTHOR_SELECT, buildSummary };

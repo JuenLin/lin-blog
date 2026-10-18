@@ -71,6 +71,8 @@ model User {
   notifications Notification[] @relation("NotificationActor")
   // 第 9 批：作为收藏人被引用（「用户本人」而非作者角色）。
   bookmarks     Bookmark[]
+  // 第 10 批（2026-10-18 用户批准）：作为系列作者被引用。
+  series        Series[]
 
   @@map("users")
 }
@@ -100,6 +102,13 @@ model Article {
   // 只由 POST /api/articles/:id/view 以 prisma increment 原子 +1。
   // 与 likeCount（likes 表实时 COUNT）是两种口径；不建索引（高频写入列，见 docs/DB.md）。
   viewCount   Int           @default(0) @map("view_count")
+  // 第 10 批（2026-10-18 用户批准）：所属系列与系列内序号。均可空（NULL=未加入系列）。
+  // 外键 ON DELETE SET NULL：删系列只解绑文章、不删文章（全库第一条 SET NULL 外键）。
+  // seriesOrder 同系列唯一由应用层保证（409 冲突拒绝），不建复合唯一索引
+  // （可空列在 MySQL 下不可靠，见 docs/DB.md「series（系列表）」）。
+  seriesId    Int?          @map("series_id")
+  series      Series?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  seriesOrder Int?          @map("series_order")
 
   @@index([deletedAt, createdAt])
   @@index([deletedAt, updatedAt])
@@ -260,4 +269,24 @@ model Bookmark {
   // user_id 侧不另建索引：唯一索引左前缀已承担（同 likes 纪律）。
   @@index([articleId])
   @@map("bookmarks")
+}
+
+// 第 10 批（2026-10-18 用户批准）：文章系列（专栏）。
+// 纯组织容器：**刻意不设 deleted_at / updated_at 之外的软删列**——删除即物理删除
+// （DELETE /api/series/:id），文章经 articles.series_id 的 SET NULL 外键自动解绑，
+// 应用层同时显式清 series_order（双清，见 docs/DB.md「series（系列表）」）。
+// seriesOrder 同系列唯一由应用层保证：冲突 409/40900 拒绝，新建省略自动 max+1，
+// 不做服务端自动重排（用户可能有意识想插到中间，见 docs/API.md 第 10 批章节）。
+model Series {
+  id          Int       @id @default(autoincrement())
+  title       String    @db.VarChar(50)
+  description String?   @db.VarChar(200)
+  authorId    Int       @map("author_id")
+  author      User      @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  articles    Article[]
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // author_id 侧由外键自动索引承担（GET /users/:id/series 按作者查），不另建。
+  @@map("series")
 }

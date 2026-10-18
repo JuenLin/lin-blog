@@ -9,6 +9,7 @@ import { bookmarkArticleRouter } from './bookmark.routes.js';
 import adminRoutes from './admin.routes.js';
 import tagRoutes from './tag.routes.js';
 import notificationRoutes from './notification.routes.js';
+import { seriesRouter, userSeriesRouter } from './series.routes.js';
 
 const router = Router();
 
@@ -42,6 +43,13 @@ router.use('/tags', tagRoutes);
 
 // 业务路由：通知中心（第 8 批）。/api/notifications 四个接口，全部需登录。
 router.use('/notifications', notificationRoutes);
+
+// 业务路由：专栏系列（第 10 批）。/api/series 五个接口（CRUD + 用户系列列表），
+// 其中「某用户的系列列表」是用户子资源（/api/users/:id/series），
+// 用 userSeriesRouter 挂到 /users 下——路由定义仍留在 series.routes.js，
+// 与 series 的 controller / service 同模块，避免改系列动三个文件。
+router.use('/series', seriesRouter);
+router.use('/users', userSeriesRouter);
 
 // 业务路由：管理端（第 5 批）。/api/admin/* 全部走 auth → requireAdmin 链，
 // 与 /api/users/* 是两套（管理端用户管理不走 /api/users，见 docs/API.md）。

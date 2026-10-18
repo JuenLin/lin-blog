@@ -17,13 +17,21 @@ import {
   autoSave,
   revisions,
   restore,
+  uploadImage,
 } from '../controllers/article.controller.js';
 import { recordView } from '../controllers/view.controller.js';
+import { articleImageUpload } from '../services/upload.service.js';
 
 const router = Router();
 
 // 挂载在 /api/articles。
-// 需要登录的接口：发布 / 编辑 / 删除；列表与详情公开。
+// 需要登录的接口：发布 / 编辑 / 删除 / 上传配图；列表与详情公开。
+
+// 第 10 批：文章配图上传。必须注册在 `/:id` 之前——`upload-image` 是两段路径，
+// 与 `/:id` 单段不会误匹配，但「先注册具体的、再注册带参数的」是统一纪律
+// （同 auto-save）。中间件顺序 auth → multer：未登录不进入 multipart 解析
+// （解析要收完整请求体，等于白送放大攻击面）。
+router.post('/upload-image', auth, articleImageUpload, uploadImage);
 
 // 第 6 批：自动保存草稿。必须注册在 `/:id` 之前——否则 `auto-save` 会被 `/:id`
 // 的 articleIdParamSchema 当成 id 去 coerce('auto-save') → NaN → 400。

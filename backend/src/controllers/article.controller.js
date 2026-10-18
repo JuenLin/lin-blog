@@ -8,6 +8,8 @@ import {
   listRevisions as listRevisionsService,
   restoreArticle as restoreArticleService,
 } from '../services/article.service.js';
+import { toUploadUrl } from '../services/upload.service.js';
+import { CODE, httpError } from '../utils/response.js';
 import { sendOk, sendCreated } from '../utils/response.js';
 
 // controller 只做三件事：取参数、调 service、统一响应。
@@ -107,6 +109,29 @@ export async function restore(req, res, next) {
     );
 
     return sendOk(res, data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/* ---------- 第 10 批：文章配图上传 ---------- */
+
+/**
+ * 上传文章配图。对应 docs/API.md 的 POST /api/articles/upload-image。
+ *
+ * **只落盘、不写库**：返回站内 URL，由前端插入正文 Markdown（![](url)），
+ * 随文章 content 一起存储。articles 表不加图片列——图片就是正文的一部分。
+ *
+ * req.file 为 undefined 的两种路径：① 非 multipart 请求（multer 直接放行）；
+ * ② multipart 但没带文件。都按 400 / 40000 处理（字段名规则见 multer 错误翻译）。
+ */
+export async function uploadImage(req, res, next) {
+  try {
+    if (!req.file) {
+      throw httpError(400, CODE.PARAM_ERROR, '请选择要上传的图片（字段名 image）');
+    }
+
+    return sendOk(res, { url: toUploadUrl(req.file) });
   } catch (error) {
     return next(error);
   }
