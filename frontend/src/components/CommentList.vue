@@ -108,6 +108,18 @@
                   size="small"
                   @click="handleDelete(item)"
                 >删除</el-button>
+                <!-- 第 12 批：举报按钮。登录 + 非评论作者即可（文章作者也能举报
+                     他人文章下的恶意评论，用户拍板 4）；自己的评论没有举报入口。 -->
+                <el-button
+                  v-if="canReport(item)"
+                  class="comment-report-btn"
+                  link
+                  type="warning"
+                  size="small"
+                  data-testid="comment-report"
+                  :data-comment-id="item.id"
+                  @click="openCommentReport(item)"
+                >举报</el-button>
               </div>
 
               <!-- 第 7 批：孤儿降级前缀 —— 父评论不在当前页（分页拆树），靠后端给的
@@ -174,6 +186,16 @@
                       size="small"
                       @click="handleDelete(reply)"
                     >删除</el-button>
+                    <el-button
+                      v-if="canReport(reply)"
+                      class="comment-report-btn"
+                      link
+                      type="warning"
+                      size="small"
+                      data-testid="comment-report"
+                      :data-comment-id="reply.id"
+                      @click="openCommentReport(reply)"
+                    >举报</el-button>
                   </div>
                   <div class="comment-content">{{ reply.content }}</div>
                 </div>
@@ -209,6 +231,25 @@
         />
       </template>
     </template>
+
+    <!-- 第 12 批：举报评论 dialog（顶楼 / 回复共用一个）。理由选填 ≤200；
+         409（重复举报）/ 404（评论已不可见）走拦截器统一报错文案。 -->
+    <el-dialog v-model="commentReportVisible" title="举报评论" width="420px">
+      <p class="report-tip">如果这条评论存在违规内容，请告诉我们。理由选填，最多 200 字。</p>
+      <el-input
+        v-model="commentReportReason"
+        type="textarea"
+        :rows="4"
+        maxlength="200"
+        show-word-limit
+        placeholder="填写举报理由（选填）"
+        data-testid="comment-report-reason"
+      />
+      <template #footer>
+        <el-button @click="commentReportVisible = false">取消</el-button>
+        <el-button type="primary" :loading="commentReporting" data-testid="comment-report-submit" @click="submitCommentReport">提交举报</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -216,6 +257,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { listComments, deleteComment, createComment, likeComment, unlikeComment } from '../api/comment.js';
+import { createReport } from '../api/report.js';
 import { useUserStore } from '../stores/user.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { formatAbsoluteTime, formatRelativeTime, resolveAvatar } from '../utils/format.js';
@@ -452,6 +494,47 @@ function canDelete(item) {
   return false;
 }
 
+// ── 第 12 批：举报评论 ──
+// 登录 + 非评论作者即可（文章作者也能举报他人评论，用户拍板 4）；
+// 自己的评论没有举报入口（作者删自己的评论走上面的删除，后端同口径 400 兜底）。
+const commentReportVisible = ref(false);
+const commentReportReason = ref('');
+const commentReporting = ref(false);
+// 正在举报的评论 id（null = 关闭）。顶楼 / 回复共用一个 dialog。
+const commentReportTargetId = ref(null);
+
+function canReport(item) {
+  const me = userStore.user;
+  if (!me) return false;
+  return item.author?.id != null && item.author.id !== me.id;
+}
+
+function openCommentReport(item) {
+  commentReportTargetId.value = item.id;
+  commentReportReason.value = '';
+  commentReportVisible.value = true;
+}
+
+async function submitCommentReport() {
+  if (commentReportTargetId.value == null || commentReporting.value) return;
+  commentReporting.value = true;
+
+  try {
+    await createReport({
+      targetType: 'COMMENT',
+      targetId: commentReportTargetId.value,
+      reason: commentReportReason.value.trim() || undefined,
+    });
+
+    commentReportVisible.value = false;
+    ElMessage.success('已收到举报，我们会尽快处理');
+  } catch (error) {
+    ElMessage.error(error.message || '举报失败，请稍后重试');
+  } finally {
+    commentReporting.value = false;
+  }
+}
+
 // 二次确认 + 删除。
 // 直接 await deleteComment：request.js 拦截器约定 code !== 0 抛 Error（走外层 catch 统一提示），
 // 成功时 res 即 data（此处为 null），故不判 code（判 res.code 会访问 null.code 抛 TypeError 被吞）。
@@ -675,6 +758,17 @@ defineExpose({
 
 .comment-delete-btn {
   margin-left: 0;
+}
+
+.comment-report-btn {
+  margin-left: 0;
+}
+
+/* 第 12 批：举报 dialog 顶部说明文字。 */
+.report-tip {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .comment-content {

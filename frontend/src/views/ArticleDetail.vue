@@ -114,6 +114,10 @@
             <el-button link type="primary" @click="goEdit">编辑</el-button>
             <el-button link type="danger" @click="handleDelete">删除</el-button>
           </template>
+
+          <!-- 第 12 批：举报入口。登录 + 非作者才显示（作者删自己的内容走上面的删除，
+               不走举报；未登录不显示入口）。link 弱按钮不抢点赞 / 收藏的视觉。 -->
+          <el-button v-if="canReport" link type="warning" data-testid="article-report-btn" @click="openReport">举报</el-button>
         </div>
 
         <!-- 第 7 批：标签行。无标签不渲染；chip 可点 → 广场 ?tag= 筛选。
@@ -264,6 +268,25 @@
         </div>
       </template>
     </el-drawer>
+
+    <!-- 第 12 批：举报 dialog。理由选填 ≤200（后端同校验）；提交成功只提示不关详情页。
+         409（重复举报）/ 404（内容已不可见）走拦截器统一报错文案。 -->
+    <el-dialog v-model="reportVisible" title="举报文章" width="420px" :append-to-body="true">
+      <p class="report-tip">如果这篇文章存在违规内容，请告诉我们。理由选填，最多 200 字。</p>
+      <el-input
+        v-model="reportReason"
+        type="textarea"
+        :rows="4"
+        maxlength="200"
+        show-word-limit
+        placeholder="填写举报理由（选填）"
+        data-testid="article-report-reason"
+      />
+      <template #footer>
+        <el-button @click="reportVisible = false">取消</el-button>
+        <el-button type="primary" :loading="reporting" data-testid="article-report-submit" @click="submitReport">提交举报</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -275,6 +298,7 @@ import { deleteArticle, getArticle, listArticles, listRevisions, recordArticleVi
 import { getSeries } from '../api/series.js';
 import { likeArticle, unlikeArticle, getArticleLiked } from '../api/like.js';
 import { bookmarkArticle, unbookmarkArticle, getArticleBookmarked } from '../api/bookmark.js';
+import { createReport } from '../api/report.js';
 import { formatAbsoluteTime, formatRelativeTime, getReadingTime } from '../utils/format.js';
 import { useUserStore } from '../stores/user.js';
 import ArticleContent from '../components/ArticleContent.vue';
@@ -379,6 +403,40 @@ const isAuthor = computed(() => {
 
   return Boolean(userStore.user && author && userStore.user.id === author.id);
 });
+
+// ── 第 12 批：举报文章 ──
+const reportVisible = ref(false);
+const reportReason = ref('');
+const reporting = ref(false);
+
+// 登录 + 非作者才显示入口（与评论侧同口径；未登录读者没有举报的身份落库，不显示）。
+const canReport = computed(() => Boolean(article.value && userStore.isLogin && !isAuthor.value));
+
+function openReport() {
+  reportReason.value = '';
+  reportVisible.value = true;
+}
+
+async function submitReport() {
+  if (!article.value || reporting.value) return;
+  reporting.value = true;
+
+  try {
+    await createReport({
+      targetType: 'ARTICLE',
+      targetId: article.value.id,
+      reason: reportReason.value.trim() || undefined,
+    });
+
+    reportVisible.value = false;
+    ElMessage.success('已收到举报，我们会尽快处理');
+  } catch (error) {
+    // 409 重复举报 / 404 内容已不可见 / 400 举报自己，统一走后端 message。
+    ElMessage.error(error.message || '举报失败，请稍后重试');
+  } finally {
+    reporting.value = false;
+  }
+}
 
 // ④ + 方案 D：阅读时长（详情页拿全文 content，是精确值）+ 相对/绝对时间。
 const readingTime = computed(() => getReadingTime(article.value && article.value.content));
@@ -798,6 +856,13 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 第 12 批：举报 dialog 顶部说明文字。 */
+.report-tip {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .article-detail {
   padding: 24px 16px 48px;
 }

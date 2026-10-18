@@ -311,6 +311,11 @@ function buildText(n) {
       return `${actor} 赞了你的评论（《${n.targetTitle || '内容已删除'}》）`;
     case 'MENTION':
       return `${actor} 在《${n.targetTitle || '内容已删除'}》中提到了你`;
+    // 第 12 批：举报处理结果（拆两值不拆一值——单值无法区分「删了」和「没删」）。
+    case 'REPORT_RESOLVED':
+      return `你举报的内容已核实处理（${n.targetTitle ? `《${n.targetTitle}》` : '内容已删除'}）`;
+    case 'REPORT_REJECTED':
+      return `你举报的内容经核实未违规（${n.targetTitle ? `《${n.targetTitle}》` : '内容已删除'}）`;
     default:
       return `${actor} 与你互动了`;
   }

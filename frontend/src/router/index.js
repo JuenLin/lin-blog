@@ -29,6 +29,7 @@ const AdminStatsView = () => import('../views/AdminStats.vue');
 const AdminUsersView = () => import('../views/AdminUsers.vue');
 const AdminArticlesView = () => import('../views/AdminArticles.vue');
 const AdminCommentsView = () => import('../views/AdminComments.vue');
+const AdminReportsView = () => import('../views/AdminReports.vue');
 
 // meta.layout 决定 App.vue 是否渲染 Header / Footer：
 // - 默认（不写）：带 Header + Footer
@@ -185,6 +186,11 @@ const routes = [
         path: 'comments',
         name: 'admin-comments',
         component: AdminCommentsView,
+      },
+      {
+        path: 'reports',
+        name: 'admin-reports',
+        component: AdminReportsView,
       },
     ],
   },

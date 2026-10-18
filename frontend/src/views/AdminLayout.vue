@@ -13,6 +13,7 @@
         <router-link class="admin-link" :to="{ name: 'admin-users' }">用户管理</router-link>
         <router-link class="admin-link" :to="{ name: 'admin-articles' }">文章管理</router-link>
         <router-link class="admin-link" :to="{ name: 'admin-comments' }">评论管理</router-link>
+        <router-link class="admin-link" :to="{ name: 'admin-reports' }">举报管理</router-link>
       </nav>
 
       <router-link class="admin-back" :to="{ name: 'home' }">← 返回博客</router-link>
