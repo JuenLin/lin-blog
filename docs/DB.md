@@ -30,8 +30,10 @@ SHADOW_DATABASE_URL="mysql://workbuddy_dev:你的密码@localhost:3306/workbuddy
 |---|---|---|
 | `users` | 用户表 | 已建（迁移 `20260929123151_init`），第九批新增 `avatar` / `bio` 两列（迁移 `20261003080727_add_user_avatar_bio`），第 5 批新增 `role` / `status` 两列（迁移 `add_user_role_status`） |
 | `articles` | 文章表 | 已建（迁移 `20260929144738_blog_articles_comments`），分类功能新增 `category` 一列（迁移 `20261004145107_add_article_category`） |
-| `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`） |
+| `comments` | 评论表 | 已建（迁移 `20260929144738_blog_articles_comments`），第 7 批新增 `parent_id` 一列（同批迁移 `20261018014846_add_tags_and_article_tags`） |
 | `likes` | 文章点赞表（第十批） | 已建（迁移 `20261003140221_add_user_likes`） |
+| `tags` | 标签表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
+| `article_tags` | 文章-标签中间表（第 7 批） | 已建（迁移 `add_tags_and_article_tags`） |
 | `follows` | 关注关系表（第 4 批） | 待建（迁移待执行，草案见下方「follows（关注表）」小节） |
 | `_prisma_migrations` | Prisma 迁移记录表，自动生成 | 已存在 |
 
@@ -215,6 +217,7 @@ Prisma 模型名 `Comment`，`@@map("comments")`。
 | createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
 | updatedAt | updated_at | DATETIME(3) | 否 | 无 | 更新时间，Prisma `@updatedAt` 应用层维护 |
 | deletedAt | deleted_at | DATETIME(3) | 是 | NULL | 软删除时间，NULL 表示未删除 |
+| parentId | parent_id | INT | 是 | NULL | **第 7 批新增**：父评论 id，`NULL` = 顶层评论；非空 = 对该评论的回复（**两层硬限制**：只允许指向顶层评论，应用层校验）；外键 → `comments.id` `ON DELETE CASCADE ON UPDATE CASCADE` |
 
 `deletedAt` 保留的依据是契约 §9「每张业务表建议包含」的通用字段，且 `whereNotDeleted()` 统一覆盖可避免遗漏；MVP 无评论删除接口，该列当前恒为 NULL，成本可忽略。
 
@@ -223,7 +226,8 @@ Prisma 模型名 `Comment`，`@@map("comments")`。
 | 索引名 | 类型 | 列 | 用途 |
 |---|---|---|---|
 | PRIMARY | 主键 | id | |
-| comments_article_id_created_at_idx | 普通 | article_id, created_at | 「某篇文章的评论列表」主查询：`article_id = ?` + `created_at desc` + 分页 |
+| comments_article_id_created_at_idx | 普通 | article_id, created_at | 「某篇文章的评论列表」主查询：`article_id = ?` + `created_at` + 分页 |
+| comments_parent_id_idx | 普通 | parent_id | **第 7 批新增**：「某条父评论的直接回复」查询（级联软删的 `updateMany({ parentId })` 与「父必须是顶层」校验走它） |
 | comments_author_id_fkey | 普通（外键自动创建） | author_id | 外键索引 |
 
 - `article_id` 的外键索引由 `comments_article_id_created_at_idx` 的**左前缀**承担，MySQL 未额外创建单列索引。
@@ -779,6 +783,59 @@ ALTER TABLE `follows` ADD CONSTRAINT `follows_following_id_fkey` FOREIGN KEY (`f
 
 ---
 
+## tags（标签表）
+
+Prisma 模型名 `Tag`，`@@map("tags")`。**第 7 批新建，迁移 `add_tags_and_article_tags`**。
+
+### 字段
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| id | id | INT | 否 | AUTO_INCREMENT | 主键 |
+| name | name | VARCHAR(20) | 否 | 无 | 标签名；API 校验 trim 后 1–20 字符；**大小写不敏感**（列继承表默认 `utf8mb4_unicode_ci`，`Vue` 与 `vue` 在 DB 层是同一个值：唯一约束判重、upsert 复用、`?tag=` 筛选全部按 ci 判等。2026-10-18 探针实测确认，文档从「不折叠」修正为 ci 语义——与「不为英文大小写折叠费劲」的拍板意图一致） |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 创建时间 |
+
+### 唯一约束是防重复标签的唯一真相
+
+`tags.name` 有 **DB 唯一约束**（`tags_name_key`）。应用层「先查后建」存在竞态窗口（两个并发请求都查到「不存在」→ 都创建），与 likes 的 `(user_id, article_id)`、follows 的 `(follower_id, following_id)` 同一纪律：**由 DB 唯一约束最终拦截**，应用层捕获 P2002 回 `400 / 40000`，绝不裸抛 500。service 层实际用 `upsert`（语义即「存在则复用，不存在则创建」），竞态兜底交给约束。
+
+### 索引
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | id | |
+| tags_name_key | 唯一 | name | 防重复标签（唯一真相）+ 按名字精确查找（`?tag=` 筛选、upsert 定位） |
+
+---
+
+## article_tags（文章-标签中间表）
+
+Prisma 模型名 `ArticleTag`，`@@map("article_tags")`。**第 7 批新建，迁移 `add_tags_and_article_tags`**。多对多关联表，与 likes / follows 同构：**无 `deleted_at` / `updated_at`**（关联的存在即事实，解除关联是物理 DELETE）。
+
+### 字段与约束
+
+| Prisma 字段 | 数据库列 | 类型 | 空 | 默认 | 说明 |
+|---|---|---|---|---|---|
+| articleId | article_id | INT | 否 | 无 | 联合主键之一，外键 → `articles.id` **`ON DELETE CASCADE`** |
+| tagId | tag_id | INT | 否 | 无 | 联合主键之一，外键 → `tags.id` **`ON DELETE CASCADE`** |
+| createdAt | created_at | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | 建立关联时间 |
+
+- **联合主键 `PRIMARY KEY (article_id, tag_id)`**：防重复关联的唯一真相（一篇文章同一标签只有一行）。
+- **两条外键均 `ON DELETE CASCADE`**：硬删文章 / 硬删标签时中间表自动清理。本项目删文章走**软删**（行不消失，关联保留），所有公开出口都过滤了软删与草稿，**无泄露**；Cascade 只在未来出现硬删路径时兜底。
+
+### 索引
+
+| 索引名 | 类型 | 列 | 用途 |
+|---|---|---|---|
+| PRIMARY | 主键 | article_id, tag_id | 防重复关联 + 「某篇文章的全部标签」查询（左前缀 `article_id`） |
+| article_tags_tag_id_idx | 普通 | tag_id | 「某标签下的全部文章」反查（`?tag=` 筛选、热门榜计数） |
+
+### 为什么不用 articles 表加 tags 列（JSON / 逗号分隔）
+
+同 follows「为什么必须有独立表」的论证：逗号分隔无法索引、无法约束、并发下必然错乱；JSON 列 MySQL 8 能索引但无法用外键保证引用完整性，且 Prisma 对 JSON 数组的关系查询（`some` / 关联计数排序）表达不了。多对多是标准解法，成本仅一张中间表。
+
+---
+
 ## 第 2 批：用户主页接口（零 schema 变更）
 
 新增三个接口（`docs/API.md` 有完整规格）：
@@ -1011,6 +1068,31 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ---
 
+## 第 7 批：标签 + 评论嵌套（tags / article_tags 两张表 + comments.parent_id）
+
+### schema 变更
+
+| 变更 | 内容 |
+|---|---|
+| 新建 `tags` 表 | `id` / `name VARCHAR(20)`（**唯一约束**）/ `created_at`；无软删列（标签没有「删了但留痕」的需求，无关联后即无意义） |
+| 新建 `article_tags` 表 | 联合主键 `(article_id, tag_id)` + 两条外键（均 `ON DELETE CASCADE`）+ `tag_id` 单列索引；无软删列（与 likes / follows 同构） |
+| `comments` 加 `parent_id` | `INT NULL`，外键 → `comments.id` `ON DELETE CASCADE ON UPDATE CASCADE`，索引 `comments_parent_id_idx`；既有行回填 `NULL`（全部是顶层评论，**无需回填脚本**） |
+
+### 设计要点（详见 `docs/API.md` 对应接口）
+
+- **标签写入是事务**：upsert 全部传入标签 → 删该文章全部旧关联 → 建新关联，三步同事务，失败整体回滚。
+- **两层硬限制**：`parent_id` 只允许指向 `parent_id IS NULL` 的评论（应用层校验，违规 40000）；DB 层无法表达「自引用只能指向顶层」，靠应用层校验链。
+- **删父级联软删子**：应用层 `updateMany({ where: { parentId: id, deletedAt: null } })`，与父评论软删**同事务**。两层结构下一条语句覆盖整个子树——这是选硬两层的一大收益（无限层需要递归 CTE 或应用层递归）。
+- **草稿评论封闭（存量洞修复）**：`requireArticle` 加 `status = 'PUBLISHED'` 过滤——此前草稿可被发评论 / 拉评论列表，第 7 批与公开详情同口径 404。**行为变更**：修复前已存在的「草稿下评论」不可再新建/浏览，属预期。
+- **计数口径**：`GET /api/tags` 的 `articleCount` 只数 `PUBLISHED` 且未软删（坑 4 同口径）；`receivedCommentCount` 不需改（级联软删的子评论未删时照旧计入，删后自然下降）。
+- **快照不含标签**：`article_revisions` 只存 title/content/category，回滚不恢复标签（检索元数据不是内容）。
+
+### 与「已批准的例外」的关系（例外现共 11 项：schema 9 + 依赖 2）
+
+本批新增两项 schema 例外（第 8 项 `tags` + `article_tags` 中间表、第 9 项 `comments.parent_id`），已登记 `docs/AI_CONTRACT.md` §2。零新依赖。
+
+---
+
 ## 查询约定
 
 - 软删除：删除操作设置 `deletedAt`，不做物理删除；如需硬删除必须明确说明。
@@ -1138,6 +1220,7 @@ const summary = [...content].slice(0, 100).join('');
 | `20261017125847_add_article_status` | `articles` 表新增 `status` 列（`ENUM('DRAFT','PUBLISHED') NOT NULL DEFAULT 'PUBLISHED'`）；INSTANT 算法自动回填既有 17 行（第 5 批后文章数）为 `PUBLISHED`，零 NULL、零回填脚本；**不含索引 / 新增表 / 外键**（索引见下条） | **已应用** |
 | `20261017130010_add_article_revisions` | 新建 `article_revisions` 表（版本快照）+ `article_id` 外键（`ON DELETE CASCADE`）+ `author_id` 外键（`ON DELETE RESTRICT`）+ 索引 `(article_id, created_at)`；**不含数据回填**（新表无既有数据） | **已应用** |
 | `20261017130223_add_article_status_idx` | `articles` 表新增索引 `(status, created_at)`（命名 `articles_status_created_at_idx`），覆盖广场列表主查询（`WHERE status='PUBLISHED' ORDER BY created_at`）；**独立小迁移**，与 `status` 列分离以便回滚 | **已应用** |
+| `add_tags_and_article_tags`（第 7 批，实际名 `20261018014846_add_tags_and_article_tags`） | **一次迁移包含全部三项变更**（改 schema 一次跑 migrate 时 Prisma 将变更合并打包）：① 新建 `tags` 表（`name VARCHAR(20)` + **唯一约束** `tags_name_key`）；② 新建 `article_tags` 中间表（联合主键 `(article_id, tag_id)` + 两条外键均 `ON DELETE CASCADE` + `article_tags_tag_id_idx` 索引）；③ `comments` 表新增 `parent_id INT NULL` + 外键 `comments_parent_id_fkey`（→ `comments.id`，`ON DELETE CASCADE ON UPDATE CASCADE`）+ 索引 `comments_parent_id_idx`，既有行 `parent_id` 全部为 `NULL`（全是顶层评论，零回填）。**不含数据回填**（新表无既有数据） | **已应用** |
 
 > 第九批迁移**已于 2026-10-03 执行完成**，迁移名 `20261003080727_add_user_avatar_bio`。
 > 已用 `SHOW CREATE TABLE users` 与 `information_schema.COLUMNS` 核对：两列均为 `DEFAULT NULL`，
@@ -1177,6 +1260,8 @@ prisma/migrations/
 ├─ 20261003140221_add_user_likes/
 │  └─ migration.sql
 ├─ 20261004145107_add_article_category/
+│  └─ migration.sql
+├─ 20261018014846_add_tags_and_article_tags/（第 7 批，含 tags / article_tags / comments.parent_id 三项变更）
 │  └─ migration.sql
 ├─ 20261011083029_add_follows/
 │  └─ migration.sql

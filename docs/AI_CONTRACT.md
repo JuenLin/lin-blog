@@ -66,14 +66,14 @@
 - 禁止擅自升级依赖大版本。
 - 禁止擅自引入新依赖。**例外见「已批准的例外」第 3、7 项**。
 - 禁止修改接口契约。
-- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9 项**。
+- 禁止修改数据库 schema。**例外见「已批准的例外」第 1、2、4、5、6、8、9、10、11 项**。
 
 ### 已批准的例外
 
-以下九项（schema 七项：第 1、2、4、5、6、8、9 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
+以下十一项（schema 九项：第 1、2、4、5、6、8、9、10、11 项；依赖两项：第 3、7 项）均为用户**明确批准**的例外，逐项登记「批准内容 / 范围 / 依据 / 是否援引前例」。  
 **未列入本节的改动一律禁止**（禁止引入新依赖见上方列表第 3 条，禁止改 schema 见第 5 条）。
 
-**注意**：第 1、2、4、5、6、8、9 项是「禁止改 schema」的七条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions），  
+**注意**：第 1、2、4、5、6、8、9、10、11 项是「禁止改 schema」的九条例外（第九批 / 第十批 / 分类功能 / 第 4 批关注 / 第 5 批 role·status / 第 6 批 articles.status / 第 6 批 article_revisions / 第 7 批 tags·article_tags / 第 7 批 comments.parent_id），  
 第 3、7 项是「禁止引入新依赖」的两条例外（第十一批 multer / 第 5 批 marked·highlight.js·dompurify）。**两项禁令的例外不在同一个维度上，不要按批次数混读。**
 
 1. **第九批 · schema 变更（2026-10-03 批准）**
@@ -122,6 +122,17 @@
    - **范围**：**仅限新建 `article_revisions` 一张表**。不含修改 `users` / `articles` / `comments` / `likes` / `follows` 任何一列，也不含给已建表补列。
    - **依据**：见 `docs/DB.md`「article_revisions（文章版本历史表）」小节与 `docs/API.md` 的 `GET /api/articles/:id/revisions` / `POST /api/articles/:id/restore` 章节。
    - **是否援引前例**：无，与前述各批各自独立。
+
+10. **第 7 批 · schema 变更（tags + article_tags，2026-10-18 批准）**
+    - **批准内容**：新建 `tags` 表（`id` / `name VARCHAR(20)` 含**唯一约束** / `created_at`）与 `article_tags` 中间表（联合主键 `(article_id, tag_id)`，两条外键均 `ON DELETE CASCADE`，`tag_id` 单列索引）一张一对，构成文章↔标签多对多。迁移名 `add_tags_and_article_tags`。
+    - **范围**：**仅限新建这两张表**。不含修改 `users` / `articles` / `comments` / `likes` / `follows` 任何一列。
+    - **依据**：见 `docs/DB.md`「tags（标签表）」与「article_tags（文章-标签中间表）」小节，决策过程见 `docs/API.md` 的 `GET /api/tags` 与文章接口 `tags` 字段章节。
+    - **是否援引前例**：无，与前述各批各自独立。
+11. **第 7 批 · schema 变更（comments.parent_id，2026-10-18 批准）**
+    - **批准内容**：`comments` 表新增 `parent_id INT NULL` 一列（父评论自引用，外键 → `comments.id` `ON DELETE CASCADE ON UPDATE CASCADE`），加索引 `comments_parent_id_idx`，既有行回填 `NULL` 零脚本。迁移名 `add_comment_parent_id`。
+    - **范围**：仅限此一列一索引一外键。不含其他表结构变更、不含改列名 / 类型 / 删列。
+    - **依据**：见 `docs/DB.md`「comments（评论表）」的 `parentId` 字段与「第 7 批」小节，决策过程见 `docs/API.md` 的 `POST /api/comments`（parentId 校验链）章节。
+    - **是否援引前例**：无，与前述各批各自独立。
 
 - 禁止把密码明文存入数据库。
 - 禁止生成真实密钥、真实密码、真实 token。
@@ -324,6 +335,7 @@ GET    /api/users/me/drafts          我的草稿箱（需登录，第 6 批）
 DELETE /api/users/me/drafts/:id      删除草稿（需登录，第 6 批）
 GET    /api/articles/:id/revisions   文章版本历史（需登录，仅作者，第 6 批）
 POST   /api/articles/:id/restore     回滚版本（需登录，仅作者，第 6 批）
+GET    /api/tags                     热门标签列表（公开，第 7 批）
 ```
 
 > `/api/users` 系列**已实现 9 个**：`PUT /api/users/me`（改资料）、`POST /api/users/me/avatar`（上传头像）、`GET /api/users/:id`（用户详情）、`GET /api/users/:id/articles`（他的文章）、`GET /api/users/me/likes`（我的点赞）、`POST /api/users/:id/follow`（关注）、`DELETE /api/users/:id/follow`（取消关注）、`GET /api/users/:id/followers`（粉丝列表）、`GET /api/users/:id/following`（关注列表）。
@@ -334,7 +346,7 @@ POST   /api/articles/:id/restore     回滚版本（需登录，仅作者，第 
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
-> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口（非管理端），接口总数 25 → 37**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
+> **第 5 批起管理端接口共 7 个；第 6 批新增 5 个草稿 / 版本接口、第 7 批新增 `GET /api/tags`（另有两个既有接口加字段 / 加参数，非新增路径），接口总数 25 → 37 → 38**。`/api/admin/*` 与 `/api/users/*` 是两套：管理端用户管理走 `/api/admin/users`（需 ADMIN），`/api/users` 系列的「列表 / 新增 / 改他人 / 删」**仍未实现**（作者信息通过文章 / 评论内嵌 `author` 对象返回）。
 >
 > **管理端一刀切防呆规则**：`PATCH /api/admin/users/:id/status` 的目标用户 `role = 'ADMIN'` 时直接 400 / 40000「不能封禁或解禁管理员账号」（含自己封自己，**不计算「是不是最后一个管理员」**）。管理员的任命 / 罢免 / 封禁只由开发者直接改数据库，不走管理端界面。规则全文见 `docs/API.md`「管理员不能被管理端操作」。
 

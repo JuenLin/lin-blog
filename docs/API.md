@@ -279,6 +279,8 @@ Authorization: Bearer <token>
 - 作者被软删除时，MVP 阶段文章保留、`author` 正常返回；更细的处理策略（作者注销后文章是否可见）留到后续需求评估。
 
 - **文章发布状态 `status`（第 6 批）**：枚举 `DRAFT` / `PUBLISHED`，默认 `PUBLISHED`。**草稿（`DRAFT`）是完整的 `articles` 行**，仅在作者自己的「草稿箱」（`GET /api/users/me/drafts`）可见；公开广场列表（`GET /api/articles`）默认只返回 `PUBLISHED`，已软删与草稿一律不出现。公开详情（`GET /api/articles/:id`）遇 `DRAFT` **一律返回 `404`**（不分作者与否，草稿不通过公开详情暴露）——刻意与软删同口径（404 而非 403），避免泄露草稿存在性。个人主页计数与文章列表（`GET /api/users/:id`、`GET /api/users/:id/articles`）**只统计 `PUBLISHED`**。管理端文章列表可额外按 `status` 筛选（含草稿）。
+- **标签系统 `tags`（第 7 批）**：文章与标签为**多对多**（`tags` 表 + `article_tags` 中间表）。所有返回**文章对象**的接口（广场列表 / 详情 / 个人主页文章列表 / 草稿箱 / 管理端列表）都带 `tags: string[]`（**纯标签名字符串数组**，按 `name` asc 排序），前端渲染 chip 无需再发请求。规则：每篇文章**最多 5 个标签**；标签名 trim 后 **1–20 字符**；**大小写不敏感**（`tags.name` 列为 MySQL `utf8mb4_unicode_ci` 排序规则，`Vue` 与 `vue` 在 DB 层就是同一个标签：后传入者复用既有标签、`?tag=` 小写变体命中大写标签，2026-10-18 实测发现并确认——与「不为英文大小写折叠费劲」的拍板意图一致，零额外代码）。创建 / 编辑时后端对不存在的标签自动创建（`tags.name` 有 DB 唯一约束兜底并发竞态，撞唯一约束回 `400 / 40000` 而非 500）。
+- **评论嵌套 `parentId`（第 7 批）**：评论支持**两层**楼中楼——`parentId` 只允许指向**顶层评论**（父评论自身 `parentId` 必须为 `null`），「回复的回复」后端直接拦截返回 `400 / 40000`。评论列表（`GET /api/articles/:id/comments`）**保持扁平返回**（`list[]` 结构只增字段不改结构，老调用方与探针兼容），每项新增 `parentId`（顶层为 `null`）与 `replyToAuthor`（被回复人的展示昵称，顶层为 `null`；分页可能把父子拆到两页，前端拿它渲染「回复 @某某」降级文案），前端按 `parentId` 自行组装成树。删除父评论时**同事务级联软删其全部直接子评论**（两层结构下一条 `updateMany` 覆盖）。
 - **用户主页接口（第 2 批）**：`GET /api/users/:id`（详情 + 计数）、`GET /api/users/:id/articles`（文章 Tab）、`GET /api/users/me/likes`（点赞 Tab，仅本人）。**前两个无需登录，第三个必须登录**。用户不存在或已软删一律 `404 / 40400`。
 - **用户主页的计数一律实时 `COUNT(*)`**：`articleCount` / `receivedLikeCount` / `receivedCommentCount` 三个数字都不落 `users` 冗余列，与文章 `likeCount` 同一纪律；且**只统计未软删的文章及其上的记录**（作者删文后计数下降是预期行为）。**本批零 schema 变更**。
 - **「用户不存在」与「用户没发过文章」是两个状态**：用户存在但 0 篇文章时，`GET /api/users/:id/articles` 返回 `200` + 空 `list` + `total: 0`，**不是 404**。前端据此渲染空态，不要把整页判成不存在。
@@ -291,14 +293,14 @@ Authorization: Bearer <token>
 | PUT    | /api/users/me              | 修改当前用户资料（简介；`avatar` 只能传 `null` 清空，**设置头像走上传接口**） | 是  |
 | POST   | /api/users/me/avatar       | 上传头像（multipart，详见业务接口一节）                          | 是  |
 | POST   | /api/articles              | 发布文章                                              | 是  |
-| GET    | /api/articles              | 博客广场列表                                            | 否  |
+| GET    | /api/articles              | 博客广场列表（第 7 批起支持 `?tag=` 筛选）                        | 否  |
 | GET    | /api/articles/:id          | 文章详情                                              | 否  |
 | PUT    | /api/articles/:id          | 编辑文章（仅作者）                                         | 是  |
 | DELETE | /api/articles/:id          | 删除文章（仅作者，软删除）                                     | 是  |
 | POST   | /api/articles/:id/like     | 点赞文章（可对自己的文章点赞）                                   | 是  |
 | DELETE | /api/articles/:id/like     | 取消点赞                                              | 是  |
 | GET    | /api/articles/:id/liked    | 查询当前用户是否已点赞该文章（刷新后取按钮态）                           | 是  |
-| POST   | /api/comments              | 发表评论                                              | 是  |
+| POST   | /api/comments              | 发表评论（第 7 批起可带 `parentId` 回复，两层楼中楼）                 | 是  |
 | GET    | /api/articles/:id/comments | 文章评论列表                                            | 否  |
 | DELETE | /api/comments/:id          | 删除评论（评论作者或文章作者，软删除）                           | 是  |
 | GET    | /api/users/:id             | 用户详情（含文章数 / 获赞数 / 评论数）                            | 否  |
@@ -320,6 +322,7 @@ Authorization: Bearer <token>
 | DELETE | /api/users/me/drafts/:id    | 删除指定草稿（仅作者，需登录）                                      | 是  |
 | GET    | /api/articles/:id/revisions | 文章版本历史（全量 content；仅作者，需登录）                           | 是  |
 | POST   | /api/articles/:id/restore   | 回滚到指定版本（先快照当前版，仅作者，需登录）                           | 是  |
+| GET    | /api/tags                   | 热门标签列表（带每个标签下的已发布文章数）                              | 否  |
 
 ---
 
@@ -335,6 +338,7 @@ Authorization: Bearer <token>
 | content  | string | 是  | 1–20000 字符                                                        |
 | category | string | 否  | 枚举 `技术` / `生活` / `随笔` / `未分类`；**省略时默认 `未分类`**；非法值返回 `400 / 40000` |
 | status   | string | 否  | 枚举 `DRAFT` / `PUBLISHED`；**省略时默认 `PUBLISHED`**（即「发布」）；传 `DRAFT` 则创建一篇仅作者可见的草稿 |
+| tags     | string[] | 否 | **每篇最多 5 个**；每个标签 trim 后 1–20 字符；**省略时为 `[]`**；后端自动创建不存在的标签（唯一约束兜底并发）；非法值返回 `400 / 40000` |
 
 > 备注：`content` 的数据库类型为 `MEDIUMTEXT`（见 `docs/DB.md`），不影响本接口契约。
 
@@ -342,11 +346,13 @@ Authorization: Bearer <token>
 {
   "title": "我的第一篇博客",
   "content": "正文……",
-  "category": "技术"
+  "category": "技术",
+  "tags": ["Vue", "前端"]
 }
 ```
 
 > `category` 省略时后端填入默认值 `未分类`；`"category": "未分类"` 与省略等价。
+> `tags` 省略时为空数组；超 5 个、含非法标签名（空串 / 超 20 字）整体返回 `400 / 40000`，不做静默截断。
 
 > `status` 省略或传 `PUBLISHED` 都是发布；传 `DRAFT` 创建草稿（仅作者「草稿箱」可见，不进广场）。自动保存草稿请走 `POST /api/articles/auto-save`，本接口是「直接发布」入口。
 
@@ -396,6 +402,7 @@ Authorization: Bearer <token>
 | order    | string | 否  | `asc` 或 `desc`，默认 `desc`                            |
 | keyword  | string | 否  | 标题 + 正文模糊搜索；trim 后最长 50 字符，**空串或纯空白视为不搜索（等价于不传）**，返回全量列表       |
 | category | string | 否  | 分类筛选，枚举 `技术` / `生活` / `随笔` / `未分类`；非法值返回 `400 / 40000`；**不传或传空串视为不过滤（返回全部分类）** |
+| tag      | string | 否  | 标签筛选（第 7 批），**精确匹配单个标签名**（大小写敏感）；trim 后 1–20 字符，空串视为不筛选；标签不存在时返回**空列表而非 404**（与 keyword 空命中同口径） |
 
 `sortBy` 语义：
 
@@ -422,6 +429,15 @@ Authorization: Bearer <token>
 - **非法值**：不在枚举内（如 `category=美食`、`category=tech`）返回 `400 / 40000`，message 形如 `category 不合法，可选值：技术, 生活, 随笔, 未分类`。**大小写敏感**（`技术` 是全角中文，不存在大小写问题；但若日后扩展英文枚举需注意）。
 - **不建索引**：`category` 是低基数列，MVP 数据量下全表扫描无感，筛选在 service 层拼 `where.category = x`，不引入索引（理由见 `docs/DB.md`「category 分类列」小节）。
 
+`tag` 语义（第 7 批，与 `keyword` / `category` 三者正交、可叠加）：
+
+- **筛选范围**：通过 `article_tags` 中间表对文章做**精确标签名匹配**（Prisma 表达为 `tags: { some: { name: tag } }`，编译成 `EXISTS` 子查询，**单条 SQL**，无 N+1）。
+- **大小写不敏感**：`tag=vue` 会命中 `Vue`（`tags.name` 列为 ci 排序规则，与创建侧同一行为——唯一约束与比较都按 ci 判等）。
+- **空串视为不筛选**：`tag=` 或不传，返回全部文章而非报错（与 `category` 空串口径一致）；trim 后超 20 字符返回 `400 / 40000`。
+- **标签不存在**：返回 `200` + 空 `list` + `total: 0`，**不是 404**——「没有文章带这个标签」是合法筛选结果。
+- **只数 PUBLISHED**：本接口本就只返回 `PUBLISHED`，草稿绑了标签也搜不到（标签筛选作用在已过滤的集合上）。
+- **与分页 / 排序正交**：`total` 是「该标签 + 该 keyword + 该 category」的命中总数。
+
 - **只返回已发布（`status = PUBLISHED`）**：本接口是公开广场，**不暴露 `status` 过滤参数**，永远只返回 `PUBLISHED` 的文章；草稿（`DRAFT`）与已软删文章都不出现。这是第 6 批新增的默认过滤，不影响现有调用方（它们 `POST` 文章时不带 `status`，默认即 `PUBLISHED`）。
 
 成功：HTTP 200
@@ -437,6 +453,7 @@ Authorization: Bearer <token>
         "title": "我的第一篇博客",
         "summary": "正文前 100 字……",
         "category": "技术",
+        "tags": ["Vue", "前端"],
         "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
         "likeCount": 3,
         "createdAt": "2026-09-29T14:00:00.000Z",
@@ -455,6 +472,7 @@ Authorization: Bearer <token>
 | ---------------- | ------ | ---------------------------------- |
 | list[].summary   | string | 后端截取 `content` 前 100 字符，列表不返回全文    |
 | list[].category  | string | 文章分类，枚举 `技术` / `生活` / `随笔` / `未分类`；后端白名单保证一定在这 4 个值内 |
+| list[].tags      | string[] | 标签名字符串数组（第 7 批新增），按 `name` asc；无标签时为 `[]`（不是省略该键） |
 | list[].author    | object | 作者 `id` / `username` / `nickname`  |
 | list[].likeCount | number | 该文章的点赞数（第十批新增），实时 `COUNT(*)`；不含 `liked`（已登录用户改调 `GET /api/articles/:id/liked`） |
 
@@ -463,7 +481,7 @@ Authorization: Bearer <token>
 
 `summary` 为原始 `content` 截取，可能包含 Markdown 标记，前端负责渲染时清理。
 
-失败：400 / 40000（分页参数非法，或 `keyword` 超长 / 格式非法，或 `category` 非法值）。
+失败：400 / 40000（分页参数非法，或 `keyword` 超长 / 格式非法，或 `category` 非法值，或 `tag` 超长）。
 
 ---
 
@@ -484,6 +502,7 @@ Authorization: Bearer <token>
     "title": "我的第一篇博客",
     "content": "正文……",
     "category": "技术",
+    "tags": ["Vue", "前端"],
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
     "likeCount": 3,
     "createdAt": "2026-09-29T14:00:00.000Z",
@@ -492,7 +511,7 @@ Authorization: Bearer <token>
 }
 ```
 
-`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`** —— 详情页刷新后要还原按钮态，由前端在已登录时调 `GET /api/articles/:id/liked`。`category` 为文章的分类枚举值。
+`likeCount` 与列表口径一致（实时 `COUNT(*)`），同样**不返回 `liked`** —— 详情页刷新后要还原按钮态，由前端在已登录时调 `GET /api/articles/:id/liked`。`category` 为文章的分类枚举值。`tags` 为标签名字符串数组（第 7 批新增），无标签时为 `[]`。
 
 失败：
 
@@ -522,6 +541,18 @@ Authorization: Bearer <token>
 
 > 与 `POST` 的「省略默认 `未分类`」不同：`PUT` 的省略是**保留原值**（因为文章已经有分类了，不该因没传就被改回 `未分类`）。实现上：`category` 用 zod `.optional()` —— 缺失时得到 `undefined`，**跳过该字段**；传入时再按枚举白名单校验。
 > 成功响应（`data` 结构同「文章详情」）会带更新后的 `category`。
+
+**`tags` 在 PUT 下的三态语义**（与 `category` 三态完全一致，用户拍板 2026-10-18）：
+
+| 请求体写法 | 含义 | 存储结果 |
+|---|---|---|
+| 字段**不出现** | **保留原关联** | 中间表不动（用户只想改标题/正文时标签不动） |
+| `"tags": ["Vue"]`（合法数组） | **全量替换** | 事务内先删该文章全部旧关联，再 upsert 新标签并建立新关联 |
+| `"tags": []`（空数组） | **清空** | 事务内删该文章全部旧关联，不建新的 |
+
+> `tags` 非法（超 5 个 / 含空串 / 含超 20 字标签名）返回 `400 / 40000`，**不更新任何字段**（与 title/content 校验同一口径）。标签的 upsert + 删旧建新在同一事务内完成，失败整体回滚。
+
+> **快照与标签的关系（第 7 批明确）**：版本快照（`article_revisions`）只存 `title` / `content` / `category`，**不存 `tags`**；因此 `POST /api/articles/:id/restore` 回滚**不恢复标签**（回滚后的标签 = 回滚时的现状关联）。标签被排除在版本历史外的理由：标签是「检索元数据」而非「内容」，且中间表结构不适合塞进快照 JSON。
 
 > **版本快照（第 6 批）**：当目标文章**更新前**的状态为 `PUBLISHED` 时，后端会先把它的当前 `title`/`content`/`category` 存入 `article_revisions` 表（生成一条版本历史），再应用本次更新——这就是「版本历史 / 回滚」的数据来源。若目标更新前是 `DRAFT`（例如把一篇草稿 `PUT` 成 `PUBLISHED` 来「发布」），则**不快照**（草稿本身不进版本历史）。详见 `GET /api/articles/:id/revisions` 与 `POST /api/articles/:id/restore`。
 
@@ -749,6 +780,14 @@ Authorization: Bearer <token>
 | --------- | ------ | -- | ------------- |
 | articleId | number | 是  | 正整数           |
 | content   | string | 是  | 1–500 字符，trim |
+| parentId  | number | 否  | 正整数；**省略 = 发顶层评论**；传了 = 回复该评论（两层楼中楼，第 7 批） |
+
+**`parentId` 校验链（第 7 批，按序判定）**：
+
+1. **文章可评论**：文章存在、未软删、且 `status = PUBLISHED`——草稿的评论区对外封闭（第 7 批修复的存量洞，此前 `requireArticle` 只过滤 `deletedAt`，导致可对草稿发评论 / 拉评论列表；修复后草稿评论接口与公开详情同口径 404）。不满足 → `404 / 40400`。
+2. **父评论存在且未软删**：`parentId` 指向的评论查不到 → `404 / 40400`（message 为「父评论不存在或已删除」）。
+3. **同文章**：父评论的 `articleId` 必须等于本次的 `articleId`，否则 → `400 / 40000`（防跨文章挂接——不能把 A 文章的回复挂到 B 文章下）。
+4. **父必须是顶层**：父评论自身 `parentId` 非 `null`（即想「回复的回复」）→ `400 / 40000`。两层是**硬限制**（用户拍板 2026-10-18），后端直接拦截，杜绝无限递归。
 
 成功：HTTP 201
 
@@ -757,22 +796,26 @@ Authorization: Bearer <token>
   "code": 0,
   "message": "ok",
   "data": {
-    "id": 1,
+    "id": 2,
     "articleId": 1,
     "content": "写得好",
+    "parentId": 1,
+    "replyToAuthor": "Demo",
     "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
     "createdAt": "2026-09-29T14:05:00.000Z"
   }
 }
 ```
 
+> `parentId`：回复目标 id，顶层评论恒为 `null`。`replyToAuthor`：被回复人的展示昵称（`nickname` 为空时回退 `username`，与 `author` 展示名同一规则），顶层评论恒为 `null`——前端组树时用它渲染「回复 @某某」，分页把父子拆到两页时也不至于让用户莫名其妙。
+
 失败：
 
 | HTTP | code  | 场景            |
 | ---- | ----- | ------------- |
-| 400  | 40000 | zod 校验不通过     |
+| 400  | 40000 | zod 校验不通过；或父评论属于另一篇文章（校验链第 3 步）；或父评论不是顶层（校验链第 4 步） |
 | 401  | 40100 | 未登录或 token 无效 |
-| 404  | 40400 | 文章不存在或已软删除    |
+| 404  | 40400 | 文章不存在 / 已软删 / 是草稿（校验链第 1 步）；或父评论不存在或已软删（校验链第 2 步） |
 
 ---
 
@@ -801,7 +844,8 @@ Authorization: Bearer <token>
 
 删除联动：
 - 评论列表（`GET /api/articles/:id/comments`）中该条评论**自动消失**——列表查询自动过滤 `deletedAt`，无需前端额外处理。
-- 作者主页的 `receivedCommentCount` **自动下降**——该计数只统计未软删文章下的未软删评论（见通用约定），评论软删除后自然不再计入。
+- **级联软删子评论（第 7 批）**：删除的是**父评论**（`parentId` 为 `null`）时，其全部直接子评论在**同一事务内**一并软删（两层硬限制下一条 `updateMany({ where: { parentId: id, deletedAt: null } })` 即覆盖整个子树）。理由：级联软删干净利落（用户拍板 2026-10-18），不做「该评论已删除」墓碑占位——占位方案需要改写 content、特判 author 展示，复杂度不成比例。删除子评论**不影响**父评论与其余子评论。
+- 作者主页的 `receivedCommentCount` **自动下降**——该计数只统计未软删文章下的未软删评论（见通用约定），评论软删除后自然不再计入（级联软删的子评论同样不再计入）。
 
 ---
 
@@ -822,17 +866,29 @@ Authorization: Bearer <token>
       {
         "id": 1,
         "content": "写得好",
+        "parentId": null,
+        "replyToAuthor": null,
         "author": { "id": 1, "username": "demo", "nickname": "Demo", "avatar": null },
         "createdAt": "2026-09-29T14:05:00.000Z"
+      },
+      {
+        "id": 2,
+        "content": "同感，顶",
+        "parentId": 1,
+        "replyToAuthor": "Demo",
+        "author": { "id": 2, "username": "alice", "nickname": "Alice", "avatar": null },
+        "createdAt": "2026-09-29T14:06:00.000Z"
       }
     ],
     "page": 1,
     "pageSize": 10,
-    "total": 1,
+    "total": 2,
     "totalPages": 1
   }
 }
 ```
+
+> **扁平返回，前端组树（第 7 批）**：`list[]` 仍是**扁平分页列表**（老结构只增字段），新增 `parentId`（顶层 `null`）与 `replyToAuthor`（被回复人昵称，顶层 `null`）。前端按 `parentId` 组装两层树展示；若某条回复的父评论不在当前页（分页拆树），该回复**按顶楼样式降级**渲染并带「回复 @replyToAuthor」前缀。`total` 仍为该文章全部未软删评论数（含子评论），与详情页展示的评论数同一口径。
 
 
 `total` 即该文章的评论数，详情页需要展示评论数时直接取它。
@@ -842,7 +898,7 @@ Authorization: Bearer <token>
 | HTTP | code | 场景 |
 |---|---|---|
 | 400 | 40000 | id 或分页参数非法 |
-| 404 | 40400 | 文章不存在或已软删除 |
+| 404 | 40400 | 文章不存在 / 已软删除 / 是草稿（第 7 批起草稿评论列表封闭，与发评论同口径） |
 
 ---
 
@@ -1765,6 +1821,45 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 ---
 
+### GET /api/tags
+
+热门标签列表（第 7 批新增）。**无需登录**。
+
+查询参数：
+
+| 字段   | 类型     | 必填 | 校验                                   |
+| ---- | ------ | -- | ------------------------------------ |
+| limit | number | 否 | 默认 20，最大 100；返回前 `limit` 个标签          |
+
+成功：HTTP 200
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      { "id": 1, "name": "Vue", "articleCount": 12 },
+      { "id": 2, "name": "前端", "articleCount": 8 }
+    ]
+  }
+}
+```
+
+| 字段                  | 类型     | 说明                                       |
+| ------------------- | ------ | ---------------------------------------- |
+| list[].name         | string | 标签名（创建时的原文，大小写敏感）                          |
+| list[].articleCount | number | 该标签下的文章数，**只数 `PUBLISHED` 且未软删**（坑 4 同口径）；草稿与软删文章绑了标签也不计入 |
+
+- **排序**：`articleCount` desc → `name` asc（次级排序保证并列稳定）。
+- **0 篇文章的标签**：不出现在列表里（只返回有过关联的标签；关联被清空后计数为 0 的标签同样不返回——榜单只服务「点一下有东西看」的交互）。
+- **性能口径（N+1 防坑）**：`article_tags.groupBy(tagId)` 一次聚合 + 一次 `tags.findMany(where id in)` 补名字，**固定两步查询**，不随标签数量增长。
+- **无 N+1 的依据**：与 `likeCount` 的 `_count` 关联计数同思路，聚合在数据库层完成。
+
+失败：400 / 40000（limit 非法）。
+
+---
+
 ### POST /api/articles/auto-save
 
 自动保存草稿。**需要登录**。作者取 token 中的 `userId`。草稿是 `status = DRAFT` 的完整文章行，只在作者「草稿箱」可见，不进广场、不进公开详情。
@@ -1776,12 +1871,13 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 | title           | string | 否  | 字符串；更新时允许为空（清空草稿标题）；新建时若为空且 content 过短则不创建（见「建草稿门槛」）                               |
 | content         | string | 否  | 字符串；允许为空                                                                        |
 | category        | string | 否  | 枚举 `技术` / `生活` / `随笔` / `未分类`；省略默认 `未分类`；非法值 `400 / 40000`                         |
+| tags            | string[] | 否 | 规则同 `POST /api/articles`（≤5 个、1–20 字符）；**省略 = 不动草稿已有标签**（自动保存通常每 keystroke 全量带，或前端直接回传草稿现有 tags，两种都兼容）；校验规则与发布一致，非法 `400 / 40000` |
 | draftId         | number | 否  | 已有草稿 id；传了就更新该草稿，不传则新建                                                          |
 | sourceArticleId | number | 否  | 编辑已发布文章时的来源文章 id；仅作归属校验，**不落库**（见「编辑已发布文章的完整流程」）                                       |
 
 行为分两种：
 
-- **有 `draftId`（更新草稿）**：该 `draftId` 必须是 `status = DRAFT` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`（**坑 1：越权校验**，草稿不给他人碰）。更新其 `title` / `content` / `category`，`status` 保持 `DRAFT`。返回 `{ id: draftId, status: "DRAFT", saved: true }`。
+- **有 `draftId`（更新草稿）**：该 `draftId` 必须是 `status = DRAFT` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`（**坑 1：越权校验**，草稿不给他人碰）。更新其 `title` / `content` / `category`，`status` 保持 `DRAFT`。`tags` 三态同 PUT：省略不动，传了全量替换（事务内删旧建新）。返回 `{ id: draftId, status: "DRAFT", saved: true }`。
 - **无 `draftId`（新建草稿）**：先过「建草稿门槛」（**补丁 3 第一道闸**）——若 `title` 为空（或纯空白）**且** `content` 长度 `< 10`，**不创建任何草稿**，直接返回 `200 { id: null, status: "IDLE", saved: false }`（前端保持 idle 态，不再发更多请求）。门槛通过后再看 `sourceArticleId`：若传了，校验它指向 `status = PUBLISHED` 且 `authorId = 当前用户` 的文章，否则 `404 / 40400`（防越权编辑他人文章）；校验通过仅作放行，**不把 sourceArticleId 写进草稿**。然后新建 `status = DRAFT` 的文章，返回 `{ id: 新草稿id, status: "DRAFT", saved: true }`。
 
 > 注意：新建草稿后，后续所有改动都走「有 draftId」分支。**补丁 3 第二道闸**：一旦进入草稿态（已持有 draftId），**任何内容变化都必须发请求**——包括把内容清空到 0 字——不再受建草稿门槛限制（保证「清空内容后保存」不丢）。
@@ -1819,7 +1915,7 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 | pageSize | number | 否  | 默认 10，最大 100                          |
 | keyword  | string | 否  | 按 `title` 模糊搜索；空串 / 纯空白 / 不传 = 不过滤         |
 
-成功：HTTP 200，结构与 `GET /api/articles` 同形（`{ list, page, pageSize, total, totalPages }`）。`list[]` 字段：`id` / `title` / `summary`（正文前 100 字）/ `content`（**全文**，供「继续编辑」回填——草稿无法通过公开详情获取，这是全文唯一来源）/ `category` / `createdAt` / `updatedAt`。
+成功：HTTP 200，结构与 `GET /api/articles` 同形（`{ list, page, pageSize, total, totalPages }`）。`list[]` 字段：`id` / `title` / `summary`（正文前 100 字）/ `content`（**全文**，供「继续编辑」回填——草稿无法通过公开详情获取，这是全文唯一来源）/ `category` / `tags`（第 7 批新增，标签名数组，供编辑器回填）/ `createdAt` / `updatedAt`。
 
 失败：401 / 40100（未登录）。
 
