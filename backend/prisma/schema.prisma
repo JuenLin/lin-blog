@@ -29,6 +29,8 @@ enum UserStatus {
 // 第 8 批（用户批准）：通知类型。
 // COMMENT=评论了你的文章；REPLY=回复了你的评论；FOLLOW=关注了你；LIKE=赞了你的文章。
 // 第 11 批追加（用户批准）：MENTION=@提及了你；COMMENT_LIKE=赞了你的评论。
+// 第 12 批追加（用户批准）：REPORT_RESOLVED=你举报的内容已核实处理；REPORT_REJECTED=你举报的内容经核实未违规。
+// 拆两值不拆一值（用户拍板）：通知中心 buildText 按 type 组句，单值无法区分「删了」和「没删」两种结果。
 // 追加成员到枚举末尾，MySQL 8 ALTER ENUM 走 INSTANT，零回填。
 // 封闭值域由 DB 层（MySQL ENUM）强制，不放 zod 白名单重复校验（理由同 UserRole）。
 enum NotificationType {
@@ -38,6 +40,22 @@ enum NotificationType {
   LIKE
   MENTION
   COMMENT_LIKE
+  REPORT_RESOLVED
+  REPORT_REJECTED
+}
+
+// 第 12 批（用户批准）：举报目标类型与举报处理状态。
+// target_id 是多态列（指向 articles 或 comments），不建外键（同 notifications.commentId 先例），
+// 目标存在性 / 可见性校验完全在应用层做。
+enum ReportTargetType {
+  ARTICLE
+  COMMENT
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  REJECTED
 }
 
 enum ArticleStatus {
@@ -79,6 +97,8 @@ model User {
   series        Series[]
   // 第 11 批（2026-10-18 用户批准）：作为评论点赞者被引用（「用户本人」而非作者角色）。
   commentLikes  CommentLike[]
+  // 第 12 批（2026-10-18 用户批准）：作为举报人被引用（「用户本人」而非作者角色）。
+  reports       Report[]
 
   @@map("users")
 }
@@ -325,4 +345,34 @@ model CommentLike {
   // user_id 侧不另建索引：唯一索引左前缀已承担（likes / bookmarks 同纪律）。
   @@index([commentId])
   @@map("comment_likes")
+}
+
+// 第 12 批（2026-10-18 用户批准）：举报表。
+model Report {
+  id         Int              @id @default(autoincrement())
+  // 举报者是「用户本人」，按业务角色命名 reporter_id（而非 user_id），同 author_id 的命名逻辑。
+  // RESTRICT：举报人被硬删前必须先清他的举报行（硬删序最上游之一）。
+  reporterId Int              @map("reporter_id")
+  reporter   User             @relation(fields: [reporterId], references: [id], onDelete: Restrict)
+  // 多态目标（articles 或 comments）：targetId 不建外键（同 notifications.commentId 先例），
+  // 目标存在性 / 可见性校验在应用层（report.service 的 requireVisibleTarget）。
+  targetType ReportTargetType @map("target_type")
+  targetId   Int              @map("target_id")
+  // 举报理由选填，最长 200（接口层 zod 校验，DB 层 VARCHAR(200) 兜底）。
+  reason     String?          @db.VarChar(200)
+  // 处理状态：PENDING=待处理；RESOLVED=违规成立已处理；REJECTED=核实未违规。
+  status     ReportStatus     @default(PENDING)
+  // 处理时间（2026-10-18 用户拍板：加，管理列表展示处理时间）；未处理为 NULL。
+  resolvedAt DateTime?        @map("resolved_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  // 防重复举报：同一用户对同一对象只有一行；并发 / 重放 P2002 在应用层转 409/40900，
+  // 不新增行、不重置状态（即使上次已被处理仍 409，处理结果走通知告知）。
+  // user_id 侧不另建索引：唯一索引左前缀已承担。
+  @@unique([reporterId, targetType, targetId], name: "reports_reporter_target_key")
+  // 管理员处理时按目标批转该对象全部 PENDING 举报（updateMany where targetType+targetId）。
+  @@index([targetType, targetId])
+  // 后台列表按 status 筛选（低基数，量级大后再评估去留，与 articles.status_idx 同思）。
+  @@index([status])
+  @@map("reports")
 }

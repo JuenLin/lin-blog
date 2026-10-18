@@ -163,6 +163,27 @@ export async function notifyOnMentions({ articleId, commentId = null, content, a
 }
 
 /**
+ * 举报处理结果通知编排（第 12 批）。举报人收到处理结果：
+ *   - RESOLVED → REPORT_RESOLVED（「你举报的内容已核实处理」）；
+ *   - REJECTED → REPORT_REJECTED（「你举报的内容经核实未违规」）。
+ * 拆两值不拆一值（用户拍板）：通知中心 buildText 按 type 组句，单值无法区分「删了」和「没删」。
+ * 管理员本人恰是举报人（管理员也能举报内容）→ 自通知抑制。
+ * 调用方（resolveReport）在**事务提交后**调用，每条包 try/catch，通知失败绝不回滚业务。
+ *
+ * @param {{ reporterId: number, resolverId: number, type: 'REPORT_RESOLVED'|'REPORT_REJECTED', articleId?: number|null }} payload
+ */
+export async function notifyOnReportResult({ reporterId, resolverId, type, articleId }) {
+  if (reporterId === resolverId) return;
+
+  await createNotification({
+    userId: reporterId,
+    actorId: resolverId,
+    type,
+    articleId,
+  });
+}
+
+/**
  * 我的通知列表（扁平分页），含 actor 摘要 + 文章标题摘要。
  * join + 空值降级：actor / article 软删或不存在 → 显示「已注销用户」/「内容已删除」。
  *

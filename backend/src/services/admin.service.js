@@ -85,7 +85,8 @@ function toAdminComment(comment) {
  * （与 likeCount / followerCount 的口径一致）；deletedArticles 是管理端
  * 专属视角（已软删文章数），公开接口不返回。
  *
- * **不含「待办举报数」**：举报系统未建（第 7 批储备项），返回假字段会误导前端。
+ * **不含「待办举报数」**：reports 表第 12 批已建，但 stats 响应形状是已登记契约
+ * （前端数据概览页按 6 字段渲染），加字段属契约变更——挂账，不在本批顺手改。
  */
 export async function getStats() {
   const [users, articles, comments, likes, follows, deletedArticles] = await Promise.all([
@@ -278,6 +279,11 @@ export async function listComments(query) {
 /**
  * 管理端删除评论：软删，**无视作者权限**（公开接口的「评论作者 ∨ 文章作者」
  * 规则不适用）。已软删或不存在 → 404。
+ *
+ * 第 12 批顺带修挂账（用户拍板并入本批）：补**级联软删子评论**——原先只删单条，
+ * 与用户侧 deleteComment（$transaction + updateMany 子树）口径不一致，属历史遗留。
+ * 两层硬限制下，子评论的 parentId 直接指向本评论，一条 updateMany 覆盖整个子树
+ * （无需递归）；`deletedAt: null` 条件保证已软删的子评论不重复置时间戳。
  */
 export async function deleteComment(id) {
   const comment = await prisma.comment.findFirst({
@@ -289,10 +295,16 @@ export async function deleteComment(id) {
     throw httpError(404, CODE.NOT_FOUND, '评论不存在或已删除');
   }
 
-  await prisma.comment.update({
-    where: { id },
-    data: { deletedAt: new Date() },
-  });
+  await prisma.$transaction([
+    prisma.comment.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    }),
+    prisma.comment.updateMany({
+      where: { parentId: id, deletedAt: null },
+      data: { deletedAt: new Date() },
+    }),
+  ]);
 
   return null;
 }

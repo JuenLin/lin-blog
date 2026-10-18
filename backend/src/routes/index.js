@@ -10,6 +10,7 @@ import adminRoutes from './admin.routes.js';
 import tagRoutes from './tag.routes.js';
 import notificationRoutes from './notification.routes.js';
 import { seriesRouter, userSeriesRouter } from './series.routes.js';
+import { reportRouter, adminReportRouter } from './report.routes.js';
 
 const router = Router();
 
@@ -54,5 +55,11 @@ router.use('/users', userSeriesRouter);
 // 业务路由：管理端（第 5 批）。/api/admin/* 全部走 auth → requireAdmin 链，
 // 与 /api/users/* 是两套（管理端用户管理不走 /api/users，见 docs/API.md）。
 router.use('/admin', adminRoutes);
+
+// 业务路由：举报（第 12 批）。用户端 POST /api/reports 挂 /reports（需登录）；
+// 管理端 GET/PUT /api/admin/reports 挂 /admin（需 ADMIN）——与 series 的双 router
+// 挂载同构，路由定义都在 report.routes.js。
+router.use('/reports', reportRouter);
+router.use('/admin', adminReportRouter);
 
 export default router;
