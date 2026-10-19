@@ -249,7 +249,7 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  ├─ DB.md                           # 数据库文档：表结构、字段说明
 
-│  ├─ docs/BATCH_HISTORY.md                      # 未来规划与批次路线图
+│  ├─ BATCH_HISTORY.md                # 项目演进史与未来规划
 
 │  ├─ ARCHITECTURE.md                # 架构视图文档：六张关系图（系统/链路/ER/功能/接口全景/前端路由），第 3 批引入
 │  ├─ ACCEPTANCE.md                   # 验收说明书：跑什么、怎么跑、已知边界与不变式
