@@ -355,10 +355,10 @@ mindmap
         接口 DELETE ／api／users／me／drafts／：id
     收通知（登录）
       通知列表
-        入口 NotificationView
+        入口 AppHeader 铃铛下拉（无独立路由页）
         接口 GET ／notifications
       标已读
-        入口 NotificationView
+        入口 AppHeader 铃铛下拉（无独立路由页）
         接口 PUT ／notifications／read 与 ／：id／read
       未读数轮询
         入口 AppHeader 红点

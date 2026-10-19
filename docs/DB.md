@@ -1515,7 +1515,7 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 | 变更 | 内容 |
 |---|---|
-| 新建 `reports` 表 | `id` / `reporter_id` / `target_type` / `target_id` / `reason` / `status` / `resolved_at` / `created_at`；唯一约束 `reports_reporter_target_key`（防同一用户重复举报同一对象）+ `reports_target_idx` + `reports_status_idx` 两个索引；一条外键（`reporter_id` → `users.id`，`ON DELETE RESTRICT`）；`target_id` 多态无外键（同 `notifications.commentId` 先例）；无 `deleted_at` / `updated_at` |
+| 新建 `reports` 表 | `id` / `reporter_id` / `target_type` / `target_id` / `reason` / `status` / `resolved_at` / `created_at`；唯一约束 `reports_reporter_id_target_type_target_id_key`（防同一用户重复举报同一对象）+ `reports_target_type_target_id_idx` + `reports_status_idx` 两个索引；一条外键（`reporter_id` → `users.id`，`ON DELETE RESTRICT`）；`target_id` 多态无外键（同 `notifications.commentId` 先例）；无 `deleted_at` / `updated_at` |
 | 新增 2 个枚举 | `ReportTargetType` { ARTICLE, COMMENT }、`ReportStatus` { PENDING, RESOLVED, REJECTED } |
 | `NotificationType` 枚举追加两值 | `REPORT_RESOLVED`（举报的违规内容已处理）、`REPORT_REJECTED`（核实未违规）；**拆两值不拆一值**（2026-10-18 用户拍板：通知中心 buildText 按 type 组句，单值无法区分「删了」和「没删」两种结果）；MySQL 8 追加 ENUM 末尾走 INSTANT，零回填 |
 
