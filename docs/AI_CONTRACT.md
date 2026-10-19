@@ -147,7 +147,7 @@
     - **是否援引前例**：援引第十批 `likes` 建表的结构先例（内容上是独立的一次批准）。
 14. **第 9 批 · schema 变更（articles.view_count，2026-10-18 批准）**
     - **批准内容**：`articles` 表新增 `view_count INT NOT NULL DEFAULT 0` 一列（累计阅读量计数器，`POST /api/articles/:id/view` 原子 +1）；INSTANT 算法回填既有行为 0，零 NULL、零回填脚本；**不含索引**。
-    - **范围**：仅限此一列。不含其他表结构变更、不含改列名 / 类型 / 删列、不含加权热度 `hot_score` 冗余列（已挂 ROADMAP 远期储备）。
+    - **范围**：仅限此一列。不含其他表结构变更、不含改列名 / 类型 / 删列、不含加权热度 `hot_score` 冗余列（已挂 BATCH_HISTORY 远期储备）。
     - **依据**：见 `docs/DB.md`「articles（文章表）」`viewCount` 字段与「第 9 批」小节，决策过程见 `docs/API.md` 的 `POST /api/articles/:id/view` 章节。
     - **是否援引前例**：援引第 6 批 `articles.status` 加列先例（内容上是独立的一次批准）。
 
@@ -249,7 +249,7 @@ project/                              # 项目根目录，所有代码和文档�
 
 │  ├─ DB.md                           # 数据库文档：表结构、字段说明
 
-│  ├─ ROADMAP.md                      # 未来规划与批次路线图
+│  ├─ docs/BATCH_HISTORY.md                      # 未来规划与批次路线图
 
 │  ├─ ARCHITECTURE.md                # 架构视图文档：六张关系图（系统/链路/ER/功能/接口全景/前端路由），第 3 批引入
 │  ├─ ACCEPTANCE.md                   # 验收说明书：跑什么、怎么跑、已知边界与不变式
@@ -270,7 +270,8 @@ project/                              # 项目根目录，所有代码和文档�
 
 │     └─ lib/                         # 公共库：CDP 封装、JWT 会话、断言、夹具等
 
-└─ README.md                          # 项目总说明：怎么安装、启动、使用
+├─ README.md                          # 项目总说明：怎么安装、启动、使用
+└─ demo.md                           # 项目资产全景图与冗余清理建议
 
 > 说明：`probe-*.mjs` 与 `shot-*.mjs` 按批次持续新增，命名遵循上述模式即可，不在本文件中逐个列举。
 

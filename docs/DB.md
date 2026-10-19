@@ -1452,7 +1452,7 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 ### 加权热度排序挂账
 
-「综合热度」（`viewCount*0.3 + likeCount*0.7`）**本批不做**：Prisma `orderBy` 不支持表达式排序，要么 `$queryRaw` 重写分页全链，要么维护 `hot_score` 冗余列（写路径 +2 处），MVP 不值。已挂 `docs/ROADMAP.md` 远期储备；「阅读最多」Tab 先用 `viewCount` 纯列排序。
+「综合热度」（`viewCount*0.3 + likeCount*0.7`）**本批不做**：Prisma `orderBy` 不支持表达式排序，要么 `$queryRaw` 重写分页全链，要么维护 `hot_score` 冗余列（写路径 +2 处），MVP 不值。已挂 `docs/docs/BATCH_HISTORY.md` 远期储备；「阅读最多」Tab 先用 `viewCount` 纯列排序。
 
 ### 与「已批准的例外」的关系（例外现共 14 项：schema 12 + 依赖 2）
 
@@ -1474,7 +1474,7 @@ UPDATE users SET role = 'ADMIN' WHERE username IN ('admin', 'lin');
 
 - **SET NULL 选型**：删系列 = 解绑文章，不删文章（CASCADE 会毁内容、RESTRICT 操作流反人类），推导见「series（系列表）」小节。
 - **序号唯一应用层保证**：冲突 `409 / 40900` 拒绝（不自动重排）；新建省略 → `max + 1`；解绑双清（`series_id` 与 `series_order` 同时 NULL）。
-- **图片上传零 schema 变更**：`POST /api/articles/upload-image` 只落盘 `/uploads/articles/{userId}/`，URL 进正文 Markdown；`articles` 不加图片列。孤儿文件清理挂 ROADMAP 插队候选。
+- **图片上传零 schema 变更**：`POST /api/articles/upload-image` 只落盘 `/uploads/articles/{userId}/`，URL 进正文 Markdown；`articles` 不加图片列。孤儿文件清理挂 BATCH_HISTORY 插队候选。
 - **绑定侧归属无 ADMIN 例外**：文章绑系列必须 `series.authorId === 当前用户`（403/404）；系列元信息修改才是「作者或 ADMIN」。两者刻意不同，防 ADMIN 把别人文章绑进自己系列。
 - **硬删序新增一环**：`series.author_id` 是 RESTRICT，硬删用户前必须先删他的 series；又因 `articles.series_id` 指向 series，删 series 前articles 已先被删（或靠 SET NULL 解绑）。新硬删序：`bookmarks → notifications → likes → follows → comments → articles → series → users`（`lib/tmp-account.mjs` / `lib/fixtures.mjs` 已同步，第 8/9 批教训：新 RESTRICT 表必须当天过一遍所有探针清理）。
 
@@ -1598,7 +1598,7 @@ const summary = [...content].slice(0, 100).join('');
 
 4. **表结构变更流程**：改 `backend/prisma/schema.prisma` → 更新本文档 → `npx prisma migrate dev --name <名字>` → 核对生成的 `migration.sql` 与 `SHOW CREATE TABLE` 实际输出。
 
-5. **`backend/uploads/` 必须挂载持久卷**（第十一批起）：本目录存放用户上传的头像与**文章配图**（第 10 批 `uploads/articles/{userId}/`），是运行时数据、不进 git。**生产部署时若不做持久化，重启 / 重新部署会丢文件**，而 `users.avatar` 仍指向不存在的路径、文章正文里的图片全部破图。详见「users」小节的「第十一批：头像文件存储」与「series（系列表）」所属的第 10 批小节。**孤儿图片文件（磁盘上有、无文章正文引用）本批不清理**，推荐方案挂 `docs/ROADMAP.md`「插队候选」。
+5. **`backend/uploads/` 必须挂载持久卷**（第十一批起）：本目录存放用户上传的头像与**文章配图**（第 10 批 `uploads/articles/{userId}/`），是运行时数据、不进 git。**生产部署时若不做持久化，重启 / 重新部署会丢文件**，而 `users.avatar` 仍指向不存在的路径、文章正文里的图片全部破图。详见「users」小节的「第十一批：头像文件存储」与「series（系列表）」所属的第 10 批小节。**孤儿图片文件（磁盘上有、无文章正文引用）本批不清理**，推荐方案挂 `docs/docs/BATCH_HISTORY.md`「插队候选」。
 
 ---
 

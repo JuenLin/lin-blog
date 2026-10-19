@@ -19,12 +19,12 @@ frontend/   Vue 3 + Vite，开发端口 5173
 backend/    Node.js + Express + Prisma，开发端口 3000
   ├─ prisma/migrations/   17 个迁移文件，schema 与库的唯一真相
   └─ uploads/             头像落盘目录，运行时数据，不进 git
-docs/       共享契约与架构：AI_CONTRACT.md / API.md / DB.md / ACCEPTANCE.md / ARCHITECTURE.md / docs/BATCH_HISTORY.md / FEATURES.md
+docs/       共享契约与架构：AI_CONTRACT.md / API.md / DB.md / ACCEPTANCE.md / ARCHITECTURE.md / docs/BATCH_HISTORY.md / FEATURES.md / demo.md
   └─ history/            历史交接单归档（如 TASK_HANDOFF_batch10.md）
 scripts/acceptance/       自动化验收脚本（零新增依赖）
 ```
 
-数据库迁移不在 `database/` 里维护：`backend/prisma/migrations/` 是唯一真相，新建库只需 `npm run prisma:migrate`，无需手工执行任何 SQL 初始化脚本。
+数据库迁移的唯一真相是 `backend/prisma/migrations/`：新建库只需 `npm run prisma:migrate`，无需手工执行任何 SQL 初始化脚本。
 
 ## 启动步骤
 

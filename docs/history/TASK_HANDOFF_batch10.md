@@ -13,7 +13,7 @@
 
 | 环节 | 状态 | 说明 |
 |---|---|---|
-| 文档四步（API/DB/AI_CONTRACT/ROADMAP） | ✅ **已完成**（未 commit） | API.md +219/-3（新章节「文章图片上传与专栏系列（第 10 批）」+ 文章 POST/PUT 三态 + 失败码表补 409）；DB.md +104/-8（series 表小节 + 第 10 批顶层节 + 硬删序加 series + 外键 11→13 + 迁移记录）；AI_CONTRACT.md +15/-3（路径清单 +6、接口总数 47→53、例外第 15 项）；ROADMAP.md +10/-1（插队候选加「图片孤儿清理」+ 本轮拍板记录 5 条）。四步纪律已做：改前后 `grep "^## "` 全列比对无丢节 |
+| 文档四步（API/DB/AI_CONTRACT/BATCH_HISTORY） | ✅ **已完成**（未 commit） | API.md +219/-3（新章节「文章图片上传与专栏系列（第 10 批）」+ 文章 POST/PUT 三态 + 失败码表补 409）；DB.md +104/-8（series 表小节 + 第 10 批顶层节 + 硬删序加 series + 外键 11→13 + 迁移记录）；AI_CONTRACT.md +15/-3（路径清单 +6、接口总数 47→53、例外第 15 项）；docs/BATCH_HISTORY.md +10/-1（插队候选加「图片孤儿清理」+ 本轮拍板记录 5 条）。四步纪律已做：改前后 `grep "^## "` 全列比对无丢节 |
 | migrate | ✅ **已执行**：`20261018082357_add_series` | 新建 `series` 表（title/description/authorId/时间戳，author_id → users.id **RESTRICT**）；`articles` 加 `series_id INT NULL`（→ series.id **SET NULL**，全库第一条 SET NULL 外键）与 `series_order INT NULL`。`SHOW CREATE TABLE` + `information_schema.REFERENTIAL_CONSTRAINTS` 已核实两条规则；17 行既有文章两列全 NULL 零回填。Prisma client 已 generate |
 | schema.prisma | ✅ 已改 | Series 模型 + Article.seriesId/seriesOrder（onDelete: SetNull）+ User.series 关系 |
 | 后端代码 | ✅ **已完成并冒烟通过**（未 commit） | 新：`validators/series.validator.js`、`services/series.service.js`、`controllers/series.controller.js`、`routes/series.routes.js`（含 userSeriesRouter 挂 /users/:id/series）；改：`utils/upload.js`（ARTICLE_SUBDIR/ARTICLE_FIELD 常量）、`services/upload.service.js`（buildUploader 工厂泛化，avatarUpload 行为不变 + articleImageUpload + toUploadUrl/toAvatarUrl 别名）、`validators/article.validator.js`（两字段三态 + superRefine 跨字段规则）、`services/article.service.js`（详情透出 seriesId/seriesOrder + create/update 绑定助手 requireOwnSeries/isSeriesOrderFree/nextSeriesOrder/resolveSeriesBindingFor*）、`controllers/article.controller.js`（uploadImage）、`routes/article.routes.js`（POST /upload-image 注册在 /:id 前）、`routes/index.js`（挂载）。**冒烟实测**：上传 5 态全对（200+url / 非图 40000 / 超2MB 40000 / 无token 401 / 缺文件 40000）、系列 CRUD、自动 max+1（order=1）、409 冲突、解绑双清（seriesId/seriesOrder 同时 null）、删系列 unboundCount。冒烟残留已清（基线 users=6 / articles=17 / series=0） |
@@ -25,7 +25,7 @@
 
 ## 三、5 个决策点（用户 2026-10-18 拍板，原样留存）
 
-1. **孤儿图片文件：MVP 不清，挂账** —— 解析正文 markdown 反查文件并删除，成本和风险都太高（正文可能被并发修改、图片可能被外部引用）。已在 ROADMAP.md「插队候选」加一条：「图片孤儿清理：文章删除后 /uploads/articles/* 的清理（推荐方案：定时任务扫描未被任何文章正文引用的文件）」。本批不实现。
+1. **孤儿图片文件：MVP 不清，挂账** —— 解析正文 markdown 反查文件并删除，成本和风险都太高（正文可能被并发修改、图片可能被外部引用）。已在 docs/BATCH_HISTORY.md「插队候选」加一条：「图片孤儿清理：文章删除后 /uploads/articles/* 的清理（推荐方案：定时任务扫描未被任何文章正文引用的文件）」。本批不实现。
 2. **GET /api/users/me/series：不加 /me 变体，复用 GET /users/:id/series** —— 理由：series 没有"草稿/私密"概念，本来就是公开列表，就像 /users/:id/articles 一样。前端编辑器里直接用 userStore.user.id 传参即可。加 /me 变体是冗余，破坏「/me 系列 = 需要登录才能看的自己专属数据」的语义（likes/bookmarks/drafts 才需要 /me）。接口数是 47 + 6 = 53（不加 /me 变体）。
 3. **seriesId/seriesOrder 三态：采纳** —— 与 PUT /users/me 的 avatar/bio 三态同范式（不传=不改 / null=解绑 / 有值=绑定）。新建时如果传了 seriesId，后端必须校验 series.authorId === 当前用户，否则 403/404。同理 PUT 时如果改 seriesId 也必须校验新系列的归属。
 4. **系列导航位置：详情页顶部** —— 位置：在文章 meta 行（分类/标签下方、正文上方）显示一个系列横幅「本文属于《xxx》系列，第 N 篇 / 共 M 篇」，带上/下篇按钮。不动底部全局的 prev/next（那是时间线维度的），两者语义正交，不混装。前端复用现有 neighborWindow 模式。
