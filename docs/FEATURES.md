@@ -4,7 +4,7 @@
 
 > 本文档基于代码核查整理，覆盖截至第 12 批（举报与审核系统）的全部已实现功能。
 > 技术栈：Vue 3 + Express + Prisma + MySQL；所有接口挂在 `/api` 下。
-> 接口总数以 [`docs/API.md`](./API.md) 为准（约 59 个），表结构以 [`docs/DB.md`](./DB.md) 为准（10 张业务表），前端 12 个页面，验收探针 33 个（`scripts/acceptance/probe-*.mjs`）。
+> 接口总数以 [`docs/API.md`](./API.md) 为准（约 59 个），表结构以 [`docs/DB.md`](./DB.md) 为准（13 张业务表），前端 13 个页面，验收探针 33 个（`scripts/acceptance/probe-*.mjs`）。
 
 ## 1. 身份与权限
 | 接口 | 权限 | 说明 |
