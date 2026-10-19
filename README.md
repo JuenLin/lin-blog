@@ -19,7 +19,7 @@ frontend/   Vue 3 + Vite，开发端口 5173
 backend/    Node.js + Express + Prisma，开发端口 3000
   ├─ prisma/migrations/   17 个迁移文件，schema 与库的唯一真相
   └─ uploads/             头像落盘目录，运行时数据，不进 git
-docs/       共享契约与架构：AI_CONTRACT.md / API.md / DB.md / ACCEPTANCE.md / ARCHITECTURE.md / docs/BATCH_HISTORY.md / FEATURES.md / demo.md
+docs/       共享契约与架构：AI_CONTRACT.md / API.md / DB.md / ACCEPTANCE.md / ARCHITECTURE.md / BATCH_HISTORY.md / FEATURES.md / demo.md
   └─ history/            历史交接单归档（如 TASK_HANDOFF_batch10.md）
 scripts/acceptance/       自动化验收脚本（零新增依赖）
 ```
@@ -169,7 +169,7 @@ EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_en
 - [x] `docs/API.md`：auth + health 通用接口 + 文章 / 评论 / 点赞 / 用户业务接口，含未实现接口的显式登记
 - [x] `docs/DB.md`：users / articles / comments / likes / follows / notifications / tags / bookmarks / article_revisions / series / comment_likes / reports / article_tags 十三表说明、外键命名规则、新增业务表流程、头像文件存储（第十一批）、category 分类列
 - [x] 后端接口共 59 个：文章 5（列表 / 详情 / 发布 / 编辑 / 删除）+ 评论 3（发表 / 列表 / 删除）+ 点赞 3（点赞 / 取消 / 查询是否已赞）+ 评论点赞 3（赞 / 取消赞 / 查询是否已赞）+ 收藏 4（收藏 / 取消 / 查询是否已收藏 / 我的收藏列表）+ 阅读 1（`POST /view`，免登录判重）+ 用户 9（改资料 / 传头像 / 用户详情 / 他的文章列表 / 我的点赞列表 / 关注 / 取消关注 / 粉丝列表 / 关注列表）+ 草稿与版本 5（auto-save / 草稿箱 / 删草稿 / 版本历史 / 回滚）+ 标签 1（热门标签）+ 图片与系列 6（上传文章配图 / 创建系列 / 系列详情 / 更新系列 / 删除系列 / 某用户的系列列表）+ 通知 4（列表 / 未读数 / 标已读 / 全部已读）+ 举报 3（提交举报 / 管理端举报列表 / 管理端处理举报）+ 管理端 7（`/api/admin`：stats / users 列表 / 改用户状态封禁 / 文章列表 / 删文章 / 评论列表 / 删评论，仅 ADMIN）+ health 1 + auth 4（注册 / 登录 / me / 改密码）
-- [x] 前端 13 个页面：`Login` / `Home`（广场列表 + 最新/热门/阅读最多 Tab + 分类筛选）/ `ArticleDetail` / `ArticleEditor`（发布与编辑共用）/ `UserProfile` / `ProfileEdit` / `ChangePassword`（自第十四批起并列挂在 `/settings` 父级壳下）/ `UserFollows`（关注 / 粉丝列表）/ `AdminStats` / `AdminUsers` / `AdminArticles` / `AdminComments` / `AdminReports`（管理后台-举报管理）（自第 5 批起挂在 `/admin` 父级壳 `AdminLayout` 下，仅 ADMIN 可进）
+- [x] 前端 13 个页面：`Login` / `Home`（广场列表 + 最新/热门/阅读最多 Tab + 分类筛选）/ `ArticleDetail` / `ArticleEditor`（发布与编辑共用）/ `UserProfile` / `ProfileEdit` / `ChangePassword` / `UserFollows`（关注 / 粉丝列表）/ `AdminStats` / `AdminUsers` / `AdminArticles` / `AdminComments` / `AdminReports`（管理后台-举报管理）（自第 5 批起挂在 `/admin` 父级壳 `AdminLayout` 下，仅 ADMIN 可进）
 - [x] 文章分类：列表按 `category` 筛选（枚举 `技术` / `生活` / `随笔` / `未分类`），发布与编辑可设分类
 - [x] 自动化验收：`node scripts/acceptance/run.mjs` 全绿（33 个探针脚本 + 3 个截图脚本，执行细则见 `docs/ACCEPTANCE.md`）
 
@@ -177,4 +177,4 @@ EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_en
 
 以下项已评估并决定不实现，不要在后续批次里补：
 
-- 列表 / 详情返回 `liked`（需给 `auth` 加可选认证模式，待单独排批）
+- [ ] 列表 / 详情直接返回 liked（当前通过独立的 GET /api/articles/:id/liked 接口实现，不改动全局 auth 中间件）
