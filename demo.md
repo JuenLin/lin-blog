@@ -42,7 +42,7 @@ Lin's Blog/
 │       └── cleanup.mjs              # 独立清理脚本（疑似遗留）
 ├── docs/                           # 契约与文档（7 md + history/）
 │   ├── ACCEPTANCE.md  AI_CONTRACT.md  API.md  ARCHITECTURE.md
-│   ├── DB.md  FEATURES.md  ROADMAP.md
+│   ├── DB.md  FEATURES.md  docs/BATCH_HISTORY.md
 │   └── history/                    # 已归档的历史记录
 ├── README.md
 ├── .gitignore  .prettierignore  .markdownlintignore  .gitattributes
@@ -83,7 +83,7 @@ Lin's Blog/
 - `backend/src/`：核心业务逻辑（controllers / services / routes / middlewares / utils / validators），改动需走 AI_CONTRACT 契约流程。
 - `frontend/src/`：前端页面与组件（views 15 / components 13 / router / stores / api）。
 - `backend/prisma/`：**唯一数据库真相**（schema.prisma + 17 个迁移），任何表结构变更只走 `migrate dev`。
-- `docs/`：契约与文档（API.md / AI_CONTRACT.md / ARCHITECTURE.md / DB.md / FEATURES.md / ROADMAP.md / ACCEPTANCE.md + history/）。
+- `docs/`：契约与文档（API.md / AI_CONTRACT.md / ARCHITECTURE.md / DB.md / FEATURES.md / docs/BATCH_HISTORY.md / ACCEPTANCE.md + history/）。
 - `scripts/acceptance/`：验收套件（run.mjs + lib/ + 33 probe），是项目质量的守门员，不可删。
 
 ## 5. 清理执行结果（已于 2026-10-19 完成）
