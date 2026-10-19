@@ -1709,15 +1709,27 @@ prisma/migrations/
 │  └─ migration.sql
 ├─ 20261004145107_add_article_category/
 │  └─ migration.sql
+├─ 20261011083029_add_follows/（第 4 批）
+│  └─ migration.sql
+├─ 20261017063642_add_user_role_status/（第 5 批，role/status 两列）
+│  └─ migration.sql
+├─ 20261017125847_add_article_status/（第 6 批，status 列）
+│  └─ migration.sql
+├─ 20261017130010_add_article_revisions/（第 6 批，版本历史）
+│  └─ migration.sql
+├─ 20261017130223_add_article_status_idx/（第 6 批，status 索引）
+│  └─ migration.sql
 ├─ 20261018014846_add_tags_and_article_tags/（第 7 批，含 tags / article_tags / comments.parent_id 三项变更）
 │  └─ migration.sql
-├─ 20261011083029_add_follows/
+├─ 20261018042009_add_notifications/（第 8 批，通知中心）
 │  └─ migration.sql
-├─ 20261017125847_add_article_status/
+├─ 20261018053624_add_bookmarks_and_view_count/（第 9 批，收藏 + 阅读量）
 │  └─ migration.sql
-├─ 20261017130010_add_article_revisions/
+├─ 20261018082357_add_series/（第 10 批，专栏系列）
 │  └─ migration.sql
-├─ 20261017130223_add_article_status_idx/
+├─ 20261018093952_add_comment_likes_and_mention/（第 11 批，评论点赞 + @提及）
+│  └─ migration.sql
+├─ 20261018114103_add_reports/（第 12 批，举报与审核）
 │  └─ migration.sql
 └─ migration_lock.toml
 ```
