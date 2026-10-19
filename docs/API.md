@@ -306,6 +306,9 @@ Authorization: Bearer <token>
 | POST   | /api/comments              | 发表评论（第 7 批起可带 `parentId` 回复，两层楼中楼）                 | 是  |
 | GET    | /api/articles/:id/comments | 文章评论列表                                            | 否  |
 | DELETE | /api/comments/:id          | 删除评论（评论作者或文章作者，软删除）                           | 是  |
+| POST   | /api/comments/:id/like             | 赞评论（需登录，**幂等 200**）                                  | 是  |
+| DELETE | /api/comments/:id/like             | 取消赞评论（需登录，**幂等 200**）                              | 是  |
+| GET    | /api/comments/:id/liked            | 查询当前用户是否已赞该评论（需登录）                              | 是  |
 | GET    | /api/users/:id             | 用户详情（含文章数 / 获赞数 / 评论数）                            | 否  |
 | GET    | /api/users/:id/articles    | 该用户发布的文章列表（真后端分页）                                 | 否  |
 | GET    | /api/users/me/likes        | 我点赞过的文章列表（分页，**仅本人**）                             | 是  |
@@ -320,6 +323,9 @@ Authorization: Bearer <token>
 | DELETE | /api/admin/articles/:id     | 管理端删除文章（软删，无视作者，需 ADMIN）                          | 是  |
 | GET    | /api/admin/comments        | 管理端评论列表（含软删，可筛选，需 ADMIN）                          | 是  |
 | DELETE | /api/admin/comments/:id     | 管理端删除评论（软删，无视作者，需 ADMIN）                          | 是  |
+| POST   | /api/reports                       | 提交举报（需登录，防重复 409 / 不可见 404 / 不能举报自己 400）    | 是  |
+| GET    | /api/admin/reports                 | 管理端举报列表（需 ADMIN，status 筛选 + targetPreview 快照）    | 是  |
+| PUT    | /api/admin/reports/:id             | 管理端处理举报（需 ADMIN，单事务联动软删 + PENDING 批转）       | 是  |
 | POST   | /api/articles/auto-save     | 自动保存草稿（新建 / 更新；可带 sourceArticleId 校验归属，需登录）           | 是  |
 | GET    | /api/users/me/drafts        | 我的草稿箱列表（仅本人草稿，需登录）                                    | 是  |
 | DELETE | /api/users/me/drafts/:id    | 删除指定草稿（仅作者，需登录）                                      | 是  |
@@ -330,7 +336,17 @@ Authorization: Bearer <token>
 | DELETE | /api/articles/:id/bookmark  | 取消收藏（需登录，**幂等 200**，未收藏也返回 200）                      | 是  |
 | GET    | /api/articles/:id/bookmarked | 查询当前用户是否已收藏该文章（刷新后取按钮态，需登录）                     | 是  |
 | GET    | /api/users/me/bookmarks     | 我的收藏列表（分页，**仅本人**）                                 | 是  |
+| POST   | /api/articles/upload-image         | 上传文章配图（multipart 字段名 image，需登录）                  | 是  |
+| POST   | /api/series                        | 创建系列（需登录）                                          | 是  |
+| GET    | /api/series/:id                    | 系列详情含有序文章列表（公开）                                 | 否  |
+| PUT    | /api/series/:id                    | 更新系列（作者或 ADMIN，部分更新语义）                          | 是  |
+| DELETE | /api/series/:id                    | 删除系列（作者或 ADMIN，**SET NULL 解绑文章不删文章**）          | 是  |
+| GET    | /api/users/:id/series              | 某用户的系列列表（公开，分页，**无 /me 变体**）                  | 否  |
 | POST   | /api/articles/:id/view      | 记录一次阅读，`viewCount` +1（**免登录**，同 IP 同文章 5 分钟内只计一次）      | 否  |
+| GET    | /api/notifications                 | 我的通知列表（扁平分页，需登录）                                 | 是  |
+| GET    | /api/notifications/unread-count    | 未读数（轮询数据源，需登录）                                   | 是  |
+| PUT    | /api/notifications/read            | 批量标记已读（空数组 = 全部已读，需登录）                          | 是  |
+| PUT    | /api/notifications/:id/read        | 单条标记已读（幂等 200，需登录）                                | 是  |
 
 ---
 
@@ -946,7 +962,7 @@ Authorization: Bearer <token>
 
 修改当前登录用户的资料（头像 / 简介）。**需要登录**。身份完全取自 token。
 
-路径用 `/me` 而非 `/:id`：本接口**只允许改自己**，不接受路径参数指定用户。用 `PUT /api/users/:id` 会把「用户管理」语义一并打开（未来要加管理员功能时容易混淆），且路径参数可枚举。本项目 MVP 不做用户管理，**这是本项目的 user 模块接口之一（该节只讲改资料；user 模块共 5 个已实现接口，完整清单见文末「已实现但不在上表内」一段）**。
+路径用 `/me` 而非 `/:id`：本接口**只允许改自己**，不接受路径参数指定用户。用 `PUT /api/users/:id` 会把「用户管理」语义一并打开（未来要加管理员功能时容易混淆），且路径参数可枚举。本项目 MVP 不做用户管理，**这是本项目的 user 模块接口之一（该节只讲改资料；user 模块共 13 个已实现接口（改资料 / 传头像 / 用户详情 / 他的文章 / 我的点赞 / 关注 / 取消关注 / 粉丝列表 / 关注列表 / 我的草稿箱 / 删草稿 / 我的收藏 / 某用户的系列列表），完整清单见文末「已实现但不在上表内」一段）**。
 
 请求头：
 
@@ -1475,7 +1491,7 @@ HTTP **201**，返回完整的 public user（与 `PUT /api/users/me` 完全同�
 
 ### 用户接口（其余未实现）
 
-契约第 5 节列出的 5 个用户管理接口中，**`GET /api/users/:id` 已实现**（第 2 批，只读公开详情，见「业务接口」一节）；**其余 4 个（列表 / 新增 / 更新 / 删除）全部未实现**。已实现的 user 接口共九个 —— `GET /api/users/:id`、`PUT /api/users/me`（改资料，第九批）、`POST /api/users/me/avatar`（上传头像，第十一批）、`GET /api/users/:id/articles`、`GET /api/users/me/likes`（后三个为第 2 批），以及第 4 批的 4 个关注接口（`POST` / `DELETE /api/users/:id/follow`、`GET /api/users/:id/followers`、`GET /api/users/:id/following`），都在「业务接口」一节，不在下表内。
+契约第 5 节列出的 5 个用户管理接口中，**`GET /api/users/:id` 已实现**（第 2 批，只读公开详情，见「业务接口」一节）；**其余 4 个（列表 / 新增 / 更新 / 删除）全部未实现**。已实现的 user 接口共 13 个 —— 第 2 批的 5 个（`GET /api/users/:id`、`GET /api/users/:id/articles`、`GET /api/users/me/likes`、`PUT /api/users/me`、`POST /api/users/me/avatar`）+ 第 4 批的 4 个关注接口（`POST/DELETE /api/users/:id/follow`、`GET /api/users/:id/followers`、`GET /api/users/:id/following`）+ 第 6 批的草稿 2 个（`GET /api/users/me/drafts`、`DELETE /api/users/me/drafts/:id`）+ 第 9 批的收藏 1 个（`GET /api/users/me/bookmarks`）+ 第 10 批的系列 1 个（`GET /api/users/:id/series`），都在「业务接口」一节，不在下表内。
 
 MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 对象返回。
 
@@ -2059,7 +2075,7 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 
 ### MVP 范围外（明确不做）
 
-收藏、标签、「只看我的文章」筛选。
+「只看我的文章」筛选（收藏、标签分别在第 9、7 批已实现，见上方对应章节；本节仅保留仍未做的项）。
 
 > 说明 0：**点赞已实现**（第十批，`POST` / `DELETE /api/articles/:id/like`，列表与详情返回 `likeCount`），已从上表移出。原遗留项「`liked`（当前用户是否已赞）不在列表 / 详情返回，刷新详情页后按钮态会显示为『未赞』」**已解决**（第十四批）：新增需登录的 `GET /api/articles/:id/liked`，列表 / 详情的返回结构与 `auth` 中间件**均未改动**。
 >
@@ -2080,7 +2096,7 @@ MVP 不需要用户管理，文章与评论的作者信息通过内嵌 `author` 
 ## 通知中心接口（第 8 批）
 
 通知让「有人评论 / 回复 / 关注 / 点赞了你」这类事件主动推到接收者面前，提升博客的「活人感」。
-本批新建 `notifications` 表（见 `docs/DB.md`），并在**评论 / 关注 / 点赞**三类动作成功后自动产生通知。
+本批新建 `notifications` 表（见 `docs/DB.md`），并在**评论 / 关注 / 点赞 / @提及 / 评论被赞 / 举报处理**六类动作成功后自动产生通知（通知类型枚举见 `docs/DB.md` 的 `NotificationType`）。
 
 通知文案由**后端拼**，前端只做渲染，不写 if-else 分支（防坑 1）：
 

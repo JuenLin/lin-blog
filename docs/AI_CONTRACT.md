@@ -395,7 +395,7 @@ PUT    /api/notifications/:id/read    单条标记已读（需登录，第 8 批
 >
 > 清单里标「未实现」的 4 个（列表 / 新增 / 改他人 / 删）保持未实现，作者信息通过文章 / 评论内嵌的 `author` 对象返回。
 >
-> 三个已实现接口的字段与失败码以 `docs/API.md` 为准。`GET /api/users/me`（不带 `/likes`）会命中 `/:id` 并由 zod 回 400（`id='me'` 不是数字），这是第 2 批登记过的预期行为，**不是 bug**，不要为此新增 `GET /api/users/me` 别名。
+> 已实现接口的字段与失败码以 `docs/API.md` 为准。`GET /api/users/me`（不带 `/likes`）会命中 `/:id` 并由 zod 回 400（`id='me'` 不是数字），这是第 2 批登记过的预期行为，**不是 bug**，不要为此新增 `GET /api/users/me` 别名。
 >
 > 路径之外的字段、校验与错误码以 `docs/API.md` 为准（第 13 节第 15 条）。
 >
