@@ -133,42 +133,6 @@ npm install --registry=https://registry.npmmirror.com
 export PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma   # Windows: set PRISMA_ENGINES_MIRROR=...
 ```
 
-## 已知问题
-
-### `npx prisma generate` 报 EPERM（根因：后端进程占用引擎 DLL）
-
-现象：迁移或生成 Client 时报错
-
-```text
-EPERM: operation not permitted, rename '...\node_modules\.prisma\client\query_engine-windows.dll.node.tmpNNN'
-       -> '...\query_engine-windows.dll.node'
-```
-
-**根因：跑着 `npm run dev` 的后端进程（`node --watch`）占用了引擎 DLL。**  
-停掉后端再跑 `npx prisma generate` 即成功（实测 v6.19.3，61ms）。
-
-判定依据：
-
-- 停后端 → generate 成功；起后端 → 复现。**开关后端是唯一变量**。
-- `@prisma/client` 启动时把 `query_engine-windows.dll.node` 载入为进程映像  
-  （见 `node_modules/.prisma/client/index.js` 里 `path.join(__dirname, "query_engine-windows.dll.node")`），  
-  Windows 上进程映像在进程存活期间不能被替换，Prisma 的 rename 因此报 `EPERM`。
-
-> 早期这里归因为「杀软 / Windows Search 实时扫描」，**该结论不成立**。  
-> 当时只观察到「源 tmp 可 `mv`、目标 dll 可被覆盖」，就推断是扫描类占用 ——  
-> 这是不充分的证据：Git Bash 的 `mv` 与 Node 的 `rename(..., REPLACE_EXISTING)`  
-> 不是同一条 Windows API，**前者成功不能证明文件没被占用**。
-
-处理：
-
-- **遇到就停掉后端（`Ctrl+C`），跑完 generate 再起**。这是确定有效的做法。
-- 失败留下的 `query_engine-windows.dll.node.tmp*` 不会被下次 generate 自动清理，  
-  可在确认无进程占用后直接删（同目录下真正的 `query_engine-windows.dll.node` 不要动）。
-- 失败时 JS 与类型产物其实**已经更新成功**，同版本下引擎 dll 不被替换也不影响运行，  
-  所以「先停后端再 generate」不会打断工作流。
-- **升级 Prisma 版本前必须先停后端**：那时引擎 dll 必须真正被替换，  
-  写不进去会导致 Client 与引擎版本不匹配。
-
 ## 📚 详细文档
 
 - [接口契约 (API.md)](./docs/API.md)
