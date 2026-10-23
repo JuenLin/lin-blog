@@ -140,3 +140,4 @@ export PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma   # 
 - [架构全景图 (ARCHITECTURE.md)](./docs/ARCHITECTURE.md)
 - [迭代演进史 (BATCH_HISTORY.md)](./docs/BATCH_HISTORY.md)
 - [验收指南 (ACCEPTANCE.md)](./docs/ACCEPTANCE.md)
+- [项目资产地图 (demo.md)](./docs/demo.md)

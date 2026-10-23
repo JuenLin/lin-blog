@@ -40,12 +40,11 @@ Lin's Blog/
 │       ├── probe-*.mjs              # 33 个独立 UI 探针
 │       ├── shot-*.mjs               # 3 个独立截图脚本（疑似遗留）
 │       └── cleanup.mjs              # 独立清理脚本（疑似遗留）
-├── docs/                           # 契约与文档（7 md + history/）
+├── docs/                           # 契约与文档（8 md + history/）
 │   ├── ACCEPTANCE.md  AI_CONTRACT.md  API.md  ARCHITECTURE.md
-│   ├── DB.md  FEATURES.md  docs/BATCH_HISTORY.md
+│   ├── DB.md  FEATURES.md  BATCH_HISTORY.md  demo.md
 │   └── history/                    # 已归档的历史记录
 ├── README.md
-├── demo.md
 ├── .gitignore  .prettierignore  .markdownlintignore  .gitattributes
 ```
 
