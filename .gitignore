@@ -1,2 +1,6 @@
 backend/.env
 .codeartsdoer/
+.workbuddy/
+frontend/.env
+# 只忽略根级的 .sql 转储；prisma 迁移在 backend/prisma/migrations/，绝不能被裸 *.sql 误伤
+/*.sql
