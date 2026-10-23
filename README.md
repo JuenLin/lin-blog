@@ -1,5 +1,11 @@
 # Lin's Blog
 
+[![Vue](https://img.shields.io/badge/Vue-3.5-4fc08d?logo=vue.js)](https://vuejs.org/)
+[![Express](https://img.shields.io/badge/Express-5.x-000000?logo=express)](https://expressjs.com/)
+[![Prisma](https://img.shields.io/badge/Prisma-6.19-2D3748?logo=prisma)](https://www.prisma.io/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql)](https://www.mysql.com/)
+[![Node](https://img.shields.io/badge/Node.js-%3E%3D22-339933?logo=node.js)](https://nodejs.org/)
+
 一个基于 Vue 3 + Express + Prisma + MySQL 的全栈个人博客系统。
 
 ## ✨ 核心特性
@@ -56,8 +62,6 @@ GRANT ALL PRIVILEGES ON `lin_blog_dev`.* TO 'lin_blog_user'@'localhost';
 GRANT ALL PRIVILEGES ON `lin_blog_dev_shadow`.* TO 'lin_blog_user'@'localhost';
 FLUSH PRIVILEGES;
 ```
-
-> 注：如果本地环境已配置为 `workbuddy_dev`，可沿用，此处仅为示例。
 
 授权是否生效可用下面这条确认，应看到两个库都是 `ALL PRIVILEGES`：
 
